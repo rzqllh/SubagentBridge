@@ -1,11 +1,8 @@
 """
 runners/__init__.py — runner registry.
 
-Concrete backends (agy, claude, gpt_sol, deepseek) register themselves here.
-manager.py and server.py never import a concrete runner class directly — they
-look it up by name string, which is also what makes rehydration after a
-server restart possible (docs/TEST_PLAN.md T11): the DB only stores the
-runner's name, not a live Python object.
+Concrete backends register themselves here. manager.py and server.py never
+import a concrete runner class directly; they resolve runners by stable name.
 """
 
 from __future__ import annotations
@@ -34,6 +31,11 @@ def available_runners() -> list[str]:
     return sorted(_REGISTRY)
 
 
-# NOTE: concrete runners (agy, claude, gpt_sol, deepseek) are implemented and
-# registered in M3 (see docs/PRD.md milestones). Until then the registry is
-# populated only by whatever a test or the caller registers explicitly.
+# Production runners. Keep registration here so startup and persistence
+# rehydration see the same stable registry.
+from .agy_runner import AgyRunner  # noqa: E402
+
+register_runner("agy", AgyRunner())
+
+# Claude/GPT/DeepSeek runners are intentionally not registered until their
+# implementations and runtime contracts are verified.
