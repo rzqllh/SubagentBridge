@@ -1,9 +1,8 @@
 """Antigravity CLI runner.
 
-Targets agy CLI 1.1.10+ print mode with ``stream-json`` output.  The parser is
-intentionally defensive because CLI event payloads may gain fields across
-versions; unknown lines are preserved as ``unknown`` events instead of
-crashing a session.
+Targets agy CLI 1.1.10+ print mode with ``stream-json`` output. The parser is
+based on the stream shape verified against agy 1.1.10 on 2026-09-06 and stays
+defensive about additional fields or future event types.
 """
 
 from __future__ import annotations
@@ -63,9 +62,8 @@ class AgyRunner(AgentRunner):
         if not isinstance(data, dict):
             return ParsedEvent("unknown", {"raw": data})
 
-        # Accept canonical events too. This makes tests/wrappers easier and
-        # keeps the parser tolerant of a future agy stream shape that exposes
-        # canonical ``kind`` + ``payload`` directly.
+        # Accept canonical events too. This keeps wrapper/fake-runner tests
+        # simple and makes the parser tolerant of a future canonical stream.
         canonical_kind = data.get("kind")
         if canonical_kind:
             payload = data.get("payload", {})
@@ -77,7 +75,10 @@ class AgyRunner(AgentRunner):
 
         if event_type == "init":
             conversation_id = data.get("conversation_id") or data.get("conversationId")
-            return ParsedEvent("init", {"conversation_id": conversation_id})
+            payload: dict[str, Any] = {"conversation_id": conversation_id}
+            if isinstance(data.get("init"), dict):
+                payload["init"] = data["init"]
+            return ParsedEvent("init", payload)
 
         if event_type == "step_update":
             step = data.get("step_update") or data.get("stepUpdate") or {}
@@ -90,15 +91,19 @@ class AgyRunner(AgentRunner):
                 text = step.get("text_delta")
                 if text is None:
                     text = step.get("text") or step.get("content") or ""
-                return ParsedEvent("text", {"text": text})
+                payload = {"text": text}
+                # agy 1.1.10 also reports provisional usage on this step.
+                # Keep it for diagnostics, but manager accounting uses only
+                # the final result event so tokens are not double-counted.
+                if isinstance(step.get("usage"), dict):
+                    payload["step_usage"] = dict(step["usage"])
+                return ParsedEvent("text", payload)
 
             if step_type == "tool_call":
                 nested = step.get("tool_call") or step.get("toolCall")
                 payload: dict[str, Any]
                 if isinstance(nested, dict):
                     payload = dict(nested)
-                    # Preserve outer metadata without hiding the actionable
-                    # command/path fields used by the safety matcher.
                     payload.setdefault("_step", step)
                 else:
                     payload = dict(step)
@@ -107,19 +112,30 @@ class AgyRunner(AgentRunner):
             if step_type == "thought":
                 return ParsedEvent("thought", dict(step))
 
+            # user_input/checkpoint/unknown steps are intentionally retained
+            # for diagnostics without being treated as actionable events.
             return ParsedEvent("unknown", {"raw": data})
 
         if event_type == "result":
-            raw_usage = data.get("usage") or {}
+            # Verified agy 1.1.10 shape:
+            # {"event":"result","result":{"status":"SUCCESS", ...,
+            #   "usage":{"input_tokens":N,"output_tokens":N,...}}}
+            result_obj = data.get("result")
+            if not isinstance(result_obj, dict):
+                result_obj = {}
+
+            raw_usage = result_obj.get("usage") or data.get("usage") or {}
             if not isinstance(raw_usage, dict):
                 raw_usage = {}
+
             usage = {
                 "input_tokens": int(raw_usage.get("input_tokens") or raw_usage.get("inputTokens") or 0),
                 "output_tokens": int(raw_usage.get("output_tokens") or raw_usage.get("outputTokens") or 0),
             }
-            payload: dict[str, Any] = {"usage": usage}
-            if "result" in data:
-                payload["result"] = data["result"]
+            payload: dict[str, Any] = {
+                "usage": usage,
+                "result": result_obj,
+            }
             return ParsedEvent("result", payload)
 
         return ParsedEvent("unknown", {"raw": data})
