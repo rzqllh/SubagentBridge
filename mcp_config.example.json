@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "subagentbridge": {
+      "command": "python",
+      "args": ["-m", "subagentbridge.server"],
+      "env": {
+        "SUBAGENTBRIDGE_DB_PATH": "~/.subagentbridge/sessions.db",
+        "SUBAGENTBRIDGE_MAX_RETRIES": "2",
+        "SUBAGENTBRIDGE_DEFAULT_TIMEOUT_S": "600",
+        "OPENAI_API_KEY": "your-key-here",
+        "DEEPSEEK_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
