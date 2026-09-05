@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subagentbridge"
+version = "0.0.1"
+description = "MCP server for multi-runner subagents with runtime safety, HITL controls, persistence, and Antigravity IDE integration."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Hafizh Rizqullah Prasetya" }
+]
+dependencies = [
+  "mcp>=1.28,<2",
+]
+
+[project.scripts]
+subagentbridge = "subagentbridge.server:main"
+
+[tool.setuptools.packages.find]
+include = ["subagentbridge*"]
