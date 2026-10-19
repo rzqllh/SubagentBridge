@@ -47,7 +47,7 @@ def spawn_agent(
     model: str | None = None,
     agent_type: str | None = None,
     reasoning_effort: str | None = None,
-    skip_permissions: bool = True,
+    skip_permissions: bool = False,
     hitl_enabled: bool = True,
     max_retries: int = DEFAULT_MAX_RETRIES,
 ) -> str:
@@ -68,7 +68,7 @@ def spawn_agent(
             hitl_enabled=hitl_enabled,
             max_retries=max_retries,
         )
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         return f"error: {exc}"
     return f"spawned session {session_id!r} on runner {runner!r}"
 
@@ -78,7 +78,7 @@ async def send_message(session_id: str, message: str) -> str:
     """Queue a prompt for a session. Fails if the session is already working."""
     try:
         await _manager.send_message(session_id, message)
-    except (SessionNotFoundError, RuntimeError) as exc:
+    except (SessionNotFoundError, RuntimeError, PermissionError) as exc:
         return f"error: {exc}"
     return f"message queued for session {session_id!r}"
 
@@ -139,14 +139,11 @@ def apply_code_fix(filepath: str, target: str, replacement: str) -> str:
         return f"error: {exc}"
 
 
-@mcp.tool()
+# Kept only as a non-MCP compatibility callable; untrusted agents never
+# receive an approval tool. There is no trusted human broker in P0.
 def approve_action(action_id: str) -> str:
-    """Approve a pending gated action so the waiting subagent can proceed (W4)."""
-    try:
-        _pending.resolve(action_id, approved=True)
-    except KeyError as exc:
-        return f"error: {exc}"
-    return f"action {action_id!r} approved"
+    """Disabled: no authenticated human broker has been implemented."""
+    return "error: approval unavailable until an isolated, authenticated human broker exists"
 
 
 @mcp.tool()
