@@ -65,6 +65,28 @@ class P0PermissionDefaults(unittest.TestCase):
             for node in ast.walk(functions["approve_action"])
         ))
 
+    def test_legacy_manager_rejects_direct_file_patch_even_in_registered_workspace(self):
+        runner = CountingRunner()
+        manager = AgentManager()
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "task.py"
+            target.write_text("safe = True\\n", encoding="utf-8")
+            manager.spawn("s1", root, runner)
+            with self.assertRaises(PermissionError):
+                manager.apply_code_fix(str(target), "True", "False")
+            self.assertEqual(target.read_text(encoding="utf-8"), "safe = True\\n")
+
+    def test_mcp_direct_file_patch_is_denied(self):
+        tree = ast.parse((ROOT / "subagentbridge/server.py").read_text(encoding="utf-8"))
+        method = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "apply_code_fix")
+        # A direct MCP edit must be rejected, not delegated to a manager that can patch.
+        self.assertFalse(any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "apply_code_fix"
+            for node in ast.walk(method)
+        ))
+
     def test_mcp_spawn_permission_default_is_false(self):
         tree = ast.parse((ROOT / "subagentbridge/server.py").read_text(encoding="utf-8"))
         spawn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "spawn_agent")
