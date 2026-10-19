@@ -1,49 +1,51 @@
-# Security Notes — SubagentBridge
+# Security threat model — PR-00 (design / not enforced)
 
-## 1. Human-in-the-Loop (real implementation, addressing W4)
+**Status:** source-audited design; `AUTONOMY: OFF`. This document is a threat model, not a security certification. Governing rules: `docs/TEAM_RULES.md`. Detailed proposed controls: pinned Plan v3.1 in `artifacts/bootstrap/v3_1/candidate/`.
 
-`skip_permissions=True` by default is kept for convenience, but is no longer the only gate.
-A configurable **dangerous-operation allowlist** determines which `tool_call` events from a
-subagent get queued in `PendingActionQueue` instead of executing immediately:
+## Principals, assets and boundaries
 
-**Default gated operations (proposed):**
-- Shell commands matching `rm -rf`, `git push --force`, `git reset --hard`, `sudo`
-- Any file write outside the session's own `workspace_path`
-- Any network call to a domain not in an explicit allowlist
+| Principal | Trust | Permitted future capabilities |
+|---|---|---|
+| Human developer | Trusted decision maker, subject to explicit one-time approvals | Authorize exact operations through a channel unreachable by workers |
+| Antigravity IDE primary agent | Untrusted for human identity; orchestrates requests via MCP | Submit, inspect, cancel and ask; **not** issue human approvals |
+| Bridge control plane / policy engine | Privileged policy evaluator, must not execute arbitrary repo scripts | Deterministic gate, identity, ledger and QA state transitions |
+| PM / Developer / QA / Specialist worker | Potentially malicious or compromised despite role prompts | Role- and dispatch-scoped tools; workers never hold broker credentials |
+| Model / 9Router / repository file / skill / tool output | Untrusted input | Data only, cannot grant capabilities |
+| GitHub Actions / BVE verifier | Separate build evidence environment, **not** production executor | Execute read-only-approved bootstrap verification and report limitations |
+| Optional Orca | Untrusted external execution backend until isolated / tested | Session dispatch only; never human approval or QA VERIFICATION |
 
-The primary LLM must call `approve_action(action_id)` or `reject_action(action_id, reason)`
-before a gated action proceeds. `list_pending_actions()` lets it (or the human) see what's
-waiting.
+Protected assets: repository source and QA tests, Git trees and commits, credentials, broker secrets, audit/approval ledger, per-project worktrees, network and budget policy, execution receipts, QA verdicts and CI provenance.
 
-This is opt-out per session (`hitl_enabled: bool`, default `True`), not opt-in — the
-upstream design effectively defaulted to "off" via `skip_permissions=True` with no real gate
-underneath; this fixes that gap (W4).
+**Attacker model:** a worker may submit adversarial prompts/tool arguments, read untrusted files, forge stdout/stderr and simulated receipts, race retries and seek symlink/junction path escape. Treat any worker running under the broker's OS user on the same interactive desktop as able to inspect/drive that UI and potentially access same-user secrets. A Git worktree, a Job Object, a shell allowlist and a hash chain do not isolate this attacker. OS administrators may modify local SQLite logs; append-only means application-enforced, not tamper-proof against administrators.
 
-## 2. Workspace Boundary Enforcement (W3)
+## Current code hazards (not closed by PR-00)
 
-`apply_code_fix` must resolve the target path against the set of registered workspaces
-(`manager.get_all_workspaces()`). If that set is **empty**, the call is rejected — no
-fallthrough. Rationale: an empty workspace set almost certainly means the caller skipped
-`spawn_agent`, and silently allowing writes anywhere is a bigger risk than a slightly
-stricter error message.
+1. `subagentbridge/server.py` publishes `approve_action` over MCP; that call is not proof of human consent. `manager.PendingActionQueue.resolve` accepts a bare boolean.
+2. `skip_permissions=True` remains an unsafe default in baseline code. Do **not** enable autonomous execution or rely on this code as a safety gate.
+3. `manager._handle_event` sees a CLI event **after** the external tool may already have acted. Event parsing cannot substitute for pre-execution enforcement.
+4. `manager.check_path_in_workspace` accepts any registered workspace, not an ACL for the task and role. Path `resolve()` alone is insufficient against all races and platform-specific junction/reparse cases.
+5. `Session.kill()` kills one direct subprocess; Windows child processes and inherited handles are unverified.
+6. Retry instructions delivered in a prompt cannot guarantee exactly-once side effects. Persist idempotency keys and reconcile actions before retrying.
+7. `reset_stale_working_sessions()` marks old processes idle without reconciliation; `RECOVERY_REQUIRED` is needed.
+8. SQLite WAL preserves transaction semantics but is not an authenticated append-only audit log.
+9. Output or SHA reported by an LLM is an untrusted **claim**, never an `ExecutorReceipt`.
 
-## 3. Secrets Handling for API-backed Runners
+## Forward security contract and human decision D-03
 
-- `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` are read from environment variables only — never
-  accepted as a tool parameter, never logged, never written into `TEAM_MEMORY.md` or session
-  logs.
-- Wrapper scripts (`wrappers/*.py`) must redact any key material before printing anything to
-  stdout (which is captured verbatim into session logs and SQLite).
+Only after independent executable proof can a trusted approval broker issue operation-bound `Allow Once` / `Deny` / `Answer Questions`. No `Always Allow`, timeouts auto-approval, agent-issued resolution, or modified-operation reuse. **D-03 has not been decided**: (a) separate OS identity/container/VM for workers with broker outside; (b) genuinely out-of-band second-device approval; or (c) Phase-A chat approvals with autonomy permanently off.
 
-## 4. Retry Policy Safety (W2)
+A remote phone UI is **not automatically sufficient** if a same-user worker can steal pairing/session credentials or call the broker's local endpoint. Device origin, challenge binding, actor attestation and worker inaccessibility must all be proven by E18 red-team checks.
 
-Retries must not resend a prompt that already partially succeeded (e.g. already wrote files)
-without the subagent knowing — each retry attempt is told in-prompt that this is a retry and
-what the previous attempt's last known state was (from `full_log`), to avoid duplicate/
-conflicting edits.
+Repository tests/builds execute arbitrary code: `run-allowlisted-command` alone does not isolate them. Require verified `ISOLATED` execution under a separate identity/container/VM to enable autonomy. `RISK_ACCEPTED_SAME_IDENTITY` is a recorded human risk acceptance, **not** isolation and is incompatible with autonomous mode. The model-only tool proxy must be the exclusive side-effect path; unconfined raw-shell CLI workers are `UNSUPPORTED_ENFORCEMENT`.
 
-## 5. Process Cleanup (W1)
+**AG-1 autonomy gate stays closed** until D-03 and D-01 are decided, independent tests prove approval isolation E18 and source/test isolation, enforcement class is verified, and E05/E07/E16/E17 all pass. `AUTONOMY: OFF` is the unconditional PR-00 outcome.
 
-Every path that ends a session's wait (`timeout`, `kill_agent`, server shutdown) must
-guarantee the underlying OS process is terminated. No code path should return control to the
-caller while a subprocess is still alive but untracked.
+## Evidence, provenance and recovery
+
+Only Bridge-owned `ToolExecutor` may mint product `ExecutorReceipt` with exact task/dispatch, command argv, environment allowlist hash, exit code, stdout/stderr hashes, timestamps, clean checkout tree and executor identity. Fresh-session `BootstrapVerificationEvidence` (BVE) is separate and must never be accepted by product runtime as a receipt. PM and Developer never issue QA verdicts. QA independent tests cover every frozen acceptance criterion, and any tree change revokes VERIFIED.
+
+Gate changes to auth/secrets, dependencies, CI/deploy, schema/migrations/data deletion, pushes/history, outside-workspace writes, new network destinations, modified/skipped tests, waivers and material product tradeoffs. Record one-time operation fingerprints. Unknown credentials, network hosts, QA verdicts and process ownership must fail closed. A full immutable external ledger against same-user/privileged attacks is **not** claimed.
+
+## PR-00 scope and non-goals
+
+PR-00 documents and tests the missing guarantees; it does not implement a broker, tool executor, process sandbox, 9Router runtime, independent QA, Orca integration, or release gating. Named expected failures in baseline CI remain outstanding work and never count as proof that AG-1 passed.

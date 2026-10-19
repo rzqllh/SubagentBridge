@@ -1,0 +1,74 @@
+"""PR-00 unmet security contracts, not independently verified security tests.
+
+Each named expectedFailure is a deliberately unresolved design/behavior probe.
+Unittest exit 0 with xfails is NOT proof of an invariant. After a future PR
+actually enforces one invariant, add independent adversarial tests before
+lifting the expectedFailure marker (subject to human approval for test edits).
+"""
+from __future__ import annotations
+
+import inspect
+from pathlib import Path
+import unittest
+
+from subagentbridge.manager import AgentManager, PendingActionQueue
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "subagentbridge"
+
+
+class UnmetInvariantContracts(unittest.TestCase):
+    @unittest.expectedFailure
+    def test_INV_01_qa_verdict_and_receipts_required(self):
+        self.assertTrue((SRC / "qa").is_dir(), "No implemented QA gate for tree-bound receipts")
+
+    @unittest.expectedFailure
+    def test_INV_02_dev_pm_cannot_mint_verdicts_or_receipts(self):
+        self.assertTrue((SRC / "domain").is_dir(), "No role-scoped verdict/receipt issuer identity model")
+
+    @unittest.expectedFailure
+    def test_INV_03_human_gate_requires_separate_identity(self):
+        text = (SRC / "server.py").read_text(encoding="utf-8")
+        self.assertNotIn("def approve_action(action_id: str)", text, "Model-callable approval still exposed")
+
+    @unittest.expectedFailure
+    def test_INV_04_unanswered_approval_remains_blocked(self):
+        # Legacy only has a PendingActionQueue: no persisted task BLOCKED state.
+        self.assertTrue((SRC / "approval").is_dir(), "Human approval state machine not present")
+
+    @unittest.expectedFailure
+    def test_INV_05_changed_tree_revokes_verified(self):
+        self.assertTrue((SRC / "domain").is_dir(), "Verified tree binding and invalidation unavailable")
+
+    @unittest.expectedFailure
+    def test_INV_06_autonomous_side_effects_only_through_executor(self):
+        source = inspect.getsource(AgentManager._run_once)
+        self.assertNotIn("asyncio.create_subprocess_exec(", source, "Runner still launches unrestricted CLI")
+
+    @unittest.expectedFailure
+    def test_INV_07_repository_execution_isolated_from_broker(self):
+        self.assertTrue((SRC / "execution" / "isolation").exists(), "Isolated test runner missing")
+
+    @unittest.expectedFailure
+    def test_INV_08_workers_cannot_read_approval_secrets(self):
+        self.assertTrue((SRC / "approval" / "broker.py").is_file(), "No independently enforced broker")
+
+    @unittest.expectedFailure
+    def test_INV_09_stale_dispatch_cannot_complete_new_attempt(self):
+        self.assertTrue((SRC / "domain" / "dispatch.py").is_file(), "Dispatch idempotency model missing")
+
+    @unittest.expectedFailure
+    def test_INV_10_untrusted_skill_text_cannot_grant_permissions(self):
+        self.assertTrue((SRC / "skills").is_dir(), "Trust-aware skills registry missing")
+
+    @unittest.expectedFailure
+    def test_INV_11_budget_and_retry_limits_fail_closed(self):
+        self.assertTrue((SRC / "planner" / "budget.py").is_file(), "Budget enforcement unavailable")
+
+    @unittest.expectedFailure
+    def test_INV_12_production_never_registers_fake_principals(self):
+        self.assertTrue((SRC / "composition.py").is_file(), "No auditable production composition root")
+
+
+if __name__ == "__main__":
+    unittest.main()

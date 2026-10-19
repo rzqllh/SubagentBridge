@@ -1,0 +1,30 @@
+# PROPOSED ONLY. Requires an explicit Team Rules human approval before GitHub commit.
+name: PR-00 baseline contracts
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  baseline-unit-tests:
+    name: Baseline tests / ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.13']
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out exact PR commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 pin checked 2026-10-19
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5 pin checked 2026-10-19
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run baseline stdlib tests (NOT security certification)
+        run: python -B -m unittest discover -s tests -p 'test_*.py' -v

@@ -1,4 +1,4 @@
-# Test Plan — SubagentBridge
+# Test Plan — SubagentBridge (legacy scenarios plus v3.1 contract)
 
 | Test ID | Target | Scenario | Expected Result |
 |---|---|---|---|
@@ -20,3 +20,15 @@
 
 - Load testing with >10 concurrent sessions
 - Cross-platform (Windows) subprocess signal handling — Linux/macOS only for v1
+
+## PR-00 v3.1 baseline verification (no production safety claim)
+
+Run `python -B -m unittest discover -s tests -p 'test_*.py' -v` (stdlib, no package installation). `test_bootstrap_documents.py` retains original Team Rules/v2 provenance. `test_bootstrap_v31.py` validates v3.1 pinned artifact bytes independently. `test_legacy_security_gaps.py` and `test_invariants_contract.py` include explicitly labeled `expectedFailure` probes; their unresolved count must be reported as **UNVERIFIED** even when unittest returns exit 0. The test runner is not a production receipt issuer.
+
+An independent verifier must establish SHA/tree identity and clean checkout, construct scenarios from frozen criteria first, capture logs/exit status with the pinned BVE helper, then review the PR diff. External CI results count only after the verifier reads the actual run for that SHA. Linux-only helper tests do not establish Windows behavior. Current package has no verified runner or approval broker; tests of unrelated existing code are not an AG-1 pass.
+
+### Release gates (later PRs, not PR-00)
+
+Use E01–E21 in Plan v3.1: native/no-Orca full journey, negative same-user approval attacks, skills and tool injection, process-tree cleanup, dynamic worker cancellation, idempotent recovery, exact-tree executor receipts, independent QA verdict, budgets and model capability checks. Do not infer `VERIFIED` from a clean unittest/CI exit. T11's legacy `working→idle` expectation is **unsafe**: later recovery must reconcile process ownership and mark uncertainty `RECOVERY_REQUIRED`, not report idle.
+
+**Workflow context:** the exact approved CI file runs only stdlib baseline tests on Ubuntu and Windows (Python 3.11 and 3.13). It does not install `mcp`, execute arbitrary agent workers, or test the finished product.
