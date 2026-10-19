@@ -37,7 +37,6 @@ class ExistingBehaviorTests(unittest.TestCase):
 
 
 class KnownUnmetGuarantees(unittest.TestCase):
-    @unittest.expectedFailure
     def test_agent_cannot_self_approve_by_calling_queue(self):
         # Legacy API accepts approved=True with no authenticated human actor.
         queue = PendingActionQueue()
