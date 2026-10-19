@@ -474,13 +474,10 @@ class AgentManager:
     # ---- apply_code_fix (fix for W3) -----------------------------------
 
     def apply_code_fix(self, filepath: str, target: str, replacement: str) -> str:
-        self.check_path_in_workspace(filepath)  # raises, no fallthrough
-        path = Path(filepath)
-        content = path.read_text()
-        if target not in content:
-            raise ValueError(f"target text not found in {filepath}")
-        path.write_text(content.replace(target, replacement, 1))
-        return f"patched {filepath} (first occurrence of target replaced)"
+        """Disabled until a per-dispatch ToolExecutor owns file writes."""
+        raise PermissionError(
+            "direct file mutation disabled: no trusted per-dispatch ToolExecutor"
+        )
 
     # ---- introspection ---------------------------------------------------
 

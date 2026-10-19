@@ -126,17 +126,11 @@ async def kill_agent(session_id: str) -> str:
         return f"error: {exc}"
 
 
-@mcp.tool()
+# Legacy callable preserved but intentionally NOT registered as an MCP tool.
+# A worker cannot be given a direct path-writing capability before ToolExecutor.
 def apply_code_fix(filepath: str, target: str, replacement: str) -> str:
-    """
-    Surgical find/replace on a file. Hard-rejects if no workspace has ever
-    been registered, or if filepath falls outside every registered
-    workspace (fix for W3 — no silent fallthrough).
-    """
-    try:
-        return _manager.apply_code_fix(filepath, target, replacement)
-    except (WorkspaceBoundaryError, ValueError, FileNotFoundError) as exc:
-        return f"error: {exc}"
+    """Denied until the trusted per-dispatch ToolExecutor exists."""
+    return "error: direct file mutation unavailable until trusted ToolExecutor enforcement"
 
 
 # Kept only as a non-MCP compatibility callable; untrusted agents never
