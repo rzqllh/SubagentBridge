@@ -17,7 +17,6 @@ from .manager import (
     AgentManager,
     PendingActionQueue,
     SessionNotFoundError,
-    WorkspaceBoundaryError,
 )
 from .storage.sqlite_store import SQLiteStore
 

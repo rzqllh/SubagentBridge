@@ -18,11 +18,11 @@ Protected assets: repository source and QA tests, Git trees and commits, credent
 
 **Attacker model:** a worker may submit adversarial prompts/tool arguments, read untrusted files, forge stdout/stderr and simulated receipts, race retries and seek symlink/junction path escape. Treat any worker running under the broker's OS user on the same interactive desktop as able to inspect/drive that UI and potentially access same-user secrets. A Git worktree, a Job Object, a shell allowlist and a hash chain do not isolate this attacker. OS administrators may modify local SQLite logs; append-only means application-enforced, not tamper-proof against administrators.
 
-## Current code hazards (not closed by PR-00)
+## P0 containment and unresolved hazards (current PR-00 HEAD)
 
-1. `subagentbridge/server.py` publishes `approve_action` over MCP; that call is not proof of human consent. `manager.PendingActionQueue.resolve` accepts a bare boolean.
-2. `skip_permissions=True` remains an unsafe default in baseline code. Do **not** enable autonomous execution or rely on this code as a safety gate.
-3. `manager._handle_event` sees a CLI event **after** the external tool may already have acted. Event parsing cannot substitute for pre-execution enforcement.
+1. **Contained, not solved:** `approve_action` is no longer an MCP tool; the legacy Python callable returns a denial, and `manager.PendingActionQueue.resolve(..., approved=True)` fails closed. **No authenticated human broker exists**; denial-only behavior is not successful approval enforcement. `reject_action` remains exposed as an MCP tool for deny decisions, not proof of human-origin identity.
+2. **Contained, not solved:** `Session.skip_permissions` and the MCP spawn parameter now default to `False`; explicit `skip_permissions=True` and `hitl_enabled=False` are rejected. Both `send_message` and direct `_run_once` deny legacy runner execution before invoking the runner; direct manager/MCP `apply_code_fix` is disabled. This is an availability-limiting lockdown, not a functioning confined worker runtime.
+3. **Still missing:** the legacy `_handle_event` architecture would observe CLI tool calls only **after** external tools may have acted if execution were enabled. That is not pre-execution enforcement. The dormant subprocess code is not a trusted tool executor; `AUTONOMY: OFF` remains mandatory.
 4. `manager.check_path_in_workspace` accepts any registered workspace, not an ACL for the task and role. Path `resolve()` alone is insufficient against all races and platform-specific junction/reparse cases.
 5. `Session.kill()` kills one direct subprocess; Windows child processes and inherited handles are unverified.
 6. Retry instructions delivered in a prompt cannot guarantee exactly-once side effects. Persist idempotency keys and reconcile actions before retrying.
