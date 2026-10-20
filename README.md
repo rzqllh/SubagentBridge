@@ -1,59 +1,32 @@
 # SubagentBridge
 
-An MCP server that lets a primary agent inside **Antigravity IDE** delegate
-coding tasks to background subagents across multiple model backends — with
-automatic crash recovery, guaranteed process cleanup, and a real
-Human-in-the-Loop approval gate for destructive actions.
+Native-first, **experimental** MCP-based subagent supervisor under development for Antigravity IDE. The repository contains an initial MCP server, async session manager, runner interface and SQLite store; it is **not** an independently verified multi-agent engineering team or a security boundary.
 
-Architecturally inspired by [antigravity-mcp](https://github.com/Inferno-Aditya/antigravity-mcp)
-by Inferno-Aditya (MIT License). No code from that project is reused directly —
-see `THIRD_PARTY_NOTICES.md` for full attribution.
+## Current implementation status (PR-00)
 
-## Why
+- Source present: `subagentbridge/server.py`, `manager.py`, `storage/sqlite_store.py`, `runners/base.py`.
+- On `main`, the runner registry is empty. Names shown in legacy runner docs are proposed backends, **not supported active runners**. An unmerged `hardening/m2.5-runtime-safety` branch contains experimental runner and bootstrap work; it is not incorporated in this PR.
+- **P0 lockdown at this PR HEAD:** `approve_action` is retained only as a denied compatibility callable, **not** exposed as an MCP tool; the pending-action queue rejects positive approvals without a trusted broker. `skip_permissions` now defaults to `False`, and attempts to set it to `True` or disable HITL are rejected. Legacy worker execution and direct `apply_code_fix` writes are blocked before side effects. A true human approval broker, tool executor and OS confinement are **not implemented**. Reading CLI `tool_call` events after side effects is not pre-execution enforcement.
+- `Session.kill()` does not establish whole-process-tree termination on Windows; workspace checks are not scoped per dispatch/role; retry prompt reminders cannot establish idempotence.
+- **AUTONOMY: OFF.** Do not connect an unconfined CLI or use this experimental server for unattended privileged changes. No production security, recovery, QA VERIFIED, 9Router or Orca support is claimed.
+- Team Rules `docs/TEAM_RULES.md` is binding. See `docs/SECURITY.md`, `docs/INVARIANTS.md` and `docs/TEST_PLAN.md`.
 
-A review of antigravity-mcp's source found it didn't fully deliver on its own
-docs: timed-out subagents were left running, failed runs weren't retried, a
-workspace-boundary check could silently fall through, and the advertised
-"Human-in-the-Loop" safety gate didn't actually exist in code. SubagentBridge
-fixes all four and adds first-class support for GPT-5.6 (Sol/Luna) and
-DeepSeek V4 Flash as additional runners. Full rationale in `docs/PRD.md`.
+## Bootstrap baseline and verification
 
-## Status
+Active *planning* references: `artifacts/bootstrap/v3_1/ACTIVE_BASELINE.md`; v1/v2/v3 are archived, not silently rewritten. The v3.1 BVE helper captures bootstrap verification evidence, **not** product `ExecutorReceipt`s. PR-00 CI runs standard-library contract tests on Ubuntu and Windows but passing that CI, especially with named expected failures, is **not** production QA.
 
-🚧 Planning stage — see `docs/` for PRD, architecture, weakness tracker, API
-reference, runner spec, security notes, and test plan. Implementation not yet
-started.
+To run the PR-00 baseline tests (Python 3.11+):
 
-## Planned Tools
-
-| Tool | Purpose |
-|---|---|
-| `spawn_agent` | Start a new background subagent session |
-| `send_message` | Send a follow-up instruction to a session |
-| `wait_for_idle` | Block until a session finishes or times out (kills the process on timeout) |
-| `get_agent_status` / `list_agents` | Inspect running/finished sessions |
-| `get_model_usage` | Token/cost accounting per session |
-| `apply_code_fix` | Direct surgical find-replace patch, workspace-bounded |
-| `kill_agent` | Force-stop a session |
-| `approve_action` / `reject_action` | Resolve a pending HITL approval request |
-
-See `docs/API_REFERENCE.md` for full signatures.
-
-## Supported Runners
-
-- `agy` — Antigravity IDE's own agent
-- `claude` — Claude Code
-- `gpt_sol` — GPT-5.6 Sol/Luna *(planned)*
-- `deepseek` — DeepSeek V4 Flash *(planned)*
-
-## Setup (planned)
-
-```bash
-pip install -r requirements.txt
+```sh
+python -B -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-Add to Antigravity's `mcp_config.json` — see `mcp_config.example.json`.
+The tests currently have known unmet security invariants marked `expectedFailure`. These are a visible **red security backlog**; any `unexpected success` requires investigation and independent review, not a silent acceptance. No dependency installation is required for these tests.
 
-## License
+## Roadmap
 
-MIT — see `LICENSE`. Third-party attribution in `THIRD_PARTY_NOTICES.md`.
+Follow the versioned Plan v3.1 through separate, independently verified PRs: domain/state contracts, durable audit, human approval and OS trust boundary, tool-proxy executor, 9Router worker runtime, PM/Developer/QA team, skills, messaging, independent QA, Antigravity, optional Orca, then release hardening. Orca is **never** required for native mode.
+
+## Attribution and license
+
+Design references are credited in `THIRD_PARTY_NOTICES.md`. Repository license is in `LICENSE`. This PR does not add or change a dependency or a license.

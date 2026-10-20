@@ -17,7 +17,6 @@ from .manager import (
     AgentManager,
     PendingActionQueue,
     SessionNotFoundError,
-    WorkspaceBoundaryError,
 )
 from .storage.sqlite_store import SQLiteStore
 
@@ -47,7 +46,7 @@ def spawn_agent(
     model: str | None = None,
     agent_type: str | None = None,
     reasoning_effort: str | None = None,
-    skip_permissions: bool = True,
+    skip_permissions: bool = False,
     hitl_enabled: bool = True,
     max_retries: int = DEFAULT_MAX_RETRIES,
 ) -> str:
@@ -68,7 +67,7 @@ def spawn_agent(
             hitl_enabled=hitl_enabled,
             max_retries=max_retries,
         )
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         return f"error: {exc}"
     return f"spawned session {session_id!r} on runner {runner!r}"
 
@@ -78,7 +77,7 @@ async def send_message(session_id: str, message: str) -> str:
     """Queue a prompt for a session. Fails if the session is already working."""
     try:
         await _manager.send_message(session_id, message)
-    except (SessionNotFoundError, RuntimeError) as exc:
+    except (SessionNotFoundError, RuntimeError, PermissionError) as exc:
         return f"error: {exc}"
     return f"message queued for session {session_id!r}"
 
@@ -126,27 +125,18 @@ async def kill_agent(session_id: str) -> str:
         return f"error: {exc}"
 
 
-@mcp.tool()
+# Legacy callable preserved but intentionally NOT registered as an MCP tool.
+# A worker cannot be given a direct path-writing capability before ToolExecutor.
 def apply_code_fix(filepath: str, target: str, replacement: str) -> str:
-    """
-    Surgical find/replace on a file. Hard-rejects if no workspace has ever
-    been registered, or if filepath falls outside every registered
-    workspace (fix for W3 — no silent fallthrough).
-    """
-    try:
-        return _manager.apply_code_fix(filepath, target, replacement)
-    except (WorkspaceBoundaryError, ValueError, FileNotFoundError) as exc:
-        return f"error: {exc}"
+    """Denied until the trusted per-dispatch ToolExecutor exists."""
+    return "error: direct file mutation unavailable until trusted ToolExecutor enforcement"
 
 
-@mcp.tool()
+# Kept only as a non-MCP compatibility callable; untrusted agents never
+# receive an approval tool. There is no trusted human broker in P0.
 def approve_action(action_id: str) -> str:
-    """Approve a pending gated action so the waiting subagent can proceed (W4)."""
-    try:
-        _pending.resolve(action_id, approved=True)
-    except KeyError as exc:
-        return f"error: {exc}"
-    return f"action {action_id!r} approved"
+    """Disabled: no authenticated human broker has been implemented."""
+    return "error: approval unavailable until an isolated, authenticated human broker exists"
 
 
 @mcp.tool()
