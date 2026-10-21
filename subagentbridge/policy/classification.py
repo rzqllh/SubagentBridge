@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 import json
-from typing import Any
 
 
 class GateCategory(str, Enum):
@@ -39,10 +38,19 @@ class OperationRequest:
     resource: str
 
     def __post_init__(self) -> None:
-        if not all((self.task_id, self.dispatch_id, self.policy_revision, self.operation, self.resource)):
-            raise ValueError("operation must bind task, dispatch, policy, action and resource")
-        if type(self.argv) not in (list, tuple) or not all(type(x) is str for x in self.argv):
-            raise ValueError("argv must be a list/tuple of strings")
+        for label, value, limit in (
+            ('task_id', self.task_id, 256), ('dispatch_id', self.dispatch_id, 256),
+            ('policy_revision', self.policy_revision, 256),
+            ('operation', self.operation, 256), ('resource', self.resource, 4096),
+        ):
+            if (type(value) is not str or not value.strip() or len(value) > limit
+                    or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
+                raise ValueError(f'{label} must be bounded printable text')
+        if (type(self.argv) not in (list, tuple) or len(self.argv) > 64
+                or not all(type(x) is str and x and len(x) <= 4096
+                           and not any(ord(ch) < 32 or ord(ch) == 127 for ch in x)
+                           for x in self.argv)):
+            raise ValueError('argv must be bounded printable argument strings')
         object.__setattr__(self, 'argv', tuple(self.argv))
 
 
@@ -88,9 +96,30 @@ _RULES = {
 }
 
 
+# Only these exact, inspect-only argv spellings may accompany task.inspect.
+# A file.read request identifies the file in `resource`, never executable argv.
+# This conservative table is classification, NOT permission to execute any argv.
+_INSPECTION_ARGV = frozenset({
+    ('git', 'status', '--porcelain'),
+    ('git', 'rev-parse', 'HEAD'),
+    ('git', 'rev-parse', 'HEAD^{tree}'),
+})
+
+
 def classify(request: OperationRequest) -> GateDecision:
-    """Unknown operations fail closed. Reads still require separate scoped ACLs."""
+    """Fail closed on an operation/argv mismatch, even for claimed reads.
+
+    An adversary can label `git push` as `file.read`. No unknown or mismatched
+    intent may evade the human gate. Even valid reads remain unauthorized here;
+    a separate scoped executor and identity boundary are mandatory.
+    """
     if not isinstance(request, OperationRequest):
         raise TypeError("OperationRequest required")
     cat = _RULES.get(request.operation, GateCategory.UNKNOWN)
+    if cat is GateCategory.READ:
+        if request.operation == 'file.read' and request.argv:
+            return GateDecision(GateCategory.UNKNOWN, True, reason='file.read cannot execute argv')
+        if (request.operation == 'task.inspect' and request.argv
+                and request.argv not in _INSPECTION_ARGV):
+            return GateDecision(GateCategory.UNKNOWN, True, reason='inspection argv is not allowlisted')
     return GateDecision(cat, cat is not GateCategory.READ)
