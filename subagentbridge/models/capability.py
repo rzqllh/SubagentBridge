@@ -18,12 +18,23 @@ class ModelCapabilities:
     input_cost_known:bool
     output_cost_known:bool
     def __post_init__(self):
-        if not self.model_id or any(type(v) not in (bool,type(None)) for v in (self.tool_calls,self.structured_output,self.streaming)):
+        if (type(self.model_id) is not str or not self.model_id.strip()
+                or len(self.model_id) > 256 or any(ord(c) < 32 for c in self.model_id)
+                or any(type(v) not in (bool, type(None)) for v in
+                       (self.tool_calls, self.structured_output, self.streaming))
+                or type(self.input_cost_known) is not bool
+                or type(self.output_cost_known) is not bool):
             raise ValueError('valid discovered model and capability flags required')
 
 class ModelRoutingTable:
     def __init__(self, models:Iterable[ModelCapabilities]):
-        self._models={m.model_id:m for m in models}
+        self._models: dict[str, ModelCapabilities] = {}
+        for model in models:
+            if not isinstance(model, ModelCapabilities):
+                raise ValueError('model capability records required')
+            if model.model_id in self._models:
+                raise ValueError('duplicate discovered model identity')
+            self._models[model.model_id] = model
     def select(self, requested_ids:Iterable[str], *, coding:bool=False, structured:bool=False, streaming:bool=False)->ModelCapabilities:
         for ident in requested_ids:
             m=self._models.get(ident)
