@@ -14,11 +14,13 @@ class TaskSnapshot:
     evidence_ids: tuple[str,...]
 
 class SnapshotReadApi:
-    def __init__(self, runs: Mapping[str,tuple[TaskSnapshot,...]]):
-        self._runs=dict(runs)
+    def __init__(self, runs: Mapping[str, tuple[TaskSnapshot, ...]]):
+        self._runs = dict(runs)
+
     def get_run(self, run_id: str) -> dict:
-        tasks=self._runs.get(run_id)
-        if tasks is None: return {'status':'NOT_FOUND','run_id':run_id}
+        tasks = self._runs.get(run_id)
+        if tasks is None:
+            return {'status': 'NOT_FOUND', 'run_id': run_id}
         return {'run_id':run_id,'status':'READ_ONLY','task_count':len(tasks)}
     def list_tasks(self, run_id: str) -> tuple[dict,...]:
         return tuple({'task_id':t.task_id,'status':t.status} for t in self._runs.get(run_id,()))

@@ -24,8 +24,15 @@ class ClassificationTests(unittest.TestCase):
         self.assertTrue(d.human_gate_required)
         self.assertFalse(d.execution_authorized)
 
-    def test_read_does_not_imply_permission(self):
-        d=classify(self.op('file.read'))
+    def test_read_with_argv_mismatch_fails_closed_as_unknown(self):
+        d = classify(self.op('file.read'))
+        self.assertEqual(d.category, GateCategory.UNKNOWN)
+        self.assertTrue(d.human_gate_required)
+        self.assertFalse(d.execution_authorized)
+
+    def test_legitimate_read_without_argv_does_not_require_gate(self):
+        clean_read = replace(self.op('file.read'), argv=())
+        d = classify(clean_read)
         self.assertEqual(d.category, GateCategory.READ)
         self.assertFalse(d.human_gate_required)
         self.assertFalse(d.execution_authorized)

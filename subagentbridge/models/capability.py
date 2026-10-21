@@ -7,16 +7,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-class UnknownCapability(ValueError):pass
+class UnknownCapability(ValueError):
+    pass
 
-@dataclass(frozen=True,slots=True)
+
+@dataclass(frozen=True, slots=True)
 class ModelCapabilities:
-    model_id:str
-    tool_calls:bool|None
-    structured_output:bool|None
-    streaming:bool|None
-    input_cost_known:bool
-    output_cost_known:bool
+    model_id: str
+    tool_calls: bool | None
+    structured_output: bool | None
+    streaming: bool | None
+    input_cost_known: bool
+    output_cost_known: bool
+
     def __post_init__(self):
         if (type(self.model_id) is not str or not self.model_id.strip()
                 or len(self.model_id) > 256 or any(ord(c) < 32 for c in self.model_id)
@@ -26,8 +29,9 @@ class ModelCapabilities:
                 or type(self.output_cost_known) is not bool):
             raise ValueError('valid discovered model and capability flags required')
 
+
 class ModelRoutingTable:
-    def __init__(self, models:Iterable[ModelCapabilities]):
+    def __init__(self, models: Iterable[ModelCapabilities]):
         self._models: dict[str, ModelCapabilities] = {}
         for model in models:
             if not isinstance(model, ModelCapabilities):
@@ -35,12 +39,17 @@ class ModelRoutingTable:
             if model.model_id in self._models:
                 raise ValueError('duplicate discovered model identity')
             self._models[model.model_id] = model
-    def select(self, requested_ids:Iterable[str], *, coding:bool=False, structured:bool=False, streaming:bool=False)->ModelCapabilities:
+
+    def select(self, requested_ids: Iterable[str], *, coding: bool = False, structured: bool = False, streaming: bool = False) -> ModelCapabilities:
         for ident in requested_ids:
-            m=self._models.get(ident)
-            if m is None:continue
-            if coding and m.tool_calls is not True:continue
-            if structured and m.structured_output is not True:continue
-            if streaming and m.streaming is not True:continue
+            m = self._models.get(ident)
+            if m is None:
+                continue
+            if coding and m.tool_calls is not True:
+                continue
+            if structured and m.structured_output is not True:
+                continue
+            if streaming and m.streaming is not True:
+                continue
             return m
         raise UnknownCapability('no model with independently confirmed required capabilities')

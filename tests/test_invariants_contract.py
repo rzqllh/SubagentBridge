@@ -20,11 +20,13 @@ SRC = ROOT / "subagentbridge"
 class UnmetInvariantContracts(unittest.TestCase):
     @unittest.expectedFailure
     def test_INV_01_qa_verdict_and_receipts_required(self):
-        self.assertTrue((SRC / "qa").is_dir(), "No implemented QA gate for tree-bound receipts")
+        from subagentbridge.server import _manager
+        self.assertTrue(hasattr(_manager, "verify_with_executor_receipt"), "Production manager lacks receipt-based verification enforcement")
 
     @unittest.expectedFailure
     def test_INV_02_dev_pm_cannot_mint_verdicts_or_receipts(self):
-        self.assertTrue((SRC / "domain").is_dir(), "No role-scoped verdict/receipt issuer identity model")
+        from subagentbridge.server import _manager
+        self.assertTrue(hasattr(_manager, "enforce_principal_role_boundary"), "Production manager lacks principal role-boundary enforcement for receipts/verdicts")
 
     @unittest.expectedFailure
     def test_INV_03_human_gate_requires_separate_identity(self):
@@ -38,7 +40,8 @@ class UnmetInvariantContracts(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_INV_05_changed_tree_revokes_verified(self):
-        self.assertTrue((SRC / "domain").is_dir(), "Verified tree binding and invalidation unavailable")
+        from subagentbridge.server import _manager
+        self.assertTrue(hasattr(_manager, "reconcile_tree_invalidation"), "Production manager lacks automatic tree-change invalidation engine")
 
     @unittest.expectedFailure
     def test_INV_06_autonomous_side_effects_only_through_executor(self):
@@ -59,11 +62,13 @@ class UnmetInvariantContracts(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_INV_10_untrusted_skill_text_cannot_grant_permissions(self):
-        self.assertTrue((SRC / "skills").is_dir(), "Trust-aware skills registry missing")
+        from subagentbridge.server import _manager
+        self.assertTrue(hasattr(_manager, "execute_with_skill_trust_boundary"), "Production manager lacks skill trust-boundary execution")
 
     @unittest.expectedFailure
     def test_INV_11_budget_and_retry_limits_fail_closed(self):
-        self.assertTrue((SRC / "planner" / "budget.py").is_file(), "Budget enforcement unavailable")
+        from subagentbridge.server import _manager
+        self.assertTrue(hasattr(_manager, "durable_budget_ledger"), "Production manager lacks persistent transactional budget ledger")
 
     @unittest.expectedFailure
     def test_INV_12_production_never_registers_fake_principals(self):

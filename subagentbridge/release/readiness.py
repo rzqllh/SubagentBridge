@@ -17,9 +17,11 @@ class ReleaseDecision:
 class ReleaseGate:
     @staticmethod
     def evaluate(evidence: Mapping[str,str])->ReleaseDecision:
-        missing=tuple(k for k in REQUIRED if evidence.get(k) != 'PASS')
-        rejected=tuple(k for k in REQUIRED if evidence.get(k)=='REJECTED')
-        if rejected:return ReleaseDecision('REJECTED',missing,rejected)
-        if missing:return ReleaseDecision('UNVERIFIED',missing,())
+        missing = tuple(k for k in REQUIRED if evidence.get(k) != 'PASS')
+        rejected = tuple(k for k in REQUIRED if evidence.get(k) == 'REJECTED')
+        if rejected:
+            return ReleaseDecision('REJECTED', missing, rejected)
+        if missing:
+            return ReleaseDecision('UNVERIFIED', missing, ())
         # Caller-supplied strings are claims, not authenticated verifier evidence.
         return ReleaseDecision('CLAIMS_PRESENT_UNVERIFIED',(),())

@@ -46,8 +46,12 @@ class LedgerTests(unittest.TestCase):
     def test_mutation_detection(self):
         self.ledger.append(stream='a', idempotency_key='x', event_type='X', payload={'x': 1})
         self.ledger.append(stream='a', idempotency_key='y', event_type='Y', payload={'x': 2})
-        with sqlite3.connect(self.db) as evil:
-            evil.execute("UPDATE audit_events SET payload_json='{}' WHERE seq=1")
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                conn.execute("UPDATE audit_events SET payload_json='{}' WHERE seq=1")
+        finally:
+            conn.close()
         with self.assertRaises(LedgerIntegrityError):
             self.ledger.verify(stream='a')
         with self.assertRaises(LedgerIntegrityError):
@@ -56,8 +60,12 @@ class LedgerTests(unittest.TestCase):
     def test_tail_truncation_requires_external_anchor(self):
         self.ledger.append(stream='a', idempotency_key='x', event_type='X', payload={})
         old_tail = self.ledger.verify(stream='a')
-        with sqlite3.connect(self.db) as evil:
-            evil.execute("DELETE FROM audit_events WHERE stream='a'")
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                conn.execute("DELETE FROM audit_events WHERE stream='a'")
+        finally:
+            conn.close()
         self.assertEqual(self.ledger.verify(stream='a'), GENESIS)
         with self.assertRaises(LedgerIntegrityError):
             self.ledger.verify(stream='a', expected_tail=old_tail)
@@ -97,8 +105,12 @@ class LedgerTests(unittest.TestCase):
 
     def test_broken_migration_version_rejected(self):
         self.ledger.close()
-        with sqlite3.connect(self.db) as c:
-            c.execute("UPDATE audit_schema SET version=99 WHERE component='ledger'")
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                conn.execute("UPDATE audit_schema SET version=99 WHERE component='ledger'")
+        finally:
+            conn.close()
         with self.assertRaises(LedgerIntegrityError):
             AuditLedger(self.db)
         self.ledger = AuditLedger.__new__(AuditLedger)
@@ -111,8 +123,13 @@ class LedgerTests(unittest.TestCase):
             self.ledger.append(stream='a', idempotency_key='x', event_type='X', payload={'nan':float('nan')})
 
     def test_existing_legacy_schema_remains_unchanged(self):
-        with sqlite3.connect(self.db) as c:
-            self.assertFalse(c.execute("SELECT name FROM sqlite_master WHERE name='sessions'").fetchone())
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                row = conn.execute("SELECT name FROM sqlite_master WHERE name='sessions'").fetchone()
+                self.assertFalse(row)
+        finally:
+            conn.close()
 
 
 if __name__ == '__main__':
