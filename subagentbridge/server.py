@@ -21,7 +21,23 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:
+    class FastMCP:  # type: ignore[no-redef]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._tool_manager = None
+            self.tools: dict[str, object] = {}
+
+        def tool(self, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            def decorator(fn):  # type: ignore[no-untyped-def]
+                return fn
+            return decorator
+
+        def resource(self, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            def decorator(fn):  # type: ignore[no-untyped-def]
+                return fn
+            return decorator
 
 from . import runners as runner_registry
 from .composition import ProductionSystem, build_production_system

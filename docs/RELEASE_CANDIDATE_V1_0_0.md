@@ -22,8 +22,8 @@ Packaging has been completed and verified by installing the built wheel artifact
 
 | Distribution File | Format | Size | SHA-256 Checksum |
 |---|---|---|---|
-| `subagentbridge-1.0.0rc1-py3-none-any.whl` | Wheel (Built Distribution) | 65,404 bytes | `117ff329a60b61bc093dde98375f0f0d5061b5e3b1c8a4f8d2d52bb2252e6aa6` |
-| `subagentbridge-1.0.0rc1.tar.gz` | sdist (Source Archive) | 85,702 bytes | `83c82fd7e64fbde7a328ef5516bb23c1e76f291cd4b647562a186d10739a282f` |
+| `subagentbridge-1.0.0rc1-py3-none-any.whl` | Wheel (Built Distribution) | 65,715 bytes | `89d3fce7f20623e8ba46c4ee597fc1707b126c920327c184ab729568f2171949` |
+| `subagentbridge-1.0.0rc1.tar.gz` | sdist (Source Archive) | 86,088 bytes | `aefe6daea0ed49ceed3a6f4802ab802eb13db2b2114af9f4488d1874462984dc` |
 
 ---
 
