@@ -111,7 +111,24 @@ class AuditLedger:
             self._conn.close()
 
     def append(self, *, stream: str, idempotency_key: str, event_type: str, payload: Mapping[str, Any]) -> AuditEvent:
-        if not isinstance(stream, str) or not stream.strip() or not isinstance(idempotency_key, str) or not idempotency_key.strip() or not isinstance(event_type, str) or not event_type.strip():
+        """Append once or return the existing exact record (legacy interface)."""
+        event, _created = self.append_once(
+            stream=stream, idempotency_key=idempotency_key,
+            event_type=event_type, payload=payload)
+        return event
+
+    def append_once(self, *, stream: str, idempotency_key: str,
+                    event_type: str, payload: Mapping[str, Any]) -> tuple[AuditEvent, bool]:
+        """Atomically append/replay; bool is True only for the first write.
+
+        BEGIN IMMEDIATE serializes writers across independent SQLite connections.
+        Callers must not substitute a prior read() as a duplicate check. A
+        repeated key with changed event type/payload is always an error.
+        This is application-level idempotency, not authenticated messaging.
+        """
+        if (not isinstance(stream, str) or not stream.strip()
+                or not isinstance(idempotency_key, str) or not idempotency_key.strip()
+                or not isinstance(event_type, str) or not event_type.strip()):
             raise ValueError("nonempty stream, key and event type required")
         if not isinstance(payload, Mapping):
             raise ValueError("payload must be a mapping")
@@ -120,22 +137,29 @@ class AuditLedger:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                # Fail closed if the existing chain is broken before appending.
                 existing = self._read_rows(stream)
                 self._check_rows(stream, existing)
-                replay = self._conn.execute("SELECT seq, event_type, payload_json, prev_sha, event_sha FROM audit_events WHERE stream=? AND idempotency_key=?", (stream, idempotency_key)).fetchone()
+                replay = self._conn.execute(
+                    "SELECT seq, event_type, payload_json, prev_sha, event_sha "
+                    "FROM audit_events WHERE stream=? AND idempotency_key=?",
+                    (stream, idempotency_key)).fetchone()
                 if replay:
                     seq, old_type, old_payload, prior, digest = replay
                     if old_type != event_type or old_payload != payload_json:
                         raise ReplayConflict("idempotency key reused for a different event")
                     self._conn.execute("COMMIT")
-                    return AuditEvent(stream, seq, idempotency_key, event_type, data, prior, digest)
+                    return AuditEvent(stream, seq, idempotency_key, event_type,
+                                      data, prior, digest), False
                 seq = len(existing) + 1
                 prev = existing[-1][4] if existing else GENESIS
                 digest = _digest(stream, seq, idempotency_key, event_type, payload_json, prev)
-                self._conn.execute("INSERT INTO audit_events (stream, seq, idempotency_key, event_type, payload_json, prev_sha, event_sha) VALUES (?, ?, ?, ?, ?, ?, ?)", (stream, seq, idempotency_key, event_type, payload_json, prev, digest))
+                self._conn.execute(
+                    "INSERT INTO audit_events (stream, seq, idempotency_key, event_type, "
+                    "payload_json, prev_sha, event_sha) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (stream, seq, idempotency_key, event_type, payload_json, prev, digest))
                 self._conn.execute("COMMIT")
-                return AuditEvent(stream, seq, idempotency_key, event_type, data, prev, digest)
+                return AuditEvent(stream, seq, idempotency_key, event_type,
+                                  data, prev, digest), True
             except BaseException:
                 self._conn.execute("ROLLBACK")
                 raise
