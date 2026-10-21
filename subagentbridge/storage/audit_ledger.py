@@ -7,6 +7,7 @@ No existing runtime path is enabled by importing this module.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import closing
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -171,7 +172,7 @@ class AuditLedger:
         if destination.resolve() == self.path.resolve():
             raise ValueError("backup cannot overwrite its source")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock, sqlite3.connect(destination) as dest:
+        with self._lock, closing(sqlite3.connect(destination)) as dest:
             self._conn.backup(dest)
 
     def note_unreconciled(self, *, stream: str, session_id: str, cause: str) -> None:
@@ -186,11 +187,44 @@ class AuditLedger:
             return row[0] if row else None
 
     def reconcile_closed(self, *, stream: str, session_id: str, evidence_key: str) -> None:
-        if not evidence_key:
-            raise ValueError("reconciliation needs evidence key")
+        """Atomically append reconciliation proof and close recovery state.
+
+        The old implementation committed the event before updating the
+        recovery row. A failed update could leave an apparent reconciliation
+        receipt but an unresolved session. Both operations now share one
+        SQLite IMMEDIATE transaction. This does not establish OS ownership
+        or genuine process termination; evidence_key is still caller-claimed.
+        """
+        if not (stream and session_id and evidence_key):
+            raise ValueError("reconciliation needs scoped stream/session/evidence")
         with self._lock:
-            row = self._conn.execute("SELECT state FROM recovery_state WHERE stream=? AND session_id=?", (stream, session_id)).fetchone()
-            if row is None or row[0] != "RECOVERY_REQUIRED":
-                raise ValueError("no unresolved recovery checkpoint")
-            self.append(stream=stream, idempotency_key=evidence_key, event_type="RECOVERY_RECONCILED", payload={"session_id": session_id, "evidence_key": evidence_key})
-            self._conn.execute("UPDATE recovery_state SET state='RECONCILED_CLOSED' WHERE stream=? AND session_id=?", (stream, session_id))
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT state FROM recovery_state WHERE stream=? AND session_id=?",
+                    (stream, session_id)).fetchone()
+                if row is None or row[0] != "RECOVERY_REQUIRED":
+                    raise ValueError("no unresolved recovery checkpoint")
+                existing = self._read_rows(stream)
+                self._check_rows(stream, existing)
+                key = "recovery:" + session_id + ":" + evidence_key
+                if self._conn.execute(
+                    "SELECT 1 FROM audit_events WHERE stream=? AND idempotency_key=?",
+                    (stream, key)).fetchone():
+                    raise ReplayConflict("reconciliation key already used")
+                data = {"session_id": session_id, "evidence_key": evidence_key}
+                payload_json = _canonical(data)
+                seq = len(existing) + 1
+                prev = existing[-1][4] if existing else GENESIS
+                digest = _digest(stream, seq, key, "RECOVERY_RECONCILED", payload_json, prev)
+                self._conn.execute(
+                    "INSERT INTO audit_events (stream, seq, idempotency_key, event_type, "
+                    "payload_json, prev_sha, event_sha) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (stream, seq, key, "RECOVERY_RECONCILED", payload_json, prev, digest))
+                self._conn.execute(
+                    "UPDATE recovery_state SET state='RECONCILED_CLOSED' "
+                    "WHERE stream=? AND session_id=?", (stream, session_id))
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
