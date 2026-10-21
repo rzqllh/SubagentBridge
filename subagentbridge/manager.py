@@ -237,7 +237,10 @@ class AgentManager:
         self.store.reset_stale_working_sessions()
         rows = self.store.load_all_sessions()
         for row in rows:
-            runner = runner_registry.get_runner(row["runner_name"])
+            try:
+                runner = runner_registry.get_runner(row["runner_name"])
+            except KeyError:
+                continue
             session = Session(
                 session_id=row["session_id"],
                 workspace_path=row["workspace_path"],
