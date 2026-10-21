@@ -58,8 +58,13 @@ class BudgetLedger:
 def validate_task_dag(dependencies: Mapping[str, tuple[str, ...]],
                       acceptance_criteria: Mapping[str, tuple[str, ...]]) -> tuple[str, ...]:
     """Validate a frozen DAG iteratively, including large/deep task plans."""
-    if not dependencies or set(dependencies) != set(acceptance_criteria):
+    if (not isinstance(dependencies, Mapping) or
+            not isinstance(acceptance_criteria, Mapping) or not dependencies or
+            set(dependencies) != set(acceptance_criteria)):
         raise ValueError('complete task list and AC required')
+    if any(type(task) is not str or not task.strip() or len(task) > 256
+           for task in dependencies):
+        raise ValueError('task IDs must be bounded nonempty text')
     for task, ac in acceptance_criteria.items():
         if (type(task) is not str or not task.strip()
                 or not isinstance(ac, (tuple, list)) or not ac
@@ -69,7 +74,7 @@ def validate_task_dag(dependencies: Mapping[str, tuple[str, ...]],
     graph = {}
     for task, deps in dependencies.items():
         if (not isinstance(deps, (list, tuple))
-                or any(type(dep) is not str or not dep.strip() for dep in deps)
+                or any(type(dep) is not str or not dep.strip() or len(dep) > 256 for dep in deps)
                 or len(set(deps)) != len(deps)):
             raise ValueError('dependencies must have unique valid IDs')
         graph[task] = tuple(deps)
