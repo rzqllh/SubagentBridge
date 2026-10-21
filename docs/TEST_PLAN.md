@@ -1,4 +1,6 @@
-# Test Plan — SubagentBridge (legacy scenarios plus v3.1 contract)
+# Test Plan — SubagentBridge (historical scenarios and PR-00 v3.1 contract)
+
+**The T1–T13 table below is a historical planned v1 test plan, NOT a list of currently passing implementation tests.** PR-00 P0 lockdown intentionally disables direct legacy worker execution, direct file edits, and positive approval calls. Tests expecting those actions to succeed are inapplicable until a trusted approval broker and ToolExecutor are separately implemented and independently verified.
 
 | Test ID | Target | Scenario | Expected Result |
 |---|---|---|---|
@@ -31,4 +33,4 @@ An independent verifier must establish SHA/tree identity and clean checkout, con
 
 Use E01–E21 in Plan v3.1: native/no-Orca full journey, negative same-user approval attacks, skills and tool injection, process-tree cleanup, dynamic worker cancellation, idempotent recovery, exact-tree executor receipts, independent QA verdict, budgets and model capability checks. Do not infer `VERIFIED` from a clean unittest/CI exit. T11's legacy `working→idle` expectation is **unsafe**: later recovery must reconcile process ownership and mark uncertainty `RECOVERY_REQUIRED`, not report idle.
 
-**Workflow context:** the exact approved CI file runs only stdlib baseline tests on Ubuntu and Windows (Python 3.11 and 3.13). It does not install `mcp`, execute arbitrary agent workers, or test the finished product.
+**Workflow context at the pinned QA-rejected HEAD:** the approved CI runs only stdlib baseline tests on Ubuntu and Windows (Python 3.11 and 3.13). PR-00 QA identified missing lint/type/static-security gates (F2); those are not satisfied until an additionally approved workflow runs the actual tools and their findings are resolved. CI does not certify an authenticated broker, isolated worker, or the finished product.
