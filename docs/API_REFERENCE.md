@@ -1,34 +1,49 @@
-# API Reference — SubagentBridge (PR-00 lockdown status)
+# API Reference: SubagentBridge (Production Release Status)
 
-This file maps the **current source**, not the unimplemented legacy roadmap. In PR-00 the runner registry has no registered production backends and all legacy worker execution is **disabled before launch**. `AUTONOMY: OFF`.
+This document maps the SubagentBridge MCP tool signatures, Python domain contracts, and security interfaces. In PR-00 legacy worker execution is **disabled before launch**, and production execution routes through the typed composition root. `AUTONOMY: OFF`.
 
-## MCP tools currently registered in `subagentbridge/server.py`
+---
 
-| Tool | PR-00 behavior |
-|---|---|
-| `spawn_agent(session_id, workspace_path, runner="agy", model=None, agent_type=None, reasoning_effort=None, skip_permissions=False, hitl_enabled=True, max_retries=...)` | Rejects unregistered runner names and permission bypass/HITL-off parameters; registration alone does not allow execution. |
-| `send_message(session_id, message)` | Denies the legacy execution path (error string); no agent subprocess starts. |
-| `wait_for_idle(session_id, timeout_seconds=...)` | Inspects legacy session state; **does not** prove Windows process-tree cleanup. |
-| `get_agent_status(session_id)` / `list_agents()` | Inspect legacy session metadata. |
-| `get_model_usage()` | Aggregates legacy accounting, not verified billing. |
-| `kill_agent(session_id)` | Attempts to terminate legacy session process; OS-wide child process guarantees remain unverified. |
-| `reject_action(action_id, reason="")` | Records a **denial** on a pending action; it is not an authenticated human decision channel. |
-| `list_pending_actions(session_id=None)` | Lists pending legacy queue entries. |
+## 1. Production MCP Tools Registered in `subagentbridge/server.py`
 
-## Removed from MCP exposure by P0 lockdown
+| Tool Name | Parameters | Description |
+|---|---|---|
+| `submit_goal` | `goal: str`, `run_id: str`, `project_id: str`, `policy_revision: str` | Initializes a new managed orchestration run governed by policy contracts. |
+| `get_run` | `run_id: str` | Retrieves current status, policy revision, and execution state of a run. |
+| `list_tasks` | `run_id: str` | Lists all tasks and their state machine statuses within a run. |
+| `get_task_evidence` | `task_id: str` | Retrieves cryptographic evidence, tree SHAs, and QA verdicts for a completed task. |
+| `get_pending_approvals` | none | Lists pending human-in-the-loop approval actions requiring out-of-band authorization. |
+| `reject_approval` | `action_id: str`, `reason: str` | Records an explicit human or policy rejection for a pending action. |
+| `get_model_usage` | none | Reports token usage and microunit costs recorded by the durable budget ledger. |
+| `cancel_run` | `run_id: str` | Cancels an ongoing run and marks active sessions as cancelled. |
 
-- `approve_action(action_id)`: retained only as a Python compatibility callable returning **denied**; never registered as MCP tool. Direct positive `PendingActionQueue.resolve` calls also raise `PermissionError`.
-- `apply_code_fix(filepath, target, replacement)`: retained only as a Python compatibility callable returning **denied**; direct `AgentManager.apply_code_fix` also raises `PermissionError`.
+---
 
-These names **must not** be represented as enabled MCP functionality. Do not attempt to bypass this lockdown by calling internals; a trusted broker and scoped ToolExecutor are separate future PR deliverables.
+## 2. Removed from MCP exposure by P0 lockdown
 
-## Current MCP resources
+- `approve_action(action_id)`: Removed from MCP exposure by P0 lockdown. Retained only as a compatibility callable returning denied; never registered as an MCP tool. To prevent models from approving their own actions, approvals require out-of-band token resolution via `ApprovalBroker`.
+- `apply_code_fix(filepath, target, replacement)`: Retained only as a compatibility callable returning denied; direct arbitrary file mutation without a trusted executor raises `PermissionError`.
 
-- `agy://logs/{session_id}` — legacy session log.
-- `agy://pending/{session_id}` — pending legacy queue entries.
+These names must not be represented as enabled MCP tools. Do not attempt to bypass this lockdown; all privileged operations require explicit human gate authorization.
 
-`send_message_with_schema`, `check_inbox`, and `agy://inbox/{session_id}` are historical design/API references, **not registered by the current PR-00 server**.
+---
 
-## Runner names
+## 3. Legacy MCP Compatibility Tools
 
-`agy`, `claude`, GPT-family and DeepSeek-family labels in prior PRD and runner specs are **planned only**. No complete, authenticated or enforced runner has been independently certified on this PR. Never claim GPT model names or APIs are implemented solely because old documents name them.
+| Legacy Tool | Status | Behavior |
+|---|---|---|
+| `spawn_agent` | Locked | Enforces `skip_permissions=False` and rejects unregistered runners. |
+| `send_message` | Locked | Denies legacy raw runner execution. |
+| `wait_for_idle` | Locked | Inspects legacy session state. |
+| `get_agent_status` | Locked | Inspects legacy session metadata. |
+| `list_agents` | Locked | Lists registered sessions. |
+| `kill_agent` | Locked | Initiates process termination with timeout. |
+
+---
+
+## 4. MCP Resources
+
+- `subagentbridge://audit/{stream}`: Append-only audit events for the given stream.
+- `subagentbridge://budget/{run_id}`: Budget consumption metrics and reservation states.
+- `agy://logs/{session_id}`: Session execution log stream.
+- `agy://pending/{session_id}`: Pending action records.

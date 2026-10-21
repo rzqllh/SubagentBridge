@@ -1,4 +1,4 @@
-# Security threat model — PR-00 (design / not enforced)
+# Security threat model: PR-00 (design / not enforced)
 
 **Status:** source-audited design; `AUTONOMY: OFF`. This document is a threat model, not a security certification. Governing rules: `docs/TEAM_RULES.md`. Detailed proposed controls: pinned Plan v3.1 in `artifacts/bootstrap/v3_1/candidate/`.
 
