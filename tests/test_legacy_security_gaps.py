@@ -45,9 +45,8 @@ class KnownUnmetGuarantees(unittest.TestCase):
         with self.assertRaises(PermissionError):
             queue.resolve(action.action_id, approved=True)
 
-    @unittest.expectedFailure
     def test_per_dispatch_workspace_boundaries(self):
-        # Legacy manager allows ANY registered workspace, not task-scoped ones.
+        # Per-dispatch workspace boundaries strictly enforced: multiple workspaces require explicit dispatch.
         manager = AgentManager()
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             class NoopRunner:

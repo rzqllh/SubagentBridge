@@ -292,6 +292,17 @@ async def kill_agent(session_id: str) -> str:
         return f"error: {exc}"
 
 
+# Legacy callables preserved as non-MCP denied functions (P0 lockdown contract)
+def apply_code_fix(filepath: str, target: str, replacement: str) -> str:
+    """Denied until the trusted per-dispatch ToolExecutor exists."""
+    return "error: direct file mutation unavailable until trusted ToolExecutor enforcement"
+
+
+def approve_action(*args: object, **kwargs: object) -> str:
+    """Disabled: model cannot self-approve. Approval requires isolated human broker."""
+    return "error: approval unavailable until an isolated, authenticated human broker exists"
+
+
 @mcp.tool()
 def reject_action(action_id: str, reason: str = "") -> str:
     """Legacy alias: reject a pending action."""
