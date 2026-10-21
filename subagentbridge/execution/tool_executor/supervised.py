@@ -13,6 +13,8 @@ import subprocess
 from uuid import uuid4
 from subagentbridge.workspaces.scope import ScopedWorkspace
 
+MAX_READ_TEXT_BYTES = 4 * 1024 * 1024
+
 @dataclass(frozen=True, slots=True)
 class CommandReceipt:
     receipt_id: str
@@ -38,16 +40,27 @@ class SupervisedReadOnlyExecutor:
         path=self.workspace.require_path(relative_path,must_exist=False)
         if not path.is_file():
             raise PermissionError('regular file required')
-        return path.read_text(encoding='utf-8')
+        # Do not allocate arbitrarily large files into the caller's memory.
+        # The path remains subject to documented same-user TOCTOU limitations.
+        with path.open('rb') as stream:
+            data = stream.read(MAX_READ_TEXT_BYTES + 1)
+        if len(data) > MAX_READ_TEXT_BYTES:
+            raise PermissionError('read-only inspection file exceeds size limit')
+        try:
+            return data.decode('utf-8')
+        except UnicodeDecodeError as exc:
+            raise PermissionError('read-only inspection requires UTF-8 text') from exc
 
     def run_inspection(self, *, task_id: str, dispatch_id: str, argv: tuple[str, ...],
                        human_supervised: bool, autonomous: bool = False,
                        timeout_seconds: int = 10) -> CommandReceipt:
         if autonomous or not human_supervised:
             raise PermissionError('no isolated executor; autonomous and unsupervised runs forbidden')
-        if not task_id or not dispatch_id or type(argv) is not tuple or argv not in self.ALLOWED:
+        if (type(task_id) is not str or not task_id.strip() or
+                type(dispatch_id) is not str or not dispatch_id.strip() or
+                type(argv) is not tuple or argv not in self.ALLOWED):
             raise PermissionError('command/identity not in exact supervised allowlist')
-        if not isinstance(timeout_seconds,int) or not 1 <= timeout_seconds <= 30:
+        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 30:
             raise ValueError('timeout must be 1..30s')
         # Only environment keys explicitly supplied. Never inherit the full host environment.
         # Python's subprocess on Windows needs SystemRoot; executable resolution still relies
