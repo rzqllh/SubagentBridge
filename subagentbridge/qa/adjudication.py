@@ -5,8 +5,8 @@ accepted. This does NOT verify whether OS command execution was isolated.
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from hashlib import sha256
 from typing import Mapping
+from .test_pins import validate_qa_test_path, QaTestIntegrityError
 from subagentbridge.domain.contracts import Evidence
 from subagentbridge.domain.registry import Principal, QaVerdict, ReceiptIssuerRegistry
 
@@ -20,10 +20,16 @@ class QaEvidenceGate:
                  qa_test_hashes: Mapping[str,str]):
         if not frozen_criteria or not all(isinstance(x,str) and x.strip() for x in frozen_criteria):
             raise ValueError('frozen acceptance criteria required')
-        if not qa_test_hashes or not all(isinstance(p,str) and p.startswith('tests/')
-                                        and len(h)==64 and all(c in '0123456789abcdef' for c in h)
-                                        for p,h in qa_test_hashes.items()):
+        if not qa_test_hashes:
             raise ValueError('pinned QA-owned test paths/hashes required')
+        for path, digest in qa_test_hashes.items():
+            try:
+                validate_qa_test_path(path)
+            except QaTestIntegrityError as exc:
+                raise ValueError('invalid QA-owned test path') from exc
+            if (type(digest) is not str or len(digest) != 64
+                    or any(c not in '0123456789abcdef' for c in digest)):
+                raise ValueError('invalid QA-owned test SHA256 pin')
         self.receipts=receipts
         self.criteria=tuple(frozen_criteria)
         self.test_hashes=dict(qa_test_hashes)
@@ -32,9 +38,11 @@ class QaEvidenceGate:
               actual_test_hashes: Mapping[str,str], task_id: str, dispatch_id: str,
               expected_tree: str, actual_tree: str, checkout_clean: bool,
               fix_round: int, human_waiver: bool = False) -> tuple[EvidenceDecision, QaVerdict|None]:
+        if type(fix_round) is not int or fix_round < 0:
+            return EvidenceDecision('UNVERIFIED','invalid fix-round counter'),None
         if fix_round >= 3:
             return EvidenceDecision('BLOCKED','three fix rounds exhausted: human required'),None
-        if not checkout_clean or not expected_tree or actual_tree != expected_tree:
+        if type(checkout_clean) is not bool or not checkout_clean or not expected_tree or actual_tree != expected_tree:
             return EvidenceDecision('UNVERIFIED','dirty checkout or wrong tree'),None
         if self.test_hashes != dict(actual_test_hashes):
             return EvidenceDecision('UNVERIFIED','QA tests changed, missing or substituted'),None
