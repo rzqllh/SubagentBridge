@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subagentbridge"
+version = "1.0.0rc1"
+description = "Native-first MCP subagent supervisor for Antigravity IDE and Windows"
+readme = "README.md"
+authors = [
+    { name = "Hafizh Rizqullah" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.28,<2",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+]
+
+[project.urls]
+Homepage = "https://github.com/rzqllh/SubagentBridge"
+Repository = "https://github.com/rzqllh/SubagentBridge"
+Issues = "https://github.com/rzqllh/SubagentBridge/issues"
+
+[project.scripts]
+subagentbridge = "subagentbridge.server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["subagentbridge*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

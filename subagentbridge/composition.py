@@ -18,9 +18,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping
 
-from subagentbridge.domain.contracts import Role, Run, Task
 from subagentbridge.domain.registry import IdentityRegistry, ReceiptIssuerRegistry
 from subagentbridge.execution.tool_executor.supervised import SupervisedReadOnlyExecutor
 from subagentbridge.models.capability import ModelCapabilities, ModelRoutingTable
@@ -182,3 +181,6 @@ def build_production_system(
             budget.close()
         ledger.close()
         raise
+
+
+create_production_system = build_production_system
