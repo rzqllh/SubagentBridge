@@ -1,56 +1,32 @@
-# SubagentBridge: Antigravity MCP Integration Guide
+# Simpul — MCP stdio integration
 
-This guide describes how to connect SubagentBridge as a Model Context Protocol (MCP) server inside Google Antigravity IDE and other MCP-compliant hosts.
+Simpul keeps the technical server/module name `subagentbridge`. This guide applies to the open PR #3 candidate, **not** the default-branch prototype.
 
----
+## Connect a compatible MCP host
 
-## 1. Antigravity IDE Configuration
-
-Add SubagentBridge to your Antigravity configuration file (e.g. `mcp_config.json` or `.gemini/antigravity-ide/mcp_config.json`):
+Create a Python virtual environment and install the candidate following [Installation](INSTALLATION_QUICKSTART.md). Configure the host's MCP servers with the **actual venv Python executable**. If `python` already resolves to that venv in the host process, this minimal entry is sufficient:
 
 ```json
 {
   "mcpServers": {
     "subagentbridge": {
       "command": "python",
-      "args": [
-        "-m",
-        "subagentbridge.server"
-      ],
-      "env": {
-        "SUBAGENTBRIDGE_DB_PATH": "subagentbridge.db",
-        "SUBAGENTBRIDGE_GATE_MODE": "CHAT_APPROVAL",
-        "SUBAGENTBRIDGE_ROUTER_URL": "http://127.0.0.1:8080/v1"
-      }
+      "args": ["-m", "subagentbridge.server"]
     }
   }
 }
 ```
 
----
+If your IDE launches a different Python environment, replace `command` with an absolute path to the venv's `python.exe` on Windows or `bin/python` on Linux. MCP configuration file locations and exact UI steps vary by host version; confirm them within your installed host.
 
-## 2. Production Control Plane Tools
+No production credentials should appear in an example configuration. The server uses stdio; ordinary terminal text printed to stdout can corrupt the MCP protocol.
 
-The MCP server registers the following high-level orchestration tools:
+## Current MCP tool contract
 
-| MCP Tool Name | Parameters | Purpose |
-|---|---|---|
-| `submit_goal` | `goal: str`, `run_id: str`, `project_id: str`, `policy_revision: str` | Creates a new managed orchestration run with policy enforcement. |
-| `get_run` | `run_id: str` | Inspects state, policy revision, and execution lifecycle of a run. |
-| `list_tasks` | `run_id: str` | Lists all tasks and their state machine statuses within a run. |
-| `get_task_evidence` | `task_id: str` | Retrieves cryptographic evidence, tree SHAs, and QA verdicts. |
-| `get_pending_approvals` | none | Lists pending human-in-the-loop approval actions awaiting tokens. |
-| `reject_approval` | `action_id: str`, `reason: str` | Records an explicit denial on a pending action. |
-| `get_model_usage` | none | Reports token usage and micro-unit costs recorded by the durable budget ledger. |
-| `cancel_run` | `run_id: str` | Cancels an ongoing run and marks active sessions as cancelled. |
+The source exposes `submit_goal(goal, workspace_path=None, model=None)`, `get_run(run_id)`, `list_tasks(run_id)`, `get_task_evidence(run_id, task_id)`, `get_pending_approvals()`, `reject_approval(action_id, reason="")`, `cancel_run(run_id, reason="")` and `get_model_usage()`.
 
----
+`submit_goal` currently stores a `SUBMITTED` run and a `PENDING` task; it is **not** proof of an executing PM/Developer/QA flow. Live Antigravity MCP acceptance is still pending. See [API reference](API_REFERENCE.md) for exact behavior and legacy diagnostics.
 
-## 3. Human Approval Security Architecture (P0 Lockdown)
+## Security
 
-Notice that `approve_action` is **not** an MCP tool.
-
-In SubagentBridge:
-- Allowing an AI agent or LLM to call an `approve_action` tool directly would completely defeat Human-in-the-Loop (HITL) safety.
-- Therefore, approvals require an out-of-band secret token via the `ApprovalBroker` (`resolve_by_human(action_id, approved=True, auth_token=...)`).
-- Workers can only view pending actions via `get_pending_approvals` or record denials via `reject_approval`.
+`approve_action` is deliberately **not** an MCP tool. No model self-approvals, Always Allow, or unattended changes. `AUTONOMY: OFF` and Phase-A `RISK_ACCEPTED_SAME_IDENTITY` are active constraints; same-user isolation has not been demonstrated. See [Project Status](SIMPUL_STATUS.md).
