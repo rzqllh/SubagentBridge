@@ -1,3 +1,5 @@
+> **Historical candidate report — not a release notice (23 October 2026):** This document records what was *reported* on 21 October, not an independently certified current result. The candidate is still in open [PR #3](https://github.com/rzqllh/SubagentBridge/pull/3), with open E18 adversarial proof, E22/E23, live authenticated 9Router/IDE validation, and release approval. The report's statements that all roadmap stages were verified or the project was release-ready must **not** be treated as closed acceptance gates. Public name: **Simpul**; technical package remains `subagentbridge`. See [current status](SIMPUL_STATUS.md).
+
 # SubagentBridge: Release Candidate v1.0.0-rc1 Readiness Report
 
 Repository: `rzqllh/SubagentBridge`  
