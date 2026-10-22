@@ -1,93 +1,43 @@
-# SubagentBridge: Installation and Quick Start Guide
+# Simpul — Installation and candidate quick start
 
-This guide describes how to install, configure, and run SubagentBridge on Windows (primary target) and Linux environments.
+Simpul is the public name. The Python distribution and import package remain `subagentbridge`. **The default GitHub branch still contains an older baseline**; this guide applies to the PR #3 development candidate and is not a general-availability release guide.
 
----
+## Prerequisites
 
-## 1. Prerequisites
+Git and Python 3.11–3.13; Windows is the primary intended host, while Linux is also a supported development target. Python 3.12 is declared in package metadata, but the cited 21 October CI evidence specifically covers 3.11 and 3.13 on Windows and Linux. Host integration is not independently certified.
 
-- Operating System: Windows 10/11 (64-bit) or modern Linux (Ubuntu 22.04+).
-- Python: Version 3.11, 3.12, or 3.13.
-- Git: Installed and available in PATH.
-- Local 9Router (optional for live model routing): running on `http://127.0.0.1:8080` (loopback only).
+## Windows (PowerShell)
 
----
-
-## 2. Installation from Source
-
-Clone the repository and set up a virtual environment:
-
-### Windows (PowerShell)
 ```powershell
-# Clone the repository
-git clone https://github.com/rzqllh/SubagentBridge.git
-Set-Location SubagentBridge
-
-# Create virtual environment
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# Upgrade build tooling and install in editable mode
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e .
-```
-
-### Linux / macOS (Bash)
-```bash
-# Clone the repository
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Upgrade pip and install
-pip install --upgrade pip setuptools wheel
-pip install -e .
+git checkout 44d70b5f05836a867978dcadb166bd1122943a3b
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+.\.venv\Scripts\python.exe -m subagentbridge.server
 ```
 
----
-
-## 3. Verifying the Installation
-
-Run the complete test suite to confirm all domain contracts, durable SQLite ledgers, model routing table, and acceptance matrix tests pass cleanly:
+## Linux
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"
+git clone https://github.com/rzqllh/SubagentBridge.git
+cd SubagentBridge
+git checkout 44d70b5f05836a867978dcadb166bd1122943a3b
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+.venv/bin/python -m subagentbridge.server
 ```
 
-Expected output:
-```text
-Ran 250 tests in ~2.5s
-OK (skipped=4)
-```
+The commit is a reviewed **source snapshot**, not a published release. Dependency installation may access PyPI; review dependencies and your network policy before installing. `python -m subagentbridge.server` starts the MCP **stdio** transport; a compatible host must manage it. See [MCP integration](MCP_INTEGRATION.md).
 
-*(The 4 skipped tests represent optional external Orca CLI probes and remote network endpoints that are disabled by default for zero-egress security).*
+## Verification expectations
 
----
+The 21 October candidate report records 250 discovered tests (246 pass, 4 skipped) and an E01–E21 unit-test matrix. This is historic evidence from a previously reported environment, **not a guarantee that this checkout will reproduce the count or pass independently today**. Always retain the actual command output and report skipped tests. Local unittest results do not validate E22/E23, same-user E18 containment, live Antigravity execution or live authenticated 9Router calls.
 
-## 4. Running the MCP Server
+## What starting the server actually does
 
-SubagentBridge exposes a standard Model Context Protocol (MCP) server over standard input/output (`stdio`).
+`submit_goal` registers a run and a pending task in this candidate; it does not automatically execute a PM/Developer/QA workflow. The `_runs`/`_tasks` tracking tables are memory-resident. The default composition root may create SQLite files when invoked, but a persistent audit record is not proof of MCP run-state recovery.
 
-Start the server using Python:
-
-```powershell
-python -m subagentbridge.server
-```
-
-You can customize runtime behavior using environment variables:
-- `SUBAGENTBRIDGE_DB_PATH`: Path to the SQLite database (default: `subagentbridge.db`).
-- `SUBAGENTBRIDGE_BROKER_SECRET`: Secret token used for out-of-band human approvals.
-- `SUBAGENTBRIDGE_ROUTER_URL`: Base URL for local 9Router (default: `http://127.0.0.1:8080/v1`).
-- `SUBAGENTBRIDGE_WORKSPACE_ROOT`: Root path for supervised execution boundaries.
-
----
-
-## 5. Security Posture Notice
-
-- `AUTONOMY: OFF` is enforced. Unattended privileged system modifications are rejected.
-- Confinement mode: `RISK_ACCEPTED_SAME_IDENTITY` (D-01 Phase A).
-- Gate mode: `CHAT_APPROVAL` (D-03).
-- Model transport: Loopback `127.0.0.1` only (D-02). Zero external egress is initiated.
+Do not add credentials to `mcp_config.example.json` or enable unattended worker modifications. See [Configuration](CONFIGURATION.md) and [Current status](SIMPUL_STATUS.md).
