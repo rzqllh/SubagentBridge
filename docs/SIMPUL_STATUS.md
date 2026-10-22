@@ -36,3 +36,7 @@ Tests that execute project source are not safe merely because their command line
 ## Historical evidence
 
 The [candidate acceptance matrix](ACCEPTANCE_MATRIX_E01_E21_EVIDENCE.md) and [release candidate report](RELEASE_CANDIDATE_V1_0_0.md) are retained as historical reports; more stringent independent checks supersede their unconditional readiness language. The display-name change does not rename Python imports, env vars, or existing repository URLs.
+
+## Next-development source of truth
+
+See [Simpul developer roadmap and handoff](simpul/README.md). Its task list and staged release gates describe proposed work, not independently verified completion.

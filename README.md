@@ -72,6 +72,8 @@ The legacy session inspection endpoints remain available in this candidate, but 
 
 ## Documentation
 
+- [Developer roadmap, backlog, acceptance gates and next-session handoff](docs/simpul/README.md)
+
 - [Project status and evidence boundaries](docs/SIMPUL_STATUS.md)
 - [Installation](docs/INSTALLATION_QUICKSTART.md)
 - [MCP integration](docs/MCP_INTEGRATION.md) · [API reference](docs/API_REFERENCE.md)

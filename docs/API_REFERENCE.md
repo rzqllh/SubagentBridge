@@ -23,6 +23,10 @@ Run/task lookup tables are currently in process memory. Treat an audit event as 
 
 These are compatibility/diagnostic surfaces. Existing legacy execution lockdown means registering a tool is not evidence of permission to execute unsafe workers. Do not set `skip_permissions=True` or `hitl_enabled=False` to try to bypass the gate.
 
+## Removed from MCP exposure by P0 lockdown
+
+In the retained legacy raw-runner paths, legacy worker execution is **disabled** before the unsafe subprocess launch. This is not a claim that the new `submit_goal` endpoint automatically dispatches workers. The following legacy compatibility callables do not grant approval or write permission.
+
 ## Deliberately not exposed as MCP tools
 
 - `approve_action(...)` is a compatibility callable returning denial, not authenticated permission.
