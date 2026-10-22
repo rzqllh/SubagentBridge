@@ -1,3 +1,5 @@
+> **Simpul architecture candidate (23 October 2026):** This document describes module intentions and component boundaries in PR #3, not proof of a fully operating end-to-end MCP team. The current `server.submit_goal` path creates in-memory `SUBMITTED`/`PENDING` records without starting the coordinator; `build_production_system` currently returns `coordinator=None`. Some components are wired as libraries but not as live MCP dispatch. `AUTONOMY: OFF` and D-01 same-user limitations apply. See [actual MCP contract](API_REFERENCE.md) and [status](SIMPUL_STATUS.md).
+
 # SubagentBridge: Architecture Specification
 
 This document details the production architecture of SubagentBridge across its domain contracts, composition root, persistence layer, execution boundary, and verification gates.
