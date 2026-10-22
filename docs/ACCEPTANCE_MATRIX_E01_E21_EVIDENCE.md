@@ -1,3 +1,5 @@
+> **Scope clarification — 23 October 2026:** This is the historical 21 October E01–E21 unit-test evidence, not independent proof of full product acceptance. In particular **E18's recorded PASS covers the implemented token-test scenario, not an adversarial same-user broker/secret isolation attack**. E22 and E23 are additional required checks and are not covered by this 21-test matrix. No fresh run has been performed during the Simpul documentation refresh. See [status](SIMPUL_STATUS.md).
+
 # Acceptance Matrix E01 to E21 Verification Evidence
 
 Repository: `rzqllh/SubagentBridge`  
