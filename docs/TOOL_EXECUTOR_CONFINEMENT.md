@@ -1,44 +1,20 @@
-# SubagentBridge: ToolExecutor and Execution Confinement
+# Simpul — Supervised execution and containment limits
 
-This document describes how SubagentBridge isolates process execution and enforces workspace confinement boundaries.
+The PR #3 candidate contains `SupervisedReadOnlyExecutor` and process-management utilities intended for bounded test/inspection workflows. **This is not a sandbox for arbitrary untrusted code.** D-01 is `RISK_ACCEPTED_SAME_IDENTITY`; `AUTONOMY: OFF`.
 
----
+## Implemented components
 
-## 1. Confinement Classes and Invariants
+- A supervised executor checks permitted command/workspace inputs and records bounded execution outputs and hashes.
+- Child environment scrubbing removes selected secret variables from newly launched subprocess environments.
+- Process cleanup and timeout code is present, including Windows-focused test coverage.
+- QA evidence uses identity/receipt and Git-tree checks in separate modules.
 
-Under Plan v3.1 and Decision D-01:
-- `RISK_ACCEPTED_SAME_IDENTITY`: Supervised development mode where execution occurs under the current user account, but with strict path checking, scrubbed environment variables, and timeout supervision.
-- `ISOLATED_CONTAINER_OR_VM`: Future target mode for unattended autonomous execution.
+## What these controls do not prove
 
----
+- A process running as the same user may obtain same-user files, memory, IPC, credentials or UI access even if selected child environment variables were stripped.
+- Running `python -m unittest` can execute arbitrary repository test code; command allowlisting alone is not read-only confinement.
+- A hash or receipt generated in-process is not tamper-proof against a privileged or same-identity attacker.
+- Unit-test process teardown is not exhaustive proof of Windows child-process-tree cleanup under every failure mode.
+- Git worktree checks alone do not close checkout-root symlink/junction/race escapes (E22).
 
-## 2. Supervised Read-Only Executor (`SupervisedReadOnlyExecutor`)
-
-The `SupervisedReadOnlyExecutor` verifies that safe read commands can run without modifying workspace files:
-- Only allowlisted commands (e.g. `python -m unittest`, `git status`, `git rev-parse`) are executed.
-- Modifying actions or unapproved file writes fail closed.
-- Issues verifiable `ExecutorReceipt` records containing exact command arguments, exit codes, and output hashes.
-
----
-
-## 3. Environment Sanitization and Isolation (`IsolatedExecutionRunner`)
-
-When child processes are launched:
-- Sensitive environment variables are scrubbed from the child environment:
-  - `SUBAGENTBRIDGE_BROKER_SECRET`
-  - `SUBAGENTBRIDGE_API_KEY`
-  - `ANTHROPIC_API_KEY`
-  - `OPENAI_API_KEY`
-  - `GITHUB_TOKEN`
-  - `NINE_ROUTER_API_KEY`
-  - Any key starting with `SECRET_`
-- Child processes cannot inspect parent credentials to forge approvals or bypass limits.
-
----
-
-## 4. Windows Process-Tree Cleanup
-
-On Windows systems, child subprocesses may leave orphaned processes or open file locks if not terminated cleanly:
-- SubagentBridge ensures process-tree termination with configurable timeout limits.
-- Process exit codes and standard error streams are captured, hashed with SHA-256, and bound to `ExecutorReceipt` records.
-- Verified under Scenario E08 in `tests/test_acceptance_matrix_e01_e21.py`.
+Treat `ISOLATED_CONTAINER_OR_VM` or separate OS identities as **future proof requirements**, not existing feature claims. E18/E22/E23 and full live IDE verification remain unresolved. See [Security](SECURITY_APPROVAL_MODEL.md).
