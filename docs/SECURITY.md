@@ -1,3 +1,5 @@
+> **Historical PR-00 threat model (Simpul, 23 October 2026):** This is a baseline-era risk analysis and not the source of truth for the PR #3 candidate's feature completion. D-01 is `RISK_ACCEPTED_SAME_IDENTITY` and D-03 is `CHAT_APPROVAL` for current Phase A, always with `AUTONOMY: OFF`. Neither decision supplies a secure, independently verified human-identity isolation boundary. E18 same-user adversarial proof and E22/E23 remain open. See [current security](SECURITY_APPROVAL_MODEL.md) and [status](SIMPUL_STATUS.md).
+
 # Security threat model: PR-00 (design / not enforced)
 
 **Status:** source-audited design; `AUTONOMY: OFF`. This document is a threat model, not a security certification. Governing rules: `docs/TEAM_RULES.md`. Detailed proposed controls: pinned Plan v3.1 in `artifacts/bootstrap/v3_1/candidate/`.
