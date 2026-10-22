@@ -1,6 +1,8 @@
 # Changelog
 
-All notable changes to SubagentBridge are documented in this file.
+> **23 October 2026 — Simpul public identity and status clarification:** The development candidate is **not yet a published release**. This file retains historical `SubagentBridge` implementation notes and the dated 21 October `1.0.0-rc1` candidate report. Current release gates (E18 adversarial isolation, E22 containment, E23 pinned remote checkout, authenticated 9Router, live IDE integration and independent QA) are **not closed** by that report. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md). The Python package name remains `subagentbridge`.
+
+All notable changes to Simpul (formerly SubagentBridge) are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
