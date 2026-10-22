@@ -1,154 +1,86 @@
-# SubagentBridge
+# Simpul
 
-SubagentBridge is a native-first Model Context Protocol (MCP) subagent supervisor designed for Google Antigravity IDE and Windows development environments. It coordinates specialized Project Manager (PM), Developer, and Quality Assurance (QA) agents with durable SQLite audit persistence, cryptographic Git tree binding, one-time token human approvals, and local 9Router model routing.
+**Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
----
+> **Development candidate — 23 October 2026:** This branch contains `subagentbridge==1.0.0rc1` source, **not** a published or security-certified release. [PR #3](https://github.com/rzqllh/SubagentBridge/pull/3) remains open and targets [PR #2](https://github.com/rzqllh/SubagentBridge/pull/2)'s baseline branch. The default `main` still contains the older imported prototype.
 
-## 1. Key Capabilities
+## What is implemented in this candidate
 
-- **Role-Based Orchestration:** Explicit lifecycle boundaries between PM (task decomposition), Developer (supervised implementation), and independent QA (evidence verification).
-- **Cryptographic Tree Binding:** Every `ExecutorReceipt` and `QaVerdict` is bound to the exact Git tree SHA. Any dirty checkout or source modification revokes prior verification.
-- **Human Approval Security:** Dangerous operations require one-time approval tokens issued through an out-of-band broker. Replay attempts and model self-approvals fail closed.
-- **Durable Persistence:** SQLite WAL audit ledger and durable budget enforcement with atomic transaction serialization across restarts.
-- **Local 9Router Integration:** High-performance loopback model transport (`127.0.0.1`) with capability negotiation that fails closed on unsupported models.
-- **100% Native Independence:** Operates completely without Orca. An opt-in adapter is provided for environments that authorize external runners.
+- Typed `Run`, `Task`, `Dispatch`, `Evidence` and approval contracts.
+- SQLite-backed audit events, message bus and budget reservations with transaction controls.
+- Policy classification, operation-bound approval broker and replay checks.
+- Supervised read-only executor, bounded output and worker lifecycle components.
+- PM → Developer → QA coordinator and evidence/receipt interfaces.
+- Locally pinned skills registry with path and hash checking.
+- Local-loopback 9Router text-client interface with explicit model discovery and budget bounds.
+- MCP stdio server with run submission, readback, cancellation and diagnostic tools.
+- Optional Orca integration seam; native mode does not depend on Orca.
 
----
+**Important:** Presence of these modules and passing unit tests does not demonstrate that MCP `submit_goal` automatically executes a complete PM → Developer → QA workflow. In this branch `submit_goal` currently registers a `SUBMITTED` run and a `PENDING` task; it does not dispatch a worker in that handler.
 
-## 2. Release Status and Operating Boundaries
+## Safety and evidence status
 
-- **Current Version:** `v1.0.0-rc1` (Roadmap PR-00 through PR-12 verified).
-- **Autonomy Posture:** `AUTONOMY: OFF`. Unattended privileged modifications are blocked.
-- **Confinement Tier:** `RISK_ACCEPTED_SAME_IDENTITY` (Phase A supervised execution under Decision D-01).
-- **Gate Mode:** `CHAT_APPROVAL` (Decision D-03).
-- **Model Transport:** Loopback only (`127.0.0.1`, Decision D-02). Zero external network egress is initiated.
+| Area | Current boundary |
+| --- | --- |
+| Autonomy | `AUTONOMY: OFF`; unattended privileged changes are prohibited |
+| Worker containment | D-01 `RISK_ACCEPTED_SAME_IDENTITY`; **not** OS-level isolation |
+| Human decisions | D-03 `CHAT_APPROVAL`; an LLM is not an authenticated human approver |
+| Model transport | D-02 local literal IP loopback; upstream router egress is outside this client's guarantee |
+| Verification | 21 October report: 250 discovered tests (246 pass, 4 skip), E01–E21 matrix tests; this is historical evidence, not a new independent run |
+| Still open | Same-user E18 red-team proof, E22 containment, E23 exact remote checkout, live authenticated 9Router (previously HTTP 401), end-to-end IDE acceptance, merge and release |
 
----
+See [project status](docs/SIMPUL_STATUS.md) and [security limitations](docs/COMPATIBILITY_LIMITATIONS.md). Do not mark E18/E22/E23 verified from unit-test names alone.
 
-## 3. Windows-First Quick Start
+## Quick start — candidate branch
 
-### Prerequisites
-- Windows 10/11 (64-bit) or modern Linux.
-- Python 3.11, 3.12, or 3.13.
-- Git in PATH.
+Requires Python 3.11–3.13 and Git. Example for PowerShell:
 
-### Installation (PowerShell)
 ```powershell
-# Clone the repository
 git clone https://github.com/rzqllh/SubagentBridge.git
-Set-Location SubagentBridge
-
-# Create virtual environment
+cd SubagentBridge
+git checkout 44d70b5f05836a867978dcadb166bd1122943a3b
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# Install package
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+.\.venv\Scripts\python.exe -m subagentbridge.server
 ```
 
-### Run Verification Suite
-```powershell
-python -m unittest discover -s tests -p "test_*.py"
-```
+The last command runs an MCP stdio server and expects an MCP client; it does not open an interactive chat. Installing dependencies may access package indexes. Consult the [installation guide](docs/INSTALLATION_QUICKSTART.md) for Linux and configuration considerations.
 
-Expected output: 250 tests ran, 246 passed, 4 skipped (optional external endpoints), 0 errors, 0 failures.
+### MCP host entry
 
----
-
-## 4. Antigravity IDE Integration
-
-Configure SubagentBridge in your Antigravity IDE MCP configuration:
+Use the venv's Python interpreter, or launch your MCP host with that venv on `PATH`:
 
 ```json
 {
   "mcpServers": {
     "subagentbridge": {
       "command": "python",
-      "args": [
-        "-m",
-        "subagentbridge.server"
-      ],
-      "env": {
-        "SUBAGENTBRIDGE_DB_PATH": "subagentbridge.db",
-        "SUBAGENTBRIDGE_GATE_MODE": "CHAT_APPROVAL",
-        "SUBAGENTBRIDGE_ROUTER_URL": "http://127.0.0.1:8080/v1"
-      }
+      "args": ["-m", "subagentbridge.server"]
     }
   }
 }
 ```
 
----
+The display name is **Simpul**, but the MCP tool namespace, Python module, distribution, and `SUBAGENTBRIDGE_*` settings intentionally keep their existing technical identifiers. No mandatory migration/renaming is implied.
 
-## 5. Example PM -> Developer -> QA Lifecycle
+### Exposed production-oriented MCP operations
 
-```python
-from subagentbridge.composition import create_production_system
-from subagentbridge.domain.contracts import Role
+`submit_goal(goal, workspace_path=None, model=None)`, `get_run(run_id)`, `list_tasks(run_id)`, `get_task_evidence(run_id, task_id)`, `get_pending_approvals()`, `reject_approval(action_id, reason="")`, `get_model_usage()`, and `cancel_run(run_id, reason="")`.
 
-# Initialize production system with durable SQLite storage
-system = create_production_system(db_path="subagentbridge.db")
+The legacy session inspection endpoints remain available in this candidate, but legacy raw-runner execution paths are locked down. `approve_action` and `apply_code_fix` are **not model-callable MCP tools**; their compatibility functions deny privileged operations.
 
-try:
-    # 1. PM creates a task and freezes acceptance criteria
-    task = system.create_task(
-        task_id="task-001",
-        run_id="run-001",
-        criteria=("AC-1: Clean checkout", "AC-2: Tests pass exit 0"),
-        tree_sha="current-tree-sha",
-        policy_revision="rev-1",
-    )
+## Documentation
 
-    # 2. Developer executes verified read-only test run
-    receipt = system.executor.execute_read_only(
-        ["python", "-m", "unittest", "tests/test_invariants_contract.py"],
-        task_id="task-001",
-        dispatch_id="disp-001",
-        tree_sha="current-tree-sha",
-    )
+- [Project status and evidence boundaries](docs/SIMPUL_STATUS.md)
+- [Installation](docs/INSTALLATION_QUICKSTART.md)
+- [MCP integration](docs/MCP_INTEGRATION.md) · [API reference](docs/API_REFERENCE.md)
+- [Architecture](docs/ARCHITECTURE.md) · [Configuration](docs/CONFIGURATION.md)
+- [Security / HITL](docs/SECURITY_APPROVAL_MODEL.md) · [Confinement](docs/TOOL_EXECUTOR_CONFINEMENT.md)
+- [9Router](docs/NINE_ROUTER_SETUP.md) · [Skills registry](docs/SKILLS_REGISTRY.md)
+- [Compatibility and limitations](docs/COMPATIBILITY_LIMITATIONS.md)
+- [Historical candidate test evidence](docs/ACCEPTANCE_MATRIX_E01_E21_EVIDENCE.md)
 
-    # 3. Independent QA evaluates receipt and validates criteria
-    qa_principal = system.identities.register("qa-agent", Role.QA)
-    evidence = system.receipts.create_evidence(receipt.receipt_id, task_id="task-001", dispatch_id="disp-001", tree_sha="current-tree-sha")
-    verdict = system.receipts.create_qa_verdict(
-        qa_principal,
-        evidence=(evidence,),
-        task_id="task-001",
-        dispatch_id="disp-001",
-        tree_sha="current-tree-sha",
-        accepted=True,
-    )
-    print("Task verified:", verdict.accepted)
-finally:
-    system.close()
-```
+## License and attribution
 
----
-
-## 6. Technical Documentation Index
-
-- [Installation and Quick Start](docs/INSTALLATION_QUICKSTART.md)
-- [Configuration and Environment Variables](docs/CONFIGURATION.md)
-- [Architecture Specification](docs/ARCHITECTURE.md)
-- [API Reference](docs/API_REFERENCE.md)
-- [Human Approval and Security Model](docs/SECURITY_APPROVAL_MODEL.md)
-- [Local 9Router Setup](docs/NINE_ROUTER_SETUP.md)
-- [Antigravity MCP Integration](docs/MCP_INTEGRATION.md)
-- [Agent Orchestration Lifecycle](docs/ORCHESTRATION_LIFECYCLE.md)
-- [ToolExecutor and Confinement](docs/TOOL_EXECUTOR_CONFINEMENT.md)
-- [Persistence and Recovery](docs/PERSISTENCE_RECOVERY.md)
-- [Skills Registry and Trust](docs/SKILLS_REGISTRY.md)
-- [Native Mode vs Optional Orca](docs/NATIVE_VS_ORCA.md)
-- [Testing and QA Guide](docs/TESTING_QA_GUIDE.md)
-- [Acceptance Matrix E01 to E21 Evidence](docs/ACCEPTANCE_MATRIX_E01_E21_EVIDENCE.md)
-- [Compatibility and Limitations](docs/COMPATIBILITY_LIMITATIONS.md)
-- [Troubleshooting and FAQ](docs/TROUBLESHOOTING_FAQ.md)
-- [Developer Contribution Guide](docs/CONTRIBUTING.md)
-
----
-
-## 7. Attribution and License
-
-Design references and third-party notices are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-Project license is in [LICENSE](LICENSE).
+[MIT](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md). Development history retains `SubagentBridge` names where required for traceability.
