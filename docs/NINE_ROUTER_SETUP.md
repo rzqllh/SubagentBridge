@@ -1,83 +1,49 @@
-# SubagentBridge: 9Router Setup and Model Configuration
+# Simpul — Local 9Router client (candidate)
 
-SubagentBridge integrates with **9Router** as a local loopback model provider. This document explains how 9Router operates, how capability checks fail closed, and how to verify the integration.
+This guide describes `subagentbridge.models.nine_router` as implemented in the open PR #3 branch. It is **not** proof that 9Router account authentication or external provider routing works end-to-end.
 
----
+## Transport boundary
 
-## 1. Overview and Security Policy (Decision D-02)
+`LocalRouterConfig` requires a literal IPv4/IPv6 **loopback IP**, explicit port and HTTP scheme, e.g. `http://127.0.0.1:9099`. Do **not** append `/v1` to the base URL; the client itself appends `/v1/models` or `/v1/chat/completions`. Hostnames, redirects, user info and non-loopback destinations are rejected.
 
-To prevent uncontained network egress and data leaks:
-- SubagentBridge connects **only** to local 9Router loopback endpoints on `127.0.0.1`.
-- Any external hostname, non-loopback IP, or unapproved upstream route is blocked by policy and raises a security violation.
-- All requests require local bearer credentials when configured.
+The client performs text-only, nonstreaming completion. It does **not** execute model tool calls, retry requests automatically, issue executor receipts or authorize external provider terms. A local proxy may contact upstream providers using its own policy; the client's loopback restriction is not a zero-external-egress promise for the entire stack.
 
----
+## Python example
 
-## 2. Model Routing Table and Capability Verification
-
-The routing table maps available model identifiers to verified capabilities:
+Set a local router credential in your process environment before running this example; never commit it.
 
 ```python
-from subagentbridge.models.capability import ModelCapabilities, ModelRoutingTable
-
-capabilities = [
-    ModelCapabilities(
-        model_id="anthropic/claude-3-5-sonnet",
-        tool_calls=True,
-        structured_output=True,
-        streaming=True,
-        input_cost_known=True,
-        output_cost_known=True,
-    ),
-    ModelCapabilities(
-        model_id="deepseek/deepseek-coder",
-        tool_calls=True,
-        structured_output=True,
-        streaming=True,
-        input_cost_known=True,
-        output_cost_known=True,
-    ),
-]
-
-routing_table = ModelRoutingTable(capabilities)
-```
-
-### Fail-Closed Behavior
-If a dispatch requires a capability (e.g., `tool_calls=True` or `structured_output=True`) and the candidate model does not support it, SubagentBridge raises `UnknownCapability` or `CapabilityMismatch` and halts dispatch rather than falling back to unverified prompt simulation.
-
----
-
-## 3. Local 9Router Client Usage
-
-```python
-from subagentbridge.models.nine_router import LocalRouterConfig, NineRouterClient, CallBudget
-
-config = LocalRouterConfig(
-    base_url="http://127.0.0.1:8080/v1",
-    api_key="local-token-xyz",
-    allowed_models=("anthropic/claude-3-5-sonnet",),
+import os
+from subagentbridge.models.nine_router import (
+    CallBudget, LocalRouterConfig, NineRouterClient
 )
 
-client = NineRouterClient(config)
+client = NineRouterClient(LocalRouterConfig(
+    base_url="http://127.0.0.1:9099",
+    api_key=os.environ["LOCAL_ROUTER_API_KEY"],
+))
 
-# Check model availability on loopback
-models = client.list_available_models()
+# Requires a running and authenticated local 9Router endpoint.
+available = client.discover()
+if not available:
+    raise RuntimeError("No models returned by local router")
 
-# Complete a prompt with budget bounds
-budget = CallBudget(max_tokens=4096, max_cost_microunits=50000)
-response = client.complete(
-    model_id="anthropic/claude-3-5-sonnet",
-    prompt="Explain the task acceptance criteria.",
+# Only after explicitly reviewing and authorizing provider terms/egress.
+budget = CallBudget(requests=1, tokens=256)
+reply = client.chat(
+    model_id=available[0].model_id,
+    messages=({"role": "user", "content": "Summarize the task."},),
+    max_tokens=256,
     budget=budget,
+    provider_terms_approved=True,
 )
+print(reply.text)
 ```
 
----
+This example is illustrative: the selected model must exist, pass capability checks, and be authorized for use. `provider_terms_approved=True` is a caller-supplied gate assertion, **not identity or provider authorization proof**.
 
-## 4. Verification
+## Verification and known blocker
 
-Run the live loopback unit and integration suite:
-```bash
-python -m unittest tests/test_nine_router_live_loopback.py
-```
-Expected result: 4 tests ran, 4 passed (Exit 0).
+`python -m unittest tests/test_nine_router_offline.py` exercises offline behavior. The most recent separately reported live completion attempt returned **HTTP 401**, so do **not** claim live authenticated completion has passed. The MCP server's `get_production_system()` does not forward older `SUBAGENTBRIDGE_ROUTER_URL`/`SUBAGENTBRIDGE_ROUTER_KEY` variables into the composition root; see [Configuration](CONFIGURATION.md). The composition root's default origin is port `9099`; this does not assert that a router is actually listening there.
+
+See [Status](SIMPUL_STATUS.md) and [Security](SECURITY_APPROVAL_MODEL.md).
