@@ -1,67 +1,26 @@
-# SubagentBridge: Human Approval and Security Model
+# Simpul — Human approvals and security boundary
 
-This document outlines the Human-in-the-Loop (HITL) approval architecture, policy classifier, and replay protection mechanisms.
+**Status: development candidate, not security certified.** The code implements `ApprovalBroker` token and operation-fingerprint logic, but a malicious worker using the same OS identity may be able to access secrets or UI state. Its unit tests are **not** E18 adversarial isolation evidence.
 
----
+## Policy and intended decisions
 
-## 1. Approval Broker Architecture (`ApprovalBroker`)
+- D-01: `RISK_ACCEPTED_SAME_IDENTITY` — supervised Phase-A risk acceptance, **not** OS isolation.
+- D-03: `CHAT_APPROVAL` — human decisions must be explicit and operation-bound. Chat messages are not automatically an authenticated out-of-band channel.
+- D-02: text model client restricted to literal HTTP loopback origins; upstream 9Router behavior requires separate assessment.
+- `AUTONOMY: OFF`. No Always Allow, timeout auto-approval, model self-approval, or unauthorized test/CI/dependency changes.
 
-SubagentBridge implements an isolated approval broker adhering to Decision D-03:
+## What exists in candidate code
 
-1. **Operation Fingerprinting:** When an action requiring approval is detected, the broker creates a pending `ApprovalAction` with an immutable fingerprint:
-   - Target operation name
-   - Command line arguments (`argv`)
-   - Target resource path
-   - Session and dispatch identifiers
-2. **One-Time Token Authentication:** Resolving an approval requires a high-entropy secret token (`auth_token`). Workers do not possess this secret.
-3. **Replay Protection:** Once an action is approved or denied, its state transitions permanently to `APPROVED` or `REJECTED`. Replaying an approved token on the same action raises a `PermissionError`.
-4. **Pre-Execution Gate:** Approvals occur **before** execution. Post-execution log observation is never treated as human authorization.
+The policy classifier identifies sensitive changes (credentials, dependencies, git writes/pushes, QA/test changes, network and out-of-scope paths) and fails closed for unknown operations. The `ApprovalBroker` module includes operation fingerprints, high-entropy token validation and replay rejection. These checks are useful controls but do not substitute for isolation of the approving human from untrusted workers.
 
-```python
-from subagentbridge.approval.broker import ApprovalBroker, ApprovalState
+`approve_action` is **not an MCP tool**; the preserved Python compatibility function denies requests. `reject_approval` is an MCP tool because denial cannot confer access. Do not interpret `get_pending_approvals` or `reject_approval` as proof that authorization is secure or complete.
 
-broker = ApprovalBroker(broker_secret="high-entropy-secret-key")
+## Required independent validation before autonomy
 
-# Worker registers proposed action:
-action = broker.create_action(
-    session_id="session-1",
-    operation="git.push",
-    resource="origin/main",
-)
+- E18: attempt realistic same-OS-user secret stealing, forged approval, UI automation and broker-origin spoofing; test the worker's actual privilege boundary.
+- E22: attempt checkout/workspace traversal, symlink/junction and race escapes from the real worker integration.
+- E23: reproduce an exact pinned remote checkout in a clean independent environment.
+- Verify end-to-end operation-specific approval enforcement **before** execution, not by reading logs after tool execution.
+- Verify arbitrary build/test subprocess containment under a genuinely separate security principal for unattended mode.
 
-# Human resolves the action out-of-band:
-resolved = broker.resolve_by_human(
-    action.action_id,
-    approved=True,
-    auth_token="high-entropy-secret-key",
-)
-assert resolved.state == ApprovalState.APPROVED
-```
-
----
-
-## 2. Policy Classifier Gate Categories
-
-The conservative `classify()` function analyzes requested operations into distinct categories:
-
-| Gate Category | Sensitive Triggers | Action Taken |
-|---|---|---|
-| `AUTH_OR_SECRET` | Token writing, credential access | Gate required: human approval |
-| `DEPENDENCY` | `pip install`, `npm install`, modifying lockfiles | Gate required: human approval |
-| `CI_OR_DEPLOY` | Workflow modification, CI script changes | Gate required: human approval |
-| `DESTRUCTIVE` | `rm -rf`, file deletion, table drop | Gate required: human approval |
-| `GIT_PUSH_OR_REWRITE` | `git push`, history rewrite, branch force | Gate required: human approval |
-| `NETWORK_EGRESS` | External network calls, remote URLs | Gate required: human approval |
-| `OUTSIDE_WORKSPACE_WRITE`| Writes targeting parent directories | Gate required: human approval |
-| `QA_OR_ACCEPTANCE_CHANGE`| Modifying test files in `tests/` | Gate required: human approval |
-| `READ_ONLY_REQUEST` | Pure reads within workspace boundaries | Permitted without gate |
-| `UNKNOWN` | Unrecognized commands, ambiguous payload | Gate required: fail closed |
-
----
-
-## 3. Autonomy Gate Status
-
-- Current setting: `AUTONOMY: OFF`
-- Decision D-01: Phase A supervised development under `RISK_ACCEPTED_SAME_IDENTITY`.
-- Decision D-03: Phase A chat-based approval under `GATE_MODE: CHAT_APPROVAL`.
-- Full autonomous operation remains strictly disabled until out-of-band OS-level user isolation is fully realized.
+No known documentation-only modification closes any of these conditions. See [Project Status](SIMPUL_STATUS.md) and [Execution Confinement](TOOL_EXECUTOR_CONFINEMENT.md).
