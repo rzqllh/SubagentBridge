@@ -1,3 +1,5 @@
+> **Archived reconciliation snapshot:** This report's PR HEAD hashes, test counts and stage assessments describe an earlier roadmap reconciliation, not the latest PR #3 candidate. For 23 October 2026, refer to [Simpul status](SIMPUL_STATUS.md) and the actual open PR heads; do not infer that old `PARTIAL` or `VERIFIED` labels describe current code or current independent QA.
+
 # SubagentBridge Roadmap Reconciliation & Audit (Plan v3.1)
 
 ## Executive Summary
