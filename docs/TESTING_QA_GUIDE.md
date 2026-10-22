@@ -1,3 +1,5 @@
+> **Simpul verification scope (23 October 2026):** The 21 October 250-test / E01–E21 report is dated evidence only. Independent E18 red-team verification, E22 path containment, E23 pinned remote checkout, authenticated 9Router live completion, and Antigravity MCP end-to-end acceptance remain outstanding. Passing unit tests alone cannot close those gates. See [status](SIMPUL_STATUS.md).
+
 # SubagentBridge: Testing and QA Verification Guide
 
 This guide describes how to run and interpret the test suites in SubagentBridge.
