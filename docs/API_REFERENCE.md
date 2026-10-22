@@ -1,49 +1,37 @@
-# API Reference: SubagentBridge (Production Release Status)
+# Simpul — MCP API reference (development candidate)
 
-This document maps the SubagentBridge MCP tool signatures, Python domain contracts, and security interfaces. In PR-00 legacy worker execution is **disabled before launch**, and production execution routes through the typed composition root. `AUTONOMY: OFF`.
+The public name is **Simpul**; the Python module and MCP server name remain `subagentbridge`. This reference describes signatures found in `subagentbridge/server.py` on the `integrate/roadmap-v4-verified` branch as reviewed 23 October 2026, **not** the older default-branch implementation.
 
----
+## Production-oriented tools
 
-## 1. Production MCP Tools Registered in `subagentbridge/server.py`
+| MCP tool | Actual arguments | Observed behavior / limit |
+| --- | --- | --- |
+| `submit_goal` | `goal: str, workspace_path: str \| None = None, model: str \| None = None` | Creates an in-memory `SUBMITTED` run and one `PENDING` task, attempts to append a submission event. **Does not dispatch an agent in this handler.** |
+| `get_run` | `run_id: str` | Reads the in-process run table, or returns `NOT_FOUND` |
+| `list_tasks` | `run_id: str` | Returns in-process task snapshots |
+| `get_task_evidence` | `run_id: str, task_id: str` | Returns task status, evidence ID list, and status-derived `verified` flag; does **not** itself validate a receipt |
+| `get_pending_approvals` | none | Reads pending actions |
+| `reject_approval` | `action_id: str, reason: str = ""` | Records rejection; not human approval |
+| `cancel_run` | `run_id: str, reason: str = ""` | Marks an in-process run and nonterminal tasks cancelled |
+| `get_model_usage` | none | Reads legacy session usage and, when available, budget snapshot |
 
-| Tool Name | Parameters | Description |
-|---|---|---|
-| `submit_goal` | `goal: str`, `run_id: str`, `project_id: str`, `policy_revision: str` | Initializes a new managed orchestration run governed by policy contracts. |
-| `get_run` | `run_id: str` | Retrieves current status, policy revision, and execution state of a run. |
-| `list_tasks` | `run_id: str` | Lists all tasks and their state machine statuses within a run. |
-| `get_task_evidence` | `task_id: str` | Retrieves cryptographic evidence, tree SHAs, and QA verdicts for a completed task. |
-| `get_pending_approvals` | none | Lists pending human-in-the-loop approval actions requiring out-of-band authorization. |
-| `reject_approval` | `action_id: str`, `reason: str` | Records an explicit human or policy rejection for a pending action. |
-| `get_model_usage` | none | Reports token usage and microunit costs recorded by the durable budget ledger. |
-| `cancel_run` | `run_id: str` | Cancels an ongoing run and marks active sessions as cancelled. |
+Run/task lookup tables are currently in process memory. Treat an audit event as history, **not** proof that run-state rehydration is implemented.
 
----
+## Legacy diagnostic tools still registered
 
-## 2. Removed from MCP exposure by P0 lockdown
+`spawn_agent(session_id, workspace_path, runner="agy", model=None, agent_type=None, reasoning_effort=None, skip_permissions=False, hitl_enabled=True, max_retries=2)`, `send_message(session_id, message)`, `wait_for_idle(session_id, timeout_seconds=600)`, `get_agent_status(session_id)`, `list_agents()`, `kill_agent(session_id)`, `reject_action(action_id, reason="")`, and `list_pending_actions(session_id=None)`.
 
-- `approve_action(action_id)`: Removed from MCP exposure by P0 lockdown. Retained only as a compatibility callable returning denied; never registered as an MCP tool. To prevent models from approving their own actions, approvals require out-of-band token resolution via `ApprovalBroker`.
-- `apply_code_fix(filepath, target, replacement)`: Retained only as a compatibility callable returning denied; direct arbitrary file mutation without a trusted executor raises `PermissionError`.
+These are compatibility/diagnostic surfaces. Existing legacy execution lockdown means registering a tool is not evidence of permission to execute unsafe workers. Do not set `skip_permissions=True` or `hitl_enabled=False` to try to bypass the gate.
 
-These names must not be represented as enabled MCP tools. Do not attempt to bypass this lockdown; all privileged operations require explicit human gate authorization.
+## Deliberately not exposed as MCP tools
 
----
+- `approve_action(...)` is a compatibility callable returning denial, not authenticated permission.
+- `apply_code_fix(...)` is a compatibility callable returning denial, not a code-edit tool.
 
-## 3. Legacy MCP Compatibility Tools
+The separate `ApprovalBroker` module has one-time token and fingerprint checks but an authenticated human approval channel, accessible independently of same-user workers, **has not been proven**.
 
-| Legacy Tool | Status | Behavior |
-|---|---|---|
-| `spawn_agent` | Locked | Enforces `skip_permissions=False` and rejects unregistered runners. |
-| `send_message` | Locked | Denies legacy raw runner execution. |
-| `wait_for_idle` | Locked | Inspects legacy session state. |
-| `get_agent_status` | Locked | Inspects legacy session metadata. |
-| `list_agents` | Locked | Lists registered sessions. |
-| `kill_agent` | Locked | Initiates process termination with timeout. |
+## MCP resources
 
----
+Currently registered: `agy://logs/{session_id}` and `agy://pending/{session_id}`. Do not assume other legacy or design-only resource URIs are available.
 
-## 4. MCP Resources
-
-- `subagentbridge://audit/{stream}`: Append-only audit events for the given stream.
-- `subagentbridge://budget/{run_id}`: Budget consumption metrics and reservation states.
-- `agy://logs/{session_id}`: Session execution log stream.
-- `agy://pending/{session_id}`: Pending action records.
+See [Simpul status](SIMPUL_STATUS.md), [MCP setup](MCP_INTEGRATION.md) and [security](SECURITY_APPROVAL_MODEL.md).
