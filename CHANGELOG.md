@@ -1,5 +1,12 @@
 # Changelog
 
+## Simpul documentation update — 2026-10-23
+
+Public branding is now **Simpul**. The default branch still contains the historical SubagentBridge baseline. PR #2 (baseline recovery) and PR #3 (unreleased 1.0.0rc1 candidate) remain open; no code release, merge or security certification is implied. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md).
+
+The older roadmap notes below are historical proposals, not a statement of current implementation.
+
+
 ## [Unreleased]
 
 ### Planned for v0.1.0
