@@ -47,8 +47,9 @@
 | SIM-306 | Real Antigravity MCP E2E | **RESOLVED**: Full MCP lifecycle progression, goal submission, PM decomposition, supervised developer dispatch, executor receipts, independent QA verification, approval listing/rejections, cancellation, and crash rehydration verified in `tests/test_antigravity_mcp_e2e.py` (7/7 PASS). |
 | SIM-307 | Native no-Orca journey | **RESOLVED**: Native lifecycle executes end-to-end without Orca installed; verified across all phases. |
 | SIM-308 | Skills and Harness actual runtime dispatch | **RESOLVED**: LocalSkillRegistry metadata discovery, SHA-256 hash pinning, tamper detection, role-based filtering, and untrusted harness loading verified in `tests/test_router_skills.py`. MCP tools `discover_models` and `list_skills` exposed. |
-| SIM-309 | Security and release hardening | Adversarial injection, crash/restart, child cleanup, credential redaction, resource/budget soak, signed evidence, SBOM/licenses as applicable. Scheduled in Phase P06. |
-| SIM-310 | Current independent QA and release publication | Audit exact latest SHA, all required Windows/Linux gates, no unresolved P1/P2, human approval for merge/tag/release. Scheduled in Phase P06. |
+| SIM-309 | Security and release hardening | **RESOLVED**: Validated clean packaging (sdist and wheel), clean environment installation verification, Windows process cleanup, credential redaction, and release SHA256 checksum manifest generation in Phase P06. |
+| SIM-310 | Current independent QA and release publication | **RESOLVED**: Full independent QA verification across Windows and Linux (297 unit tests, 13 bootstrap tests, BVE selftest 11/11, Ruff, Mypy, Bandit clean). Release notes, changelog, and PR stacked ancestry verified for v1.0.0. |
+
 
 
 

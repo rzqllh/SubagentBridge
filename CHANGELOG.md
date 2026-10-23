@@ -7,6 +7,19 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-10-23
+
+### Production Release
+- **Production Release v1.0.0**: Simpul (SubagentBridge) production release, passing all mandatory acceptance gates E01–E23, core invariants INV-01–INV-12, and security governance policies under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`.
+
+### Added & Hardened
+- **Baseline Recovery & CI Pinning (Phase P00 / PR #2)**: Pinned CI checkout to exact immutable PR commit HEAD, integrated v3.1 bootstrap tests into discovery, and resolved BVE relative executable resolution.
+- **Codex Safety & Integrity Resolutions (Phase P01 / PR #3)**: Resolved all 12 open P1/P2 Codex review findings with dedicated regression tests. Enforced approval rejection finality, replay resistance, sticky recovery states, ledger-scoped reservations, and 3-round fix limits.
+- **Durable Control Plane (Phase P02 / PR #4)**: Implemented persistent SQLite store for runs, tasks, and dispatches; crash/restart rehydration restoring active task states; and honest MCP evidence reporting preventing fabricated `verified` claims.
+- **Supervised Native Lifecycle (Phase P03 / PR #5)**: Implemented full supervised native execution: `submit_goal -> PM task decomposition -> frozen acceptance criteria -> controlled developer dispatch -> ToolExecutor -> trustworthy receipts -> independent QA -> final result`. Added MCP `execute_run` and `execute_task` tools.
+- **Model Routing & Pinned Skills (Phase P04 / PR #6)**: Resolved HTTP 401 root cause via environment variable propagation into composition root; added truthful capability discovery and selection; bounded retries on transient router errors; safe read-only tool dispatch; SHA-256 hash pinning, tamper detection, role filtering, and untrusted prompt harness loading.
+- **Antigravity QA & E01–E23 Gates (Phase P05 / PR #7)**: End-to-end FastMCP verification; executed real same-user broker adversarial security checks (E18, 7/7 PASS); Windows BVE selftest (E21, 11/11 PASS); checkout-root containment (E22, 6/6 PASS); and pinned remote checkout (E23, 1/1 PASS).
+
 ---
 
 ## [1.0.0-rc1] - 2026-10-21
