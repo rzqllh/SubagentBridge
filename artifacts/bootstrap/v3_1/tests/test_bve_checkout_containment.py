@@ -78,5 +78,23 @@ class CheckoutBoundaryTests(unittest.TestCase):
             r = self._invoke(cwd=unrelated, log_dir=pathlib.Path(td) / "logs", checkout_root=checkout)
             self.assertEqual(r.returncode, 125, r.stdout + r.stderr)
 
+    def test_relative_executable_resolution_from_cwd(self):
+        with tempfile.TemporaryDirectory() as td:
+            checkout = pathlib.Path(td) / "checkout"
+            checkout.mkdir()
+            logs = pathlib.Path(td) / "logs"
+            script_name = "test_run.bat" if sys.platform == "win32" else "test_run.sh"
+            script_file = checkout / script_name
+            if sys.platform == "win32":
+                script_file.write_text("@echo off\necho RELATIVE_OK\n", encoding="utf-8")
+            else:
+                script_file.write_text("#!/bin/sh\necho RELATIVE_OK\n", encoding="utf-8")
+                script_file.chmod(0o755)
+            cmd = [sys.executable, str(TOOL), "run", "--cwd", str(checkout), "--log-dir", str(logs), "--label", "rel", "--", f"./{script_name}"]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("RELATIVE_OK", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

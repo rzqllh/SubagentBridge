@@ -139,7 +139,12 @@ def cmd_run(args):
     safe_label = "".join(c if c.isalnum() or c in "-_." else "_" for c in args.label)
     log_path = os.path.join(log_dir, "%s-%s.log" % (safe_label, bve_id[:8]))
 
-    resolved = shutil.which(argv[0], path=os.environ.get("PATH"))
+    cmd = argv[0]
+    if os.path.dirname(cmd):
+        candidate = os.path.normpath(os.path.join(cwd, cmd))
+        resolved = shutil.which(candidate) or (candidate if os.path.isfile(candidate) and (os.name == "nt" or os.access(candidate, os.X_OK)) else None)
+    else:
+        resolved = shutil.which(cmd, path=os.environ.get("PATH"))
     start = utcnow()
     t0 = time.time()
     exit_code = None
@@ -285,6 +290,18 @@ def cmd_selftest(_args):
         r = run_tool(sibling_logs, nested, "explicit-root", ["--checkout-root", cwd], [py, "-c", "pass"])
         check("explicit root rejects sibling logs within checkout", r.returncode == 125, "tool=%s" % r.returncode)
         check("no log directory was created for rejected sibling", not os.path.exists(sibling_logs))
+
+        rel_script_name = "test_rel.bat" if os.name == "nt" else "test_rel.sh"
+        rel_script_path = os.path.join(cwd, rel_script_name)
+        if os.name == "nt":
+            with open(rel_script_path, "w", encoding="utf-8") as f:
+                f.write("@echo off\necho RELATIVE-MARKER\n")
+        else:
+            with open(rel_script_path, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\necho RELATIVE-MARKER\n")
+            os.chmod(rel_script_path, 0o755)
+        r = run_tool(logs, cwd, "relative", [], ["./%s" % rel_script_name])
+        check("relative executable in cwd is resolved and executed", r.returncode == 0 and "RELATIVE-MARKER" in r.stdout, "tool=%s" % r.returncode)
 
         r = run_tool(logs, cwd, "missing", [], ["definitely-not-a-real-executable-xyz"])
         rec = last_record(logs)
