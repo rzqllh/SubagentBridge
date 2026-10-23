@@ -40,6 +40,10 @@ class ModelRoutingTable:
                 raise ValueError('duplicate discovered model identity')
             self._models[model.model_id] = model
 
+    @property
+    def models(self) -> tuple[ModelCapabilities, ...]:
+        return tuple(self._models.values())
+
     def select(self, requested_ids: Iterable[str], *, coding: bool = False, structured: bool = False, streaming: bool = False) -> ModelCapabilities:
         for ident in requested_ids:
             m = self._models.get(ident)

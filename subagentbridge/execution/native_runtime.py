@@ -27,6 +27,7 @@ from subagentbridge.domain.contracts import Role, Run, Task
 from subagentbridge.domain.registry import Principal
 from subagentbridge.execution.isolation.runner import IsolatedExecutionRunner
 from subagentbridge.execution.tool_executor.supervised import SupervisedReadOnlyExecutor
+from subagentbridge.models.nine_router import CallBudget
 from subagentbridge.storage.sqlite_store import SQLiteStore
 from subagentbridge.team.coordinator import SupervisedCoordinator
 from subagentbridge.workspaces.scope import ScopedWorkspace
@@ -214,6 +215,9 @@ class SupervisedNativeLifecycle:
         principals: tuple[Principal, Principal, Principal, Principal],
         task_records: list[dict],
         command_map: Mapping[str, Sequence[str]] | None = None,
+        provider_terms_approved: bool = False,
+        consult_model: bool = False,
+        model_id: str | None = None,
     ) -> dict:
         """Execute the full DAG of tasks under supervision, receipts, and QA review."""
         pm, dev, qa, executor = principals
@@ -268,10 +272,66 @@ class SupervisedNativeLifecycle:
                 {"task_id": task_id, "dispatch_id": dispatch_plan.dispatch_id},
             )
 
-            # 3. Developer execution under ToolExecutor supervision
+            # 3. Load role skills as instructional content
+            role_skills = self.sys.skills.get_skills_for_role(record.get("role", "DEVELOPER"))
+            for sk in role_skills:
+                try:
+                    self.sys.skills.load_harness_content(sk)
+                except Exception:
+                    pass
+
+            # Optional model consultation under D-02 review gate
+            if consult_model:
+                if not provider_terms_approved:
+                    return {
+                        "status": "FAILED",
+                        "run_id": run_id,
+                        "failed_task_id": task_id,
+                        "reason": "D-02 provider terms review required before model invocation",
+                    }
+                chosen_model = model_id or (
+                    self.sys.nine_router.models.models[0].model_id
+                    if self.sys.nine_router.models and self.sys.nine_router.models.models
+                    else "default"
+                )
+                budget = CallBudget(requests=1, tokens=500)
+                try:
+                    chat_res = self.sys.nine_router.chat(
+                        model_id=chosen_model,
+                        messages=(
+                            {"role": "system", "content": f"Task Role: {record.get('role', 'DEVELOPER')}"},
+                            {"role": "user", "content": f"Execute task: {record.get('title', task_id)}"},
+                        ),
+                        max_tokens=250,
+                        budget=budget,
+                        provider_terms_approved=True,
+                        max_retries=1,
+                    )
+                    self._log_event(
+                        run_id,
+                        f"model_chat:{task_id}",
+                        "MODEL_CONSULTED",
+                        {
+                            "task_id": task_id,
+                            "model": chosen_model,
+                            "usage_class": chat_res.usage_class,
+                            "prompt_tokens": chat_res.prompt_tokens,
+                            "completion_tokens": chat_res.completion_tokens,
+                        },
+                    )
+                except Exception as exc:
+                    self._log_event(
+                        run_id,
+                        f"model_err:{task_id}",
+                        "MODEL_ERROR",
+                        {"task_id": task_id, "error": str(exc)},
+                    )
+
+            # 4. Developer execution under ToolExecutor supervision
             cmd = commands.get(task_id)
             exit_code = 0
             if cmd:
+
                 try:
                     result = self.runner.run_isolated(cmd, timeout_seconds=30)
                     exit_code = result.exit_code
