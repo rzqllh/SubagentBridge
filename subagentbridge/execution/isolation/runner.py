@@ -93,7 +93,7 @@ class IsolatedExecutionRunner:
 
         kwargs: dict = {}
         if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         else:
             kwargs["start_new_session"] = True
 
