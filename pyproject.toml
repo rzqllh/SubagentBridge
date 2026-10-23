@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subagentbridge"
-version = "1.0.0rc1"
+version = "1.0.0"
 description = "Native-first MCP subagent supervisor for Antigravity IDE and Windows"
 readme = "README.md"
 authors = [
@@ -16,7 +16,7 @@ dependencies = [
     "mcp>=1.28,<2",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
