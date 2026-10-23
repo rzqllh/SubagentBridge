@@ -7,7 +7,7 @@ You are the implementing agent for `rzqllh/SubagentBridge`. Follow this goal exa
 Attached: `Xyeena_SubagentBridge_TEAM_RULES.md`, `Xyeena_SubagentBridge_Production_PR_Plan_v3_1.md`, `bve_tool.py`.
 
 Pinned SHA-256 values:
-- `bve_tool.py`: `30db221b6f665cb61a1054bb972b1155fa66633ea6af4f35681f83d9c3f919c6`
+- `bve_tool.py`: `21f1ab40820b94c74daf8921ec9683fc18e3a38c5f4d2d67d27571b790cbfece`
 - TEAM_RULES: `aa9e843bb2c13a369c5a26f4932f48418cf4b407e0e3a6659aaab5659f86272b`
 - Plan v3.1: `2b840256eb488cbaf1a404bf33ca28a2686b7b34cf062a4c26bb5c0fe7c39f0a`
 

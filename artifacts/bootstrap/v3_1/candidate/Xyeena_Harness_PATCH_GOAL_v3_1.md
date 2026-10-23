@@ -5,7 +5,7 @@ You are the implementing agent for the Xyeena Harness repository. Follow this go
 ## 1. Integrity check (your first commands)
 
 Attached: `bve_tool.py`, `Xyeena_SubagentBridge_VERIFIER_PROMPT_v3_1.md`.
-Pinned SHA-256 of `bve_tool.py`: `30db221b6f665cb61a1054bb972b1155fa66633ea6af4f35681f83d9c3f919c6`.
+Pinned SHA-256 of `bve_tool.py`: `21f1ab40820b94c74daf8921ec9683fc18e3a38c5f4d2d67d27571b790cbfece`.
 
 1. Bootstrap hash check (the helper cannot vouch for itself): compute the SHA-256 of `bve_tool.py` with a native tool, whichever exists: PowerShell `Get-FileHash -Algorithm SHA256 .\bve_tool.py`; Windows `certutil -hashfile bve_tool.py SHA256`; Linux `sha256sum bve_tool.py`; macOS `shasum -a 256 bve_tool.py`. Compare it with the pinned value. Only then run `python bve_tool.py selftest` (must print `SELFTEST PASSED`, exit 0) and use the helper for every other hash.
 2. In the repository root, `manifest.yaml` must contain `name: Xyeena Harness System` and `version: 3.1.0`, and `package.json` must have `"name": "@xyeena/harness"`. Otherwise BLOCKED.
