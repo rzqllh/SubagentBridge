@@ -61,10 +61,22 @@ _pending = PendingActionQueue(store=_store)
 _manager = AgentManager(pending_actions=_pending, store=_store)
 _rehydrated_count = _manager.rehydrate(runner_registry)
 
-# In-memory tracking for runs and tasks, with audit logging via composition root
+# In-memory tracking for runs and tasks, with SQLite persistence and audit logging via composition root
 _runs: dict[str, dict] = {}
 _tasks: dict[str, list[dict]] = {}
 _production_systems: dict[Path, ProductionSystem] = {}
+
+
+def rehydrate_runs_and_tasks(store: SQLiteStore) -> None:
+    store.reset_stale_active_tasks()
+    all_runs = store.load_all_runs()
+    _runs.clear()
+    _runs.update({r["run_id"]: r for r in all_runs})
+    _tasks.clear()
+    _tasks.update(store.load_all_tasks())
+
+
+rehydrate_runs_and_tasks(_store)
 
 
 def get_production_system(workspace_root: str | Path | None = None) -> ProductionSystem:
@@ -111,24 +123,27 @@ def submit_goal(
     run_id = f"run_{uuid4().hex[:12]}"
     task_id = f"task_{uuid4().hex[:8]}"
 
-    _runs[run_id] = {
+    run_record = {
         "run_id": run_id,
         "goal": goal.strip(),
         "workspace_path": str(ws),
         "status": "SUBMITTED",
         "model": model or "default",
     }
-    _tasks[run_id] = [
-        {
-            "task_id": task_id,
-            "run_id": run_id,
-            "title": "Decompose and execute goal under supervised coordination",
-            "status": "PENDING",
-            "role": "PM",
-            "dependencies": [],
-            "evidence_ids": [],
-        }
-    ]
+    task_record = {
+        "task_id": task_id,
+        "run_id": run_id,
+        "title": "Decompose and execute goal under supervised coordination",
+        "status": "PENDING",
+        "role": "PM",
+        "dependencies": [],
+        "evidence_ids": [],
+    }
+
+    _store.upsert_run(run_record)
+    _store.upsert_task(task_record)
+    _runs[run_id] = run_record
+    _tasks[run_id] = [task_record]
 
     try:
         sys = get_production_system(ws)
@@ -141,6 +156,12 @@ def submit_goal(
     except Exception as exc:
         _runs.pop(run_id, None)
         _tasks.pop(run_id, None)
+        try:
+            _store._conn.execute("DELETE FROM tasks WHERE run_id=?", (run_id,))
+            _store._conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+            _store._conn.commit()
+        except Exception:
+            pass
         return {"status": "ERROR", "error": f"audit ledger write failed: {exc}"}
 
     return {
@@ -156,36 +177,53 @@ def get_run(run_id: str) -> dict:
     """Read summary status and task count for a given run."""
     run = _runs.get(run_id)
     if run is None:
+        run = _store.get_run(run_id)
+        if run is not None:
+            _runs[run_id] = run
+    if run is None:
         return {"status": "NOT_FOUND", "run_id": run_id}
-    task_count = len(_tasks.get(run_id, []))
+    tasks = _tasks.get(run_id)
+    if tasks is None:
+        tasks = _store.load_tasks_for_run(run_id)
+        _tasks[run_id] = tasks
     return {
         "run_id": run_id,
         "status": run["status"],
         "goal": run["goal"],
         "workspace_path": run["workspace_path"],
-        "task_count": task_count,
+        "task_count": len(tasks),
     }
 
 
 @mcp.tool()
 def list_tasks(run_id: str) -> list[dict]:
     """List all tasks in a run with their status, role, and dependencies."""
-    return [dict(t) for t in _tasks.get(run_id, [])]
+    tasks = _tasks.get(run_id)
+    if tasks is None:
+        tasks = _store.load_tasks_for_run(run_id)
+        _tasks[run_id] = tasks
+    return [dict(t) for t in tasks]
 
 
 @mcp.tool()
 def get_task_evidence(run_id: str, task_id: str) -> dict:
     """Retrieve verified executor receipts and QA verdicts for a specific task."""
-    tasks = _tasks.get(run_id, [])
+    tasks = _tasks.get(run_id)
+    if tasks is None:
+        tasks = _store.load_tasks_for_run(run_id)
+        _tasks[run_id] = tasks
     for t in tasks:
         if t["task_id"] == task_id:
+            ev_ids = t.get("evidence_ids", [])
+            # Honest MCP status: cannot claim verified: True without valid evidence
+            is_verified = (t["status"] == "VERIFIED" and len(ev_ids) > 0)
             return {
                 "run_id": run_id,
                 "task_id": task_id,
                 "status": t["status"],
                 "role": t.get("role", "UNKNOWN"),
-                "evidence_ids": t.get("evidence_ids", []),
-                "verified": t["status"] == "VERIFIED",
+                "evidence_ids": ev_ids,
+                "verified": is_verified,
             }
     return {"status": "NOT_FOUND", "run_id": run_id, "task_id": task_id}
 
@@ -219,11 +257,32 @@ def cancel_run(run_id: str, reason: str = "") -> dict:
     """Cancel an active run and mark its tasks cancelled."""
     run = _runs.get(run_id)
     if run is None:
+        run = _store.get_run(run_id)
+        if run is not None:
+            _runs[run_id] = run
+    if run is None:
         return {"status": "NOT_FOUND", "run_id": run_id}
     run["status"] = "CANCELLED"
-    for t in _tasks.get(run_id, []):
-        if t["status"] not in ("VERIFIED", "FAILED"):
+    _store.upsert_run(run)
+    tasks = _tasks.get(run_id)
+    if tasks is None:
+        tasks = _store.load_tasks_for_run(run_id)
+        _tasks[run_id] = tasks
+    for t in tasks:
+        if t["status"] not in ("VERIFIED", "FAILED", "CANCELLED"):
             t["status"] = "CANCELLED"
+            _store.upsert_task(t)
+    try:
+        ws = Path(run.get("workspace_path", ".")).resolve()
+        sys = get_production_system(ws)
+        sys.ledger.append_once(
+            stream=f"run:{run_id}",
+            idempotency_key=f"cancel:{run_id}",
+            event_type="RUN_CANCELLED",
+            payload={"run_id": run_id, "reason": reason},
+        )
+    except Exception:
+        pass
     return {"status": "CANCELLED", "run_id": run_id, "reason": reason}
 
 
