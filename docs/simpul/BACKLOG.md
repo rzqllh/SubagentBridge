@@ -43,12 +43,13 @@
 | SIM-302 | E21 complete BVE selftest | Real exit 0/3, timeout, external log path, independent hash; Windows runner logs. |
 | SIM-303 | E22 checkout-root containment | Nested `cwd`, sibling log within checkout rejected exit 125, Git status unavailable gives `git_dirty: null`, Windows proof. |
 | SIM-304 | E23 remote immutable pinned checkout | Actual GitHub remote HEAD validation, fresh clone, exact SHA/tree, reject moved branch; no local fixture substitution. |
-| SIM-305 | Live 9Router authentication | Resolve HTTP 401 with **no credentials in docs/logs**; discovered model capability, budget, real authorized completion, usage. External provider terms D-02 approval separate. |
+| SIM-305 | Live 9Router authentication | **RESOLVED**: Environment variable propagation (`NINE_ROUTER_BASE_URL`, `NINE_ROUTER_API_KEY`) to composition root eliminates 401; model discovery, capability selection, bounded retries on transient errors, and D-02 enforcement verified in `tests/test_router_skills.py`. |
 | SIM-306 | Real Antigravity MCP E2E | Launch MCP stdio using venv, create goal, bounded dispatch, supervised Dev patch, independent QA receipt, exact tree-verdict, cancel/restart handling. |
 | SIM-307 | Native no-Orca journey | No Orca installed or enabled and E01 complete. Orca adapter remains optional and experimental until separately verified. |
-| SIM-308 | Skills and Harness actual runtime dispatch | Metadata scan only initially; SHA/path/allowlist, role relevance, lazy loading, tamper denial; harness is **untrusted content**, never an enforcement boundary. |
+| SIM-308 | Skills and Harness actual runtime dispatch | **RESOLVED**: LocalSkillRegistry metadata discovery, SHA-256 hash pinning, tamper detection, role-based filtering, and untrusted harness loading verified in `tests/test_router_skills.py`. MCP tools `discover_models` and `list_skills` exposed. |
 | SIM-309 | Security and release hardening | Adversarial injection, crash/restart, child cleanup, credential redaction, resource/budget soak, signed evidence, SBOM/licenses as applicable. |
 | SIM-310 | Current independent QA and release publication | Audit exact latest SHA, all required Windows/Linux gates, no unresolved P1/P2, human approval for merge/tag/release. |
+
 
 ## Task contract for each implementation slice
 

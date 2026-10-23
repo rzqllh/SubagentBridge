@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .capability import ModelCapabilities, ModelRoutingTable, UnknownCapability
+from subagentbridge.execution.tool_executor.supervised import SupervisedReadOnlyExecutor
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
@@ -172,9 +173,12 @@ class NineRouterClient:
         return tuple(result)
 
     def chat(self, *, model_id: str, messages: tuple[Mapping[str, str], ...],
-             max_tokens: int, budget: CallBudget, provider_terms_approved: bool = False) -> ChatReply:
+             max_tokens: int, budget: CallBudget, provider_terms_approved: bool = False,
+             max_retries: int = 0) -> ChatReply:
         if provider_terms_approved is not True:
             raise PermissionError('D-02 review is required before model invocation')
+        if type(max_retries) is not int or not 0 <= max_retries <= 5:
+            raise ValueError('max_retries must be an integer between 0 and 5')
         if self.models is None:
             raise UnknownCapability('run model discovery before sending requests')
         if not model_id or self.models.select([model_id]).model_id != model_id:
@@ -186,9 +190,20 @@ class NineRouterClient:
                 for m in messages)):
             raise ValueError('bounded text-only role/content messages required')
         budget.charge(max_tokens)
-        obj = self.transport.request(config=self.config, method='POST', path='/v1/chat/completions',
-              payload={'model': model_id, 'messages': list(messages), 'max_tokens': max_tokens,
-                       'stream': False})
+        last_exc: RouterUnavailable | None = None
+        obj: object = None
+        for attempt in range(max_retries + 1):
+            try:
+                obj = self.transport.request(config=self.config, method='POST', path='/v1/chat/completions',
+                      payload={'model': model_id, 'messages': list(messages), 'max_tokens': max_tokens,
+                               'stream': False})
+                break
+            except RouterUnavailable as exc:
+                last_exc = exc
+                if attempt >= max_retries:
+                    raise
+        if obj is None and last_exc is not None:
+            raise last_exc
         if not isinstance(obj, dict) or not isinstance(obj.get('choices'), list) or len(obj['choices']) != 1:
             raise RouterProtocolError('invalid chat choices')
         choice = obj['choices'][0]
@@ -210,3 +225,62 @@ class NineRouterClient:
         c = c if type(c) is int and c >= 0 else None
         return ChatReply(model_id, content, finish, p, c, False,
                          'actual' if p is not None and c is not None else 'unknown')
+
+    def execute_safe_tool_call(
+        self,
+        *,
+        tool_name: str,
+        arguments: Mapping[str, object],
+        executor: SupervisedReadOnlyExecutor,
+        task_id: str = "inspection",
+        dispatch_id: str = "inspection",
+        human_supervised: bool = True,
+    ) -> dict[str, object]:
+        """Execute only strictly allowlisted, read-only inspection tools through SupervisedReadOnlyExecutor.
+
+        Arbitrary execution, modifying commands, and unconfined paths are rejected.
+        """
+        if not human_supervised:
+            raise PermissionError("Unsupervised tool execution is forbidden")
+        if tool_name in ("read_file", "read_text"):
+            path_val = arguments.get("path") or arguments.get("relative_path")
+            if not isinstance(path_val, str) or not path_val.strip():
+                raise ValueError("Valid relative path string required")
+            content = executor.read_text(path_val)
+            return {"status": "SUCCESS", "tool": tool_name, "content": content}
+        elif tool_name == "git_status":
+            receipt = executor.run_inspection(
+                task_id=task_id,
+                dispatch_id=dispatch_id,
+                argv=("git", "status", "--porcelain"),
+                human_supervised=human_supervised,
+            )
+            return {
+                "status": "SUCCESS",
+                "tool": tool_name,
+                "receipt_id": receipt.receipt_id,
+                "exit_code": receipt.exit_code,
+            }
+        elif tool_name == "git_rev_parse":
+            target = arguments.get("target", "HEAD")
+            if target == "HEAD":
+                argv: tuple[str, ...] = ("git", "rev-parse", "HEAD")
+            elif target in ("HEAD^{tree}", "tree"):
+                argv = ("git", "rev-parse", "HEAD^{tree}")
+            else:
+                raise PermissionError(f"Target {target!r} not allowlisted for git_rev_parse")
+            receipt = executor.run_inspection(
+                task_id=task_id,
+                dispatch_id=dispatch_id,
+                argv=argv,
+                human_supervised=human_supervised,
+            )
+            return {
+                "status": "SUCCESS",
+                "tool": tool_name,
+                "receipt_id": receipt.receipt_id,
+                "exit_code": receipt.exit_code,
+            }
+        else:
+            raise PermissionError(f"Tool {tool_name!r} is not in the supervised read-only allowlist")
+

@@ -88,9 +88,13 @@ def get_production_system(workspace_root: str | Path | None = None) -> Productio
     root = Path(workspace_root if workspace_root else Path.cwd()).resolve()
     if root not in _production_systems:
         bridge_db = os.environ.get("SUBAGENTBRIDGE_PRODUCTION_DB", str(root / ".subagentbridge" / "production_audit.db"))
+        router_url = os.environ.get("NINE_ROUTER_BASE_URL", os.environ.get("SUBAGENTBRIDGE_ROUTER_URL", "http://127.0.0.1:9099"))
+        router_key = os.environ.get("NINE_ROUTER_API_KEY", os.environ.get("SUBAGENTBRIDGE_ROUTER_KEY", "production-local-key"))
         _production_systems[root] = build_production_system(
             workspace_root=root,
             db_path=bridge_db,
+            nine_router_base_url=router_url,
+            nine_router_api_key=router_key,
         )
     return _production_systems[root]
 
@@ -380,6 +384,54 @@ def get_model_usage() -> dict:
     except Exception:
         pass
     return usage
+
+
+@mcp.tool()
+def discover_models(workspace_path: str | None = None) -> list[dict]:
+    """Discover available models and their capabilities from the local 9Router instance."""
+    try:
+        sys = get_production_system(workspace_path)
+        caps = sys.nine_router.discover()
+        return [
+            {
+                "model_id": c.model_id,
+                "tool_calls": c.tool_calls,
+                "structured_output": c.structured_output,
+                "streaming": c.streaming,
+                "input_cost_known": c.input_cost_known,
+                "output_cost_known": c.output_cost_known,
+            }
+            for c in caps
+        ]
+    except Exception as exc:
+        return [{"status": "ERROR", "error": str(exc)}]
+
+
+@mcp.tool()
+def list_skills(role: str | None = None, workspace_path: str | None = None) -> list[dict]:
+    """List approved, pinned skills and discovered skills for a specific role or workspace."""
+    try:
+        sys = get_production_system(workspace_path)
+        if role:
+            skill_names = sys.skills.get_skills_for_role(role)
+        else:
+            discovered = sys.skills.discover_skills()
+            all_names = set(sys.skills.pins.keys()) | set(discovered.keys())
+            skill_names = tuple(sorted(all_names))
+
+        result = []
+        for name in skill_names:
+            is_pinned = name in sys.skills.pins
+            pin_sha = sys.skills.pins.get(name, "")
+            result.append({
+                "skill": name,
+                "pinned": is_pinned,
+                "sha256": pin_sha,
+            })
+        return result
+    except Exception as exc:
+        return [{"status": "ERROR", "error": str(exc)}]
+
 
 
 @mcp.tool()
