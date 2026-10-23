@@ -82,12 +82,26 @@ class TaskAggregate:
             raise ValueError("new tree cannot be empty")
         if new_tree_sha == self.task.tree_sha:
             return
+        if self._state is TaskState.RECOVERY_REQUIRED:
+            raise InvalidTransition("cannot change tree while task is in RECOVERY_REQUIRED; reconciliation required")
         self.task = Task(self.task.task_id, self.task.run_id, self.task.acceptance_criteria,
                          new_tree_sha, self.task.policy_revision)
         self._state = TaskState.FROZEN
         self.verified_tree_sha = None
         self.qa_verdict = None
         self.active_dispatch = None
+
+    def reconcile(self, pm: Principal, *, new_tree_sha: str | None = None) -> None:
+        self.identities.require(pm, Role.PM)
+        if self._state is not TaskState.RECOVERY_REQUIRED:
+            raise InvalidTransition("reconcile requires RECOVERY_REQUIRED")
+        tree = new_tree_sha or self.task.tree_sha
+        self.task = Task(self.task.task_id, self.task.run_id, self.task.acceptance_criteria,
+                         tree, self.task.policy_revision)
+        self._state = TaskState.FROZEN
+        self.active_dispatch = None
+        self.verified_tree_sha = None
+        self.qa_verdict = None
 
     def block(self):
         self._state = TaskState.BLOCKED

@@ -231,7 +231,7 @@ class AuditLedger:
                     raise ValueError("no unresolved recovery checkpoint")
                 existing = self._read_rows(stream)
                 self._check_rows(stream, existing)
-                key = "recovery:" + session_id + ":" + evidence_key
+                key = f"recovery:{len(session_id)}:{session_id}:{evidence_key}"
                 if self._conn.execute(
                     "SELECT 1 FROM audit_events WHERE stream=? AND idempotency_key=?",
                     (stream, key)).fetchone():

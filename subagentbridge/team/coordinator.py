@@ -58,6 +58,7 @@ class SupervisedCoordinator:
         self._tasks = {k: TaskAggregate(t, identities, receipts) for k, t in tasks.items()}
         self._test_hashes = dict(qa_test_hashes)
         self._active_ids: dict[str, str] = {}
+        self._fix_rounds: dict[str, int] = {k: 0 for k in tasks}
 
     def state(self, task_id: str) -> TaskState:
         return self._tasks[task_id].state
@@ -106,26 +107,69 @@ class SupervisedCoordinator:
 
     def qa_review(self, *, qa: Principal, task_id: str, evidence: tuple[Evidence, ...],
                   covered_criteria: tuple[str, ...], actual_test_hashes: Mapping[str, str],
-                  actual_tree_sha: str, clean: bool, fix_round: int,
+                  actual_tree_sha: str, clean: bool, fix_round: int = 0,
                   human_waiver: bool = False) -> EvidenceDecision:
         self.identities.require(qa, Role.QA)
+        if task_id not in self._tasks:
+            raise KeyError('unknown task')
         agg = self._tasks[task_id]
         if agg.state is not TaskState.PROCESS_SUCCEEDED or agg.active_dispatch is None:
             raise InvalidTransition('QA review requires PROCESS_SUCCEEDED')
+
+        # Enforce fix-round cap: count is tracked internally per task and cannot be reset by caller
+        current_round = max(self._fix_rounds.get(task_id, 0), fix_round if type(fix_round) is int and fix_round >= 0 else 0)
+        if current_round >= 3:
+            agg.block()
+            if task_id in self._active_ids:
+                dispatch_id = self._active_ids.pop(task_id)
+                try:
+                    self.budget.release(dispatch_id)
+                except Exception:
+                    pass
+            return EvidenceDecision('BLOCKED', 'three fix rounds exhausted: human required')
+
         gate = QaEvidenceGate(self.receipts,
             frozen_criteria=agg.task.acceptance_criteria, qa_test_hashes=self._test_hashes)
         decision, verdict = gate.check(qa=qa, evidence=evidence,
             covered_criteria=covered_criteria, actual_test_hashes=actual_test_hashes,
             task_id=task_id, dispatch_id=agg.active_dispatch.dispatch_id,
             expected_tree=agg.task.tree_sha, actual_tree=actual_tree_sha,
-            checkout_clean=clean, fix_round=fix_round, human_waiver=human_waiver)
+            checkout_clean=clean, fix_round=current_round, human_waiver=human_waiver)
+
         if verdict is not None and decision.status == 'QA_VERIFIED':
             agg.qa_verified(qa, verdict)
             agg.mark_verified(qa)
             dispatch_id = self._active_ids.pop(task_id)
             # No refund from developer/LLM token claims. Budget remains charged.
             self.budget.release(dispatch_id)
+        else:
+            self._fix_rounds[task_id] = current_round + 1
+            if self._fix_rounds[task_id] >= 3:
+                agg.block()
+                if task_id in self._active_ids:
+                    dispatch_id = self._active_ids.pop(task_id)
+                    try:
+                        self.budget.release(dispatch_id)
+                    except Exception:
+                        pass
+                return EvidenceDecision('BLOCKED', 'three fix rounds exhausted: human required')
+
         return decision
+
+    def reconcile_recovery(self, task_id: str, *, pm: Principal, new_tree_sha: str | None = None) -> None:
+        self.identities.require(pm, Role.PM)
+        if task_id not in self._tasks:
+            raise KeyError('unknown task')
+        agg = self._tasks[task_id]
+        if agg.state is not TaskState.RECOVERY_REQUIRED:
+            raise InvalidTransition('reconcile_recovery requires RECOVERY_REQUIRED')
+        if task_id in self._active_ids:
+            dispatch_id = self._active_ids.pop(task_id)
+            try:
+                self.budget.release(dispatch_id)
+            except Exception:
+                pass
+        agg.reconcile(pm, new_tree_sha=new_tree_sha)
 
     def update_tree(self, new_tree_sha: str) -> None:
         """Revoke all local success states, even dependent task verdicts.
@@ -141,6 +185,9 @@ class SupervisedCoordinator:
             if agg.state in (TaskState.DISPATCHED, TaskState.PROCESS_SUCCEEDED):
                 agg.recover_unknown()
                 # Keep existing task SHA until human reconciles the process.
+                continue
+            if agg.state is TaskState.RECOVERY_REQUIRED:
+                # Sticky recovery state: cannot be cleared by repeated tree update before reconciliation
                 continue
             if agg.state is TaskState.CREATED:
                 task = agg.task

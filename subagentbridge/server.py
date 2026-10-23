@@ -64,28 +64,37 @@ _rehydrated_count = _manager.rehydrate(runner_registry)
 # In-memory tracking for runs and tasks, with audit logging via composition root
 _runs: dict[str, dict] = {}
 _tasks: dict[str, list[dict]] = {}
-_production_system: ProductionSystem | None = None
+_production_systems: dict[Path, ProductionSystem] = {}
 
 
 def get_production_system(workspace_root: str | Path | None = None) -> ProductionSystem:
-    global _production_system
-    if _production_system is None:
-        root = Path(workspace_path if (workspace_path := workspace_root) else Path.cwd()).resolve()
+    root = Path(workspace_root if workspace_root else Path.cwd()).resolve()
+    if root not in _production_systems:
         bridge_db = os.environ.get("SUBAGENTBRIDGE_PRODUCTION_DB", str(root / ".subagentbridge" / "production_audit.db"))
-        _production_system = build_production_system(
+        _production_systems[root] = build_production_system(
             workspace_root=root,
             db_path=bridge_db,
         )
-    return _production_system
+    return _production_systems[root]
 
 
-def close_production_system() -> None:
-    global _production_system
-    if _production_system is not None:
-        try:
-            _production_system.close()
-        finally:
-            _production_system = None
+def close_production_system(workspace_root: str | Path | None = None) -> None:
+    if workspace_root is not None:
+        root = Path(workspace_root).resolve()
+        sys = _production_systems.pop(root, None)
+        if sys is not None:
+            sys.close()
+    else:
+        errors = []
+        for root, sys in list(_production_systems.items()):
+            try:
+                sys.close()
+            except Exception as e:
+                errors.append(e)
+            finally:
+                _production_systems.pop(root, None)
+        if errors:
+            raise errors[0]
 
 
 @mcp.tool()
@@ -129,8 +138,10 @@ def submit_goal(
             event_type="GOAL_SUBMITTED",
             payload={"goal": goal.strip(), "run_id": run_id, "initial_task_id": task_id},
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _runs.pop(run_id, None)
+        _tasks.pop(run_id, None)
+        return {"status": "ERROR", "error": f"audit ledger write failed: {exc}"}
 
     return {
         "status": "SUBMITTED",

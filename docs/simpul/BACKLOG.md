@@ -15,25 +15,25 @@
 
 ## P1 — Safety and functional defects (PR #3 Codex)
 
-| ID | File / finding | Required correction and acceptance |
+| ID | File / finding | Status & Acceptance Evidence |
 | --- | --- | --- |
-| SIM-101 | `team/coordinator.py` sticky recovery state [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | Repeated tree updates never clear `RECOVERY_REQUIRED` or start new dispatch before reconciliation; regression test. |
-| SIM-102 | `server.py` goal execution [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | `submit_goal` schedules supervised real PM/Dev/QA lifecycle or truthfully exposes a different API. No eternally pending synthetic goal; end-to-end test. |
-| SIM-103 | `server.py` audit failure handling [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | DB unwritable / ledger append failure returns error, with no orphan `SUBMITTED` state. |
-| SIM-104 | `server.py` persistence and rehydration [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | Run/task state survives restart and has no duplicate workers/side effects after recovery. |
-| SIM-105 | `manager.py` receipt authority [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | Arbitrary string receipt cannot verify; issuer, task, dispatch, tree, QA verdict checked. |
-| SIM-106 | `planner/budget.py` ledger-scope reservations [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | Reservation identity/query/refund scoped by `ledger_id`; two-ledger cross-contamination and concurrency tests. May require schema migration → human approval. |
-| SIM-107 | `team/coordinator.py` three-fix-round bypass [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | Count persisted per task, reaches terminal `BLOCKED` after cap, caller cannot reset to 0 and bypass. |
-| SIM-108 | `approval/broker.py` rejection finality [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | Rejected action remains rejected; `approved=True` replay forbidden regardless of token. Human auth/secret work needs gate. |
+| SIM-101 | `team/coordinator.py` sticky recovery state [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: Repeated tree updates preserve `RECOVERY_REQUIRED` until `reconcile_recovery` is called; dispatch prevented. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_101_sticky_recovery_state`. |
+| SIM-102 | `server.py` goal execution [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **CARRIED FORWARD TO P03**: Supervised runtime wiring and task lifecycle progression scheduled in Phase P03. |
+| SIM-103 | `server.py` audit failure handling [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: DB unwritable / ledger append failure removes run/task and returns error status fail-closed. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_103_submit_goal_audit_failure_handling`. |
+| SIM-104 | `server.py` persistence and rehydration [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **CARRIED FORWARD TO P02**: Durable control plane run/task SQLite store rehydration scheduled in Phase P02. |
+| SIM-105 | `manager.py` receipt authority [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: `verify_with_executor_receipt` validates against `ReceiptIssuerRegistry`, verifies task/dispatch/tree binding and exit code 0. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_105_manager_receipt_authority`. |
+| SIM-106 | `planner/budget.py` ledger-scope reservations [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: Reservation queries, counts, and table migrations scoped by `ledger_id`; approved schema migration executed. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_106_ledger_scope_reservations`. |
+| SIM-107 | `team/coordinator.py` three-fix-round bypass [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: Count tracked internally per task, terminal `BLOCKED` after 3 failed rounds, caller cannot reset to 0. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_107_fix_round_cap_enforcement`. |
+| SIM-108 | `approval/broker.py` rejection finality [P1](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: Rejections consumed permanently, typecheck enforces explicit bool, approved replay rejected. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_108_approval_rejection_finality`. |
 
 ## P2 — Isolation, correctness, replay resistance (PR #3 Codex)
 
-| ID | File / finding | Acceptance |
+| ID | File / finding | Status & Acceptance Evidence |
 | --- | --- | --- |
-| SIM-201 | `messaging/bus.py` ack idempotency collision [P2](https://github.com/rzqllh/SubagentBridge/pull/3/files) | (`a:b`, `c`) and (`a`, `b:c`) must form distinct keys; replay semantics remain correct. |
-| SIM-202 | `storage/audit_ledger.py` reconciliation collision [P2](https://github.com/rzqllh/SubagentBridge/pull/3/files) | Independently reconcile ambiguous colon-containing pairs; second cannot get `ReplayConflict` from first. |
-| SIM-203 | `server.py` per-workspace production system [P2](https://github.com/rzqllh/SubagentBridge/pull/3/files) | Two workspace roots cannot share foreign executor, pinset, audit or resources; cleanup on close. |
-| SIM-204 | `execution/isolation/runner.py` `extra_env` redaction bypass [P2](https://github.com/rzqllh/SubagentBridge/pull/3/files) | Sensitive keys rejected/scrubbed even if caller supplies them in `extra_env`; child does not see broker/OpenAI/etc keys. |
+| SIM-201 | `messaging/bus.py` ack idempotency collision [P2](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: Ack idempotency key length-prefixed `f'ack:{len(message_id)}:{message_id}:{recipient_id}'` prevents delimiter ambiguity. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_201_messaging_ack_collision`. |
+| SIM-202 | `storage/audit_ledger.py` reconciliation collision [P2](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: Reconciliation key length-prefixed `f"recovery:{len(session_id)}:{session_id}:{evidence_key}"` eliminates ambiguity. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_202_recovery_reconciliation_collision`. |
+| SIM-203 | `server.py` per-workspace production system [P2](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: Production systems tracked per workspace root path in `_production_systems`, clean shutdown on close. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_203_per_workspace_production_system`. |
+| SIM-204 | `execution/isolation/runner.py` `extra_env` redaction bypass [P2](https://github.com/rzqllh/SubagentBridge/pull/3/files) | **RESOLVED**: Sensitive keys stripped from `extra_env` and child process environment; cross-platform process group cleanup on timeout. Verified in `tests/test_codex_p1_p2_fixes.py::test_SIM_204_runner_extra_env_redaction_bypass`. |
 
 ## P0 independent acceptance and integration
 

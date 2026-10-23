@@ -74,10 +74,12 @@ CREATE TABLE IF NOT EXISTS budget_ledger (
     max_workers INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS budget_reservations (
-    dispatch_id TEXT PRIMARY KEY,
+    ledger_id TEXT NOT NULL DEFAULT 'default',
+    dispatch_id TEXT NOT NULL,
     token_allowance INTEGER NOT NULL,
     cost_microunits INTEGER NOT NULL,
-    created_utc TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_utc TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (ledger_id, dispatch_id)
 );
 """
 
@@ -98,6 +100,11 @@ class DurableBudgetLedger:
         self._conn.execute("PRAGMA busy_timeout=5000")
         with self._lock:
             self._conn.executescript(_BUDGET_SCHEMA)
+            # Idempotent migration for existing tables created without ledger_id column:
+            cols = [info[1] for info in self._conn.execute("PRAGMA table_info(budget_reservations)").fetchall()]
+            if "ledger_id" not in cols:
+                self._conn.execute("ALTER TABLE budget_reservations ADD COLUMN ledger_id TEXT NOT NULL DEFAULT 'default'")
+                self._conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_reservations_ledger_dispatch ON budget_reservations (ledger_id, dispatch_id)")
             row = self._conn.execute("SELECT tokens_remaining, cost_remaining, max_workers FROM budget_ledger WHERE ledger_id=?", (self.ledger_id,)).fetchone()
             if row is None:
                 self._conn.execute(
@@ -126,14 +133,15 @@ class DurableBudgetLedger:
                 tokens_rem, cost_rem, max_workers = row
 
                 dup = self._conn.execute(
-                    "SELECT 1 FROM budget_reservations WHERE dispatch_id=?",
-                    (dispatch_id,)
+                    "SELECT 1 FROM budget_reservations WHERE ledger_id=? AND dispatch_id=?",
+                    (self.ledger_id, dispatch_id)
                 ).fetchone()
                 if dup:
                     raise BudgetExceeded("dispatch cannot reserve twice")
 
                 active_count = self._conn.execute(
-                    "SELECT COUNT(*) FROM budget_reservations"
+                    "SELECT COUNT(*) FROM budget_reservations WHERE ledger_id=?",
+                    (self.ledger_id,)
                 ).fetchone()[0]
 
                 if active_count >= max_workers or token_allowance > tokens_rem or cost_microunits > cost_rem:
@@ -146,8 +154,8 @@ class DurableBudgetLedger:
                     (new_tokens, new_cost, self.ledger_id)
                 )
                 self._conn.execute(
-                    "INSERT INTO budget_reservations (dispatch_id, token_allowance, cost_microunits) VALUES (?, ?, ?)",
-                    (dispatch_id, token_allowance, cost_microunits)
+                    "INSERT INTO budget_reservations (ledger_id, dispatch_id, token_allowance, cost_microunits) VALUES (?, ?, ?, ?)",
+                    (self.ledger_id, dispatch_id, token_allowance, cost_microunits)
                 )
                 self._conn.execute("COMMIT")
                 return Reservation(dispatch_id, token_allowance, cost_microunits)
@@ -163,8 +171,8 @@ class DurableBudgetLedger:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 row = self._conn.execute(
-                    "SELECT token_allowance, cost_microunits FROM budget_reservations WHERE dispatch_id=?",
-                    (dispatch_id,)
+                    "SELECT token_allowance, cost_microunits FROM budget_reservations WHERE ledger_id=? AND dispatch_id=?",
+                    (self.ledger_id, dispatch_id)
                 ).fetchone()
                 if row is None:
                     raise KeyError("unknown dispatch")
@@ -185,8 +193,8 @@ class DurableBudgetLedger:
                     (new_tokens, new_cost, self.ledger_id)
                 )
                 self._conn.execute(
-                    "DELETE FROM budget_reservations WHERE dispatch_id=?",
-                    (dispatch_id,)
+                    "DELETE FROM budget_reservations WHERE ledger_id=? AND dispatch_id=?",
+                    (self.ledger_id, dispatch_id)
                 )
                 self._conn.execute("COMMIT")
             except BaseException:
@@ -200,7 +208,8 @@ class DurableBudgetLedger:
                 (self.ledger_id,)
             ).fetchone()
             active_count = self._conn.execute(
-                "SELECT COUNT(*) FROM budget_reservations"
+                "SELECT COUNT(*) FROM budget_reservations WHERE ledger_id=?",
+                (self.ledger_id,)
             ).fetchone()[0]
             tokens = ledger_row[0] if ledger_row else 0
             cost = ledger_row[1] if ledger_row else 0

@@ -39,6 +39,6 @@ class DurableMessageBus:
         if len(found)!=1 or found[0].payload['to_principal']!=recipient_id:
             raise PermissionError('ack target mismatch')
         _event, created = self.ledger.append_once(
-            stream=self.stream,idempotency_key=f'ack:{message_id}:{recipient_id}',
-            event_type='MESSAGE_ACK',payload={'message_id':message_id,'recipient_id':recipient_id})
+            stream=self.stream, idempotency_key=f'ack:{len(message_id)}:{message_id}:{recipient_id}',
+            event_type='MESSAGE_ACK', payload={'message_id': message_id, 'recipient_id': recipient_id})
         return created

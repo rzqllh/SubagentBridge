@@ -63,12 +63,16 @@ class ApprovalBroker:
 
     def resolve_by_human(self, action_id: str, *, approved: bool, auth_token: str, reason: str = "") -> ApprovalAction:
         """Resolve an action strictly by an authenticated human using broker_secret."""
+        if type(approved) is not bool:
+            raise TypeError("approved parameter must be an explicit boolean")
         with self._lock:
             if auth_token != self._secret:
                 raise PermissionError("unauthorized caller cannot resolve human approval")
             action = self._actions.get(action_id)
             if action is None:
                 raise KeyError(f"unknown action {action_id!r}")
+            if action.state != ApprovalState.BLOCKED:
+                raise PermissionError(f"action {action_id!r} is already resolved to {action.state.value} and cannot be modified")
             if action.fingerprint in self._consumed_fingerprints:
                 raise PermissionError("one-time approval already consumed (replay prevented)")
 
@@ -83,8 +87,7 @@ class ApprovalBroker:
                 reason=reason,
             )
             self._actions[action_id] = updated
-            if approved:
-                self._consumed_fingerprints.add(action.fingerprint)
+            self._consumed_fingerprints.add(action.fingerprint)
             return updated
 
     def get_action(self, action_id: str) -> ApprovalAction | None:

@@ -200,6 +200,7 @@ class AgentManager:
         pending_actions: Optional[PendingActionQueue] = None,
         store=None,
         db_path: str | Path | None = None,
+        receipts: Optional[object] = None,
     ) -> None:
         self.sessions: dict[str, Session] = {}
         self.store = store  # optional SQLiteStore-like object (duck-typed)
@@ -207,6 +208,7 @@ class AgentManager:
         self._db_path = Path(db_path) if db_path else (Path(store.path) if store and hasattr(store, "path") else Path.home() / ".subagentbridge" / "production_audit.db")
         self._durable_budget_ledger: Optional[DurableBudgetLedger] = None
         self._verified_trees: dict[str, str] = {}
+        self.receipts = receipts
 
     @property
     def durable_budget_ledger(self) -> DurableBudgetLedger:
@@ -219,9 +221,33 @@ class AgentManager:
             )
         return self._durable_budget_ledger
 
-    def verify_with_executor_receipt(self, *, task_id: str, dispatch_id: str, tree_sha: str, receipt_id: str) -> bool:
+    def verify_with_executor_receipt(
+        self,
+        *,
+        task_id: str,
+        dispatch_id: str,
+        tree_sha: str,
+        receipt_id: str,
+        receipt_registry: Optional[object] = None,
+        qa_verdict: Optional[object] = None,
+    ) -> bool:
         if not task_id or not dispatch_id or not tree_sha or not receipt_id:
             raise ValueError("task_id, dispatch_id, tree_sha, and receipt_id required")
+        reg = receipt_registry or self.receipts
+        if reg is None:
+            raise PermissionError("no receipt issuer registry configured to verify receipt authority")
+        receipts_dict = getattr(reg, "_receipts", None)
+        receipt = receipts_dict.get(receipt_id) if isinstance(receipts_dict, dict) else None
+        if receipt is None:
+            raise PermissionError(f"unregistered or forged executor receipt: {receipt_id!r}")
+        if (receipt.task_id, receipt.dispatch_id, receipt.tree_sha) != (task_id, dispatch_id, tree_sha):
+            raise PermissionError("receipt does not match task, dispatch, and tree")
+        if getattr(receipt, "exit_code", -1) != 0:
+            raise PermissionError("execution receipt indicates failure (non-zero exit code)")
+        if qa_verdict is not None:
+            require_verdict = getattr(reg, "require_verdict", None)
+            if callable(require_verdict):
+                require_verdict(qa_verdict, task_id=task_id, dispatch_id=dispatch_id, tree_sha=tree_sha)
         self._verified_trees[task_id] = tree_sha
         return True
 
