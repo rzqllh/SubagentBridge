@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from subagentbridge.domain.contracts import Run, Task
 from subagentbridge.domain.registry import IdentityRegistry, ReceiptIssuerRegistry
 from subagentbridge.execution.tool_executor.supervised import SupervisedReadOnlyExecutor
 from subagentbridge.models.capability import ModelCapabilities, ModelRoutingTable
@@ -58,6 +59,23 @@ class ProductionSystem:
     qa_gate: QaEvidenceGate
     nine_router: NineRouterClient
     coordinator: SupervisedCoordinator | None = None
+
+    def create_coordinator(
+        self,
+        run: Run,
+        tasks: Mapping[str, Task],
+        dependencies: Mapping[str, tuple[str, ...]],
+    ) -> SupervisedCoordinator:
+        self.coordinator = SupervisedCoordinator(
+            run=run,
+            tasks=tasks,
+            dependencies=dependencies,
+            identities=self.identities,
+            receipts=self.receipts,
+            budget=self.budget,
+            qa_test_hashes=self.qa_gate.test_hashes,
+        )
+        return self.coordinator
 
     def close(self) -> None:
         """Close underlying SQLite connections cleanly to prevent handle leaks."""

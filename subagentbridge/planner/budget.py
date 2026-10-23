@@ -94,6 +94,7 @@ class DurableBudgetLedger:
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.ledger_id = ledger_id
+        self.max_workers = max_workers
         self._lock = Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._conn.execute("PRAGMA journal_mode=WAL")
