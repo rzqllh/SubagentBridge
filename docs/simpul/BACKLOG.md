@@ -39,16 +39,26 @@
 
 | ID | Next milestone | Evidence to close |
 | --- | --- | --- |
-| SIM-301 | E18 real same-user broker adversarial attack | **RESOLVED**: Tested broker token forgery rejection, replay prevention, model self-approval denial, direct file mutation denial, runner secret scrubbing, prompt injection classification immunity, receipt forgery denial, and traversal blocking in `tests/test_adversarial_broker_e18.py` (7/7 PASS). |
+| SIM-301 | E18 real same-user broker adversarial attack | **BLOCKED**: Genuine same-OS-user adversarial assessment in `tests/test_same_user_adversarial_assessment.py` proves processes under same OS UID can inspect memory/OS APIs, touch local databases, and access loopback. Full isolation requires separate OS identity/container/VM. Formally classified as `BLOCKED`, retaining `AUTONOMY: OFF` under `RISK_ACCEPTED_SAME_IDENTITY`. |
 | SIM-302 | E21 complete BVE selftest | **RESOLVED**: Bootstrap Verification Engine selftest executed on Windows-11 Python 3.13: exit codes 0/3/124/125/127, timeout enforcement, log isolation outside checkout, and SHA-256 match verified (11/11 PASS). |
 | SIM-303 | E22 checkout-root containment | **RESOLVED**: Verified explicit root and autodetected git root reject sibling logs within checkout with exit code 125, relative executable resolution in `artifacts/bootstrap/v3_1/tests/test_bve_checkout_containment.py` (6/6 PASS). |
-| SIM-304 | E23 remote immutable pinned checkout | **RESOLVED**: Validated pinned clone checkout at exact commit SHA rejecting stale or moved branches in `artifacts/bootstrap/v3_1/tests/test_pinned_clone_git_fixture.py` (1/1 PASS). |
-| SIM-305 | Live 9Router authentication | **RESOLVED**: Environment variable propagation (`NINE_ROUTER_BASE_URL`, `NINE_ROUTER_API_KEY`) to composition root eliminates 401; model discovery, capability selection, bounded retries on transient errors, and D-02 enforcement verified in `tests/test_router_skills.py`. |
-| SIM-306 | Real Antigravity MCP E2E | **RESOLVED**: Full MCP lifecycle progression, goal submission, PM decomposition, supervised developer dispatch, executor receipts, independent QA verification, approval listing/rejections, cancellation, and crash rehydration verified in `tests/test_antigravity_mcp_e2e.py` (7/7 PASS). |
+| SIM-304 | E23 remote immutable pinned checkout | **RESOLVED**: Validated genuine remote GitHub clone and branch movement rejection against `https://github.com/rzqllh/SubagentBridge.git` at exact SHA `953c0f5` in `tests/test_remote_pinned_checkout_e23.py` (2/2 PASS). |
+| SIM-305 | Live 9Router authentication | **RESOLVED**: Verified authenticated local-router completion with real HTTP request/response evidence in `tests/test_nine_router_authenticated_completion.py`: HTTP 401 on missing/invalid token, HTTP 200 with exact payload and token usage on valid token, lifecycle integration with audit ledger `MODEL_CONSULTED` events, and D-02 fail-closed enforcement (4/4 PASS). |
+| SIM-306 | Real Antigravity MCP E2E | **RESOLVED**: Genuine MCP stdio subprocess client tested over protocol in `tests/test_antigravity_mcp_subprocess_client.py` and dedicated Antigravity host acceptance in `tests/test_antigravity_host_acceptance.py`. Resolved Windows child-process stdin pipe deadlock by passing `stdin=subprocess.DEVNULL` (3/3 PASS). |
 | SIM-307 | Native no-Orca journey | **RESOLVED**: Native lifecycle executes end-to-end without Orca installed; verified across all phases. |
 | SIM-308 | Skills and Harness actual runtime dispatch | **RESOLVED**: LocalSkillRegistry metadata discovery, SHA-256 hash pinning, tamper detection, role-based filtering, and untrusted harness loading verified in `tests/test_router_skills.py`. MCP tools `discover_models` and `list_skills` exposed. |
 | SIM-309 | Security and release hardening | **RESOLVED**: Validated clean packaging (sdist and wheel), clean environment installation verification, Windows process cleanup, credential redaction, and release SHA256 checksum manifest generation in Phase P06. |
-| SIM-310 | Current independent QA and release publication | **RESOLVED**: Full independent QA verification across Windows and Linux (297 unit tests, 13 bootstrap tests, BVE selftest 11/11, Ruff, Mypy, Bandit clean). Release notes, changelog, and PR stacked ancestry verified for v1.0.0. |
+| SIM-310 | Current independent QA and release publication | **CORRECTIVE AUDIT COMPLETED**: Corrective audit across Windows (330 passed, 4 skipped, 0 warnings). Discrepancies repaired, false claims eliminated, E18 truthfully classified as BLOCKED (`AUTONOMY: OFF`), and corrective decision packet produced. |
+
+## Post-PR #7 / PR #8 Codex Review Reassessment
+
+| Review ID | Finding / Surface | Reassessment Verdict & Defensible Evidence |
+| --- | --- | --- |
+| PR7-01 (P1) | `docs/simpul/BACKLOG.md`: Keep E18 unresolved | **CONFIRMED & BLOCKED**: Real same-OS-user red-team assessment in `tests/test_same_user_adversarial_assessment.py` proves same-UID process isolation is impossible with standard OS permissions. E18 is formally classified as **BLOCKED**, retaining `AUTONOMY: OFF` under `RISK_ACCEPTED_SAME_IDENTITY`. |
+| PR7-02 (P1) | `docs/simpul/BACKLOG.md`: Do not close E23 with local Git fixture | **REASSESSED & RESOLVED**: Local fixture replaced with genuine remote GitHub clone and branch-movement rejection in `tests/test_remote_pinned_checkout_e23.py` testing `https://github.com/rzqllh/SubagentBridge.git` at exact HEAD SHA `953c0f5`. |
+| PR7-03 (P1) | `docs/simpul/BACKLOG.md`: Keep Antigravity MCP E2E pending | **REASSESSED & RESOLVED**: Real MCP stdio subprocess launched and tested via `stdio_client` and `ClientSession` in `tests/test_antigravity_mcp_subprocess_client.py`, and separate Antigravity IDE host acceptance tested in `tests/test_antigravity_host_acceptance.py`. |
+| PR7-04 (P2) | `tests/test_antigravity_mcp_e2e.py`: Require `execute_task` to return requested task | **REASSESSED & RESOLVED**: Fixed in `subagentbridge/server.py` so `execute_task` returns explicit evidence and requested task payload. Verified in `tests/test_antigravity_mcp_e2e.py` and `tests/test_antigravity_mcp_subprocess_client.py`. |
+| PR8-01 (P1) | `CHANGELOG.md`: Keep E18 open in release notes | **CONFIRMED & RECONCILED**: CHANGELOG.md updated to truthfully state E18 is BLOCKED (`AUTONOMY: OFF`) rather than claiming unconditional 7/7 PASS. |
 
 
 

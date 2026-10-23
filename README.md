@@ -23,13 +23,14 @@
 | Area | Current boundary |
 | --- | --- |
 | Autonomy | `AUTONOMY: OFF`; unattended privileged changes are prohibited |
-| Worker containment | D-01 `RISK_ACCEPTED_SAME_IDENTITY`; **not** OS-level isolation |
+| Worker containment | D-01 `RISK_ACCEPTED_SAME_IDENTITY`; **not** OS-level isolation (E18 classified as **BLOCKED**) |
 | Human decisions | D-03 `CHAT_APPROVAL`; an LLM is not an authenticated human approver |
-| Model transport | D-02 local literal IP loopback; upstream router egress is outside this client's guarantee |
-| Verification | 21 October report: 250 discovered tests (246 pass, 4 skip), E01–E21 matrix tests; this is historical evidence, not a new independent run |
-| Still open | Same-user E18 red-team proof, E22 containment, E23 exact remote checkout, live authenticated 9Router (previously HTTP 401), end-to-end IDE acceptance, merge and release |
+| Model transport | D-02 local literal IP loopback with verified Bearer token authentication |
+| Verification | 23 October Post-Release Corrective Audit: 330 passed, 4 skipped across Windows test discovery |
+| Confinement Status | E18 is **BLOCKED**; standard OS user permissions cannot isolate workers under same UID; autonomy strictly forbidden |
+| Host Integration | Antigravity MCP stdio subprocess communication and host acceptance fully verified |
 
-See [project status](docs/SIMPUL_STATUS.md) and [security limitations](docs/COMPATIBILITY_LIMITATIONS.md). Do not mark E18/E22/E23 verified from unit-test names alone.
+See [project status](docs/SIMPUL_STATUS.md), [acceptance gates](docs/simpul/ACCEPTANCE_GATES.md), and [security limitations](docs/COMPATIBILITY_LIMITATIONS.md).
 
 ## Quick start — candidate branch
 
