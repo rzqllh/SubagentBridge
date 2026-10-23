@@ -1,6 +1,8 @@
-# SubagentBridge
+# Simpul
 
-Native-first, **experimental** MCP-based subagent supervisor under development for Antigravity IDE. The repository contains an initial MCP server, async session manager, runner interface and SQLite store; it is **not** an independently verified multi-agent engineering team or a security boundary.
+**Simpul** (formerly **SubagentBridge**) is a native-first, safety-gated Model Context Protocol (MCP) subagent supervisor for development workflows, with Google Antigravity IDE as a target host. The Python package, import namespace, CLI and existing environment variable prefix remain `subagentbridge` / `SUBAGENTBRIDGE_*` for compatibility.
+
+> **Release status — 23 October 2026:** Simpul is in supervised development. No general-availability or production-security certification is claimed. This branch (`feat/00-baseline-recovery`, PR #2) contains PR-00 baseline recovery and P0 lockdown.
 
 ## Current implementation status (PR-00)
 
