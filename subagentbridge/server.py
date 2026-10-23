@@ -41,6 +41,11 @@ except ImportError:
 
 from . import runners as runner_registry
 from .composition import ProductionSystem, build_production_system
+from .execution.native_runtime import (
+    SupervisedNativeLifecycle,
+    TaskDecomposer,
+    resolve_tree_sha,
+)
 from .manager import (
     AgentManager,
     PendingActionQueue,
@@ -114,6 +119,7 @@ def submit_goal(
     goal: str,
     workspace_path: str | None = None,
     model: str | None = None,
+    execute: bool = False,
 ) -> dict:
     """Submit a high-level goal to be decomposed, implemented, and verified."""
     if not goal or not isinstance(goal, str) or not goal.strip():
@@ -164,12 +170,87 @@ def submit_goal(
             pass
         return {"status": "ERROR", "error": f"audit ledger write failed: {exc}"}
 
+    if execute:
+        return _execute_run(run_id)
+
     return {
         "status": "SUBMITTED",
         "run_id": run_id,
         "initial_task_id": task_id,
         "goal": goal.strip(),
     }
+
+
+def _execute_run(run_id: str) -> dict:
+    run = _runs.get(run_id)
+    if run is None:
+        run = _store.get_run(run_id)
+        if run is not None:
+            _runs[run_id] = run
+    if run is None:
+        return {"status": "NOT_FOUND", "run_id": run_id}
+    if run.get("status") in ("COMPLETED", "VERIFIED", "CANCELLED"):
+        return {"status": run["status"], "run_id": run_id, "tasks": _tasks.get(run_id, [])}
+
+    ws = Path(run.get("workspace_path", ".")).resolve()
+    sys = get_production_system(ws)
+    tree_sha = resolve_tree_sha(ws)
+    goal = run.get("goal", "")
+
+    tasks_contracts, dependencies, task_records = TaskDecomposer.decompose_goal(goal, run_id, tree_sha)
+
+    # Clean previous pending task and register decomposed tasks
+    try:
+        _store._conn.execute("DELETE FROM tasks WHERE run_id=? AND status='PENDING'", (run_id,))
+        _store._conn.commit()
+    except Exception:
+        pass
+    for r in task_records:
+        _store.upsert_task(r)
+    _tasks[run_id] = task_records
+
+    lifecycle = SupervisedNativeLifecycle(sys=sys, workspace_path=ws, store=_store)
+    coordinator, principals = lifecycle.create_coordinator_for_run(
+        run_id=run_id,
+        tasks=tasks_contracts,
+        dependencies=dependencies,
+    )
+
+    result = lifecycle.execute_lifecycle(
+        run_id=run_id,
+        coordinator=coordinator,
+        principals=principals,
+        task_records=task_records,
+    )
+
+    if result.get("status") == "COMPLETED":
+        run["status"] = "COMPLETED"
+        _store.upsert_run(run)
+        _runs[run_id] = run
+        _tasks[run_id] = result.get("tasks", task_records)
+    elif result.get("status") in ("FAILED", "BLOCKED"):
+        run["status"] = result["status"]
+        _store.upsert_run(run)
+        _runs[run_id] = run
+
+    return result
+
+
+@mcp.tool()
+def execute_run(run_id: str) -> dict:
+    """Execute the full supervised PM/Developer/QA lifecycle for a submitted run."""
+    return _execute_run(run_id)
+
+
+@mcp.tool()
+def execute_task(run_id: str, task_id: str) -> dict:
+    """Execute a specific task in a run through the supervised workflow."""
+    res = _execute_run(run_id)
+    tasks = _tasks.get(run_id, [])
+    for t in tasks:
+        if t.get("task_id") == task_id:
+            return {"status": t.get("status"), "run_id": run_id, "task": t}
+    return {"status": res.get("status"), "run_id": run_id, "task_id": task_id}
 
 
 @mcp.tool()

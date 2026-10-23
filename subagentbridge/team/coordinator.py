@@ -15,7 +15,7 @@ from subagentbridge.domain.engine import TaskAggregate, InvalidTransition
 from subagentbridge.domain.registry import (
     IdentityRegistry, Principal, ReceiptIssuerRegistry,
 )
-from subagentbridge.planner.budget import BudgetLedger, validate_task_dag
+from subagentbridge.planner.budget import BudgetLedger, DurableBudgetLedger, validate_task_dag
 from subagentbridge.qa.adjudication import QaEvidenceGate, EvidenceDecision
 
 
@@ -40,7 +40,7 @@ class SupervisedCoordinator:
     def __init__(self, *, run: Run, tasks: Mapping[str, Task],
                  dependencies: Mapping[str, tuple[str, ...]],
                  identities: IdentityRegistry, receipts: ReceiptIssuerRegistry,
-                 budget: BudgetLedger, qa_test_hashes: Mapping[str, str]):
+                 budget: BudgetLedger | DurableBudgetLedger, qa_test_hashes: Mapping[str, str]):
         if not tasks or set(tasks) != set(dependencies):
             raise ValueError('run task and DAG identities must match')
         if any(t.task_id != key or t.run_id != run.run_id or
