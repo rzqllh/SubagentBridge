@@ -1,4 +1,4 @@
-# Architecture — SubagentBridge
+# Architecture — SubagentBridge (legacy source and planned v3.1)
 
 ## 1. Component Overview
 
@@ -66,3 +66,11 @@ Trade-off: API keys for GPT-5.6 / DeepSeek must be available to the wrapper's en
 
 - No distributed execution — `asyncio.create_subprocess_exec` stays local-machine only.
 - No dashboard — status is queryable via `get_agent_status` / `list_agents` / `get_model_usage`.
+
+## 6. Source-truth correction / planned native-first control plane (PR-00)
+
+The early diagrams and API-runner wrapper design in §§1–5 are **historical proposals, not fully implemented components**. In current `main` the runner registry is empty and the real `server.py` delegates to `manager.py` and SQLite. The inferred `hitl/` layer does not yet exist as a separate enforceable broker; approval is an LLM-accessible MCP tool. Existing subprocess stdout parsing cannot stop already-executed tool calls.
+
+The **target**, not yet delivered, is: Antigravity primary IDE (native auth) → Bridge policy/task/QA control plane → one `ExecutionBackend` per run (`native` default, `orca` optional) → isolated `ToolExecutor` → model workers via 9Router or configured compatible provider. Worker tool calls never directly own human approval, QA VERIFIED, or privileged credentials. Provider/model discovery is capability-driven rather than fixing product names from the 2026-09 PRD.
+
+Bootstrap Phase A uses explicit one-time chat approval and fresh-session `BootstrapVerificationEvidence`; Phase B requires proven human broker identity separation; Phase C requires independently verified product QA engine. These phases do not certify an implementation by themselves. See `SECURITY.md`, `INVARIANTS.md` and `artifacts/bootstrap/v3_1/ACTIVE_BASELINE.md`.

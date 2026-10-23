@@ -1,5 +1,6 @@
-# Core MCP server framework
-mcp>=1.0.0
+# Core MCP server framework — v1 FastMCP API; v2 is incompatible.
+# Keep mcp.server.fastmcp import working until an explicitly reviewed v2 migration.
+mcp>=1.28,<2
 
 # Async subprocess + SQLite are stdlib (asyncio, sqlite3) — no extra deps needed
 

@@ -1,4 +1,6 @@
-# Test Plan — SubagentBridge
+# Test Plan — SubagentBridge (historical scenarios and PR-00 v3.1 contract)
+
+**The T1–T13 table below is a historical planned v1 test plan, NOT a list of currently passing implementation tests.** PR-00 P0 lockdown intentionally disables direct legacy worker execution, direct file edits, and positive approval calls. Tests expecting those actions to succeed are inapplicable until a trusted approval broker and ToolExecutor are separately implemented and independently verified.
 
 | Test ID | Target | Scenario | Expected Result |
 |---|---|---|---|
@@ -20,3 +22,15 @@
 
 - Load testing with >10 concurrent sessions
 - Cross-platform (Windows) subprocess signal handling — Linux/macOS only for v1
+
+## PR-00 v3.1 baseline verification (no production safety claim)
+
+Run `python -B -m unittest discover -s tests -p 'test_*.py' -v` (stdlib, no package installation). `test_bootstrap_documents.py` retains original Team Rules/v2 provenance. `test_bootstrap_v31.py` validates v3.1 pinned artifact bytes independently. `test_legacy_security_gaps.py` and `test_invariants_contract.py` include explicitly labeled `expectedFailure` probes; their unresolved count must be reported as **UNVERIFIED** even when unittest returns exit 0. The test runner is not a production receipt issuer.
+
+An independent verifier must establish SHA/tree identity and clean checkout, construct scenarios from frozen criteria first, capture logs/exit status with the pinned BVE helper, then review the PR diff. External CI results count only after the verifier reads the actual run for that SHA. Linux-only helper tests do not establish Windows behavior. Current package has no verified runner or approval broker; tests of unrelated existing code are not an AG-1 pass.
+
+### Release gates (later PRs, not PR-00)
+
+Use E01–E21 in Plan v3.1: native/no-Orca full journey, negative same-user approval attacks, skills and tool injection, process-tree cleanup, dynamic worker cancellation, idempotent recovery, exact-tree executor receipts, independent QA verdict, budgets and model capability checks. Do not infer `VERIFIED` from a clean unittest/CI exit. T11's legacy `working→idle` expectation is **unsafe**: later recovery must reconcile process ownership and mark uncertainty `RECOVERY_REQUIRED`, not report idle.
+
+**Workflow context at the pinned QA-rejected HEAD:** the approved CI runs only stdlib baseline tests on Ubuntu and Windows (Python 3.11 and 3.13). PR-00 QA identified missing lint/type/static-security gates (F2); those are not satisfied until an additionally approved workflow runs the actual tools and their findings are resolved. CI does not certify an authenticated broker, isolated worker, or the finished product.

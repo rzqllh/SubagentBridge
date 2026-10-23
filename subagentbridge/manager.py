@@ -120,9 +120,16 @@ class PendingActionQueue:
         return self._actions[action_id]
 
     def resolve(self, action_id: str, *, approved: bool, reason: Optional[str] = None) -> PendingAction:
+        # P0 containment: the legacy queue cannot prove human origin.
+        # Positive approval stays impossible until the separate D-03 broker
+        # is designed, approved, tested and independently verified.
+        if approved is not False:
+            raise PermissionError("human approval broker unavailable; no untrusted positive approvals")
         action = self._actions.get(action_id)
         if action is None:
             raise KeyError(f"no such pending action: {action_id}")
+        if action.resolved:
+            raise ValueError("one-time gate decision has already been recorded")
         action.resolved = True
         action.approved = approved
         action.reason = reason
@@ -145,7 +152,7 @@ class Session:
     model: Optional[str] = None
     agent_type: Optional[str] = None
     reasoning_effort: Optional[str] = None
-    skip_permissions: bool = True
+    skip_permissions: bool = False
     hitl_enabled: bool = True
 
     status: str = "idle"          # idle | working | done | error | timeout | killed
@@ -295,6 +302,11 @@ class AgentManager:
         runner: AgentRunner,
         **kwargs,
     ) -> Session:
+        # Do not admit legacy permission bypasses into a newly-created session.
+        if kwargs.get("skip_permissions", False) is not False:
+            raise PermissionError("skip_permissions bypass is forbidden")
+        if kwargs.get("hitl_enabled", True) is not True:
+            raise PermissionError("disabling human gates is forbidden")
         if session_id in self.sessions:
             raise ValueError(f"session {session_id!r} already exists")
         session = Session(
@@ -311,6 +323,12 @@ class AgentManager:
         session = self.get_session(session_id)
         if session.status == "working":
             raise RuntimeError(f"session {session_id!r} is already working")
+        # No pre-execution tool interception or OS confinement exists yet.
+        # Fail closed; do not create a background task or launch a CLI.
+        session.status = "blocked"
+        session.last_error = "legacy runner disabled until trusted executor enforcement is verified"
+        self._persist_session(session)
+        raise PermissionError(session.last_error)
         session.status = "working"
         self._persist_session(session)
         session._task = asyncio.create_task(self._run_with_retries(session, message))
@@ -329,6 +347,11 @@ class AgentManager:
             try:
                 await self._run_once(session, current_message, is_retry=is_retry)
                 self._persist_session(session)  # success — status set to "done" in _run_once
+                return
+            except PermissionError as exc:
+                session.last_error = str(exc)
+                session.status = "blocked"
+                self._persist_session(session)
                 return
             except _ActionRejected as exc:
                 # Never retry a human rejection — respect the decision and
@@ -358,6 +381,9 @@ class AgentManager:
                 )
 
     async def _run_once(self, session: Session, message: str, *, is_retry: bool) -> None:
+        # Defense in depth if a caller bypasses send_message and calls this directly.
+        # Approval/event parsing AFTER an external subprocess starts is not enforcement.
+        raise PermissionError("legacy subprocess execution is disabled: no trusted ToolExecutor")
         cmd = session.runner.build_command(
             message,
             workspace_path=session.workspace_path,
@@ -448,13 +474,10 @@ class AgentManager:
     # ---- apply_code_fix (fix for W3) -----------------------------------
 
     def apply_code_fix(self, filepath: str, target: str, replacement: str) -> str:
-        self.check_path_in_workspace(filepath)  # raises, no fallthrough
-        path = Path(filepath)
-        content = path.read_text()
-        if target not in content:
-            raise ValueError(f"target text not found in {filepath}")
-        path.write_text(content.replace(target, replacement, 1))
-        return f"patched {filepath} (first occurrence of target replaced)"
+        """Disabled until a per-dispatch ToolExecutor owns file writes."""
+        raise PermissionError(
+            "direct file mutation disabled: no trusted per-dispatch ToolExecutor"
+        )
 
     # ---- introspection ---------------------------------------------------
 
