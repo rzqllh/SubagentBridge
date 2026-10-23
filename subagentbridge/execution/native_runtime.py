@@ -39,6 +39,7 @@ def resolve_tree_sha(workspace_path: Path) -> str:
         res = subprocess.run(  # nosec B603
             ["git", "rev-parse", "HEAD^{tree}"],
             cwd=str(workspace_path),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=False,
@@ -63,6 +64,40 @@ def resolve_tree_sha(workspace_path: Path) -> str:
         pass
     digest = hasher.hexdigest()
     return digest if digest != sha256().hexdigest() else ("0" * 40)
+
+
+def check_clean_checkout(workspace_path: Path) -> bool:
+    """Verify whether workspace checkout is genuinely clean without uncommitted changes."""
+    try:
+        res = subprocess.run(  # nosec B603
+            ["git", "status", "--porcelain"],
+            cwd=str(workspace_path),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if res.returncode == 0:
+            ignored_prefixes = (
+                ".subagentbridge",
+                "store.db",
+                "audit.db",
+                ".pytest_cache",
+                "__pycache__",
+                ".ruff_cache",
+            )
+            dirty_lines = [
+                line.strip()
+                for line in res.stdout.strip().splitlines()
+                if line.strip() and not any(
+                    ig in line for ig in ignored_prefixes
+                )
+            ]
+            return len(dirty_lines) == 0
+    except Exception:
+        pass
+    return False
 
 
 class TaskDecomposer:
@@ -328,90 +363,26 @@ class SupervisedNativeLifecycle:
                     )
 
             # 4. Developer execution under ToolExecutor supervision
-            cmd = commands.get(task_id)
-            exit_code = 0
-            if cmd:
-
-                try:
-                    result = self.runner.run_isolated(cmd, timeout_seconds=30)
-                    exit_code = result.exit_code
-                except Exception:
-                    exit_code = 1
-            else:
-                # Default non-modifying inspection/verification step
-                exit_code = 0
-
-            # 4. Developer reports process succeeded (if exit_code == 0)
-            if exit_code == 0:
-                coordinator.report_process_succeeded(
-                    developer=dev,
-                    task_id=task_id,
-                    dispatch_id=dispatch_plan.dispatch_id,
-                    tree_sha=dispatch_plan.tree_sha,
-                )
-                record["status"] = "PROCESS_SUCCEEDED"
+            cmd = commands.get(task_id) or commands.get(record.get("role", "")) or commands.get("default")
+            if not cmd:
+                record["status"] = "FAILED"
                 if self.store is not None:
                     self.store.upsert_task(record)
-                self._log_event(
-                    run_id,
-                    f"proc_succ:{dispatch_plan.dispatch_id}",
-                    "PROCESS_SUCCEEDED",
-                    {"task_id": task_id, "dispatch_id": dispatch_plan.dispatch_id},
-                )
+                self._log_event(run_id, f"no_cmd:{task_id}", "COMMAND_MISSING", {"task_id": task_id})
+                return {
+                    "status": "FAILED",
+                    "run_id": run_id,
+                    "failed_task_id": task_id,
+                    "reason": f"no developer command provided for execution of task {task_id}; synthetic exit code is prohibited",
+                }
 
-                # 5. ToolExecutor issues trustworthy execution receipt
-                receipt = self.sys.receipts.issue(
-                    executor,
-                    task_id=task_id,
-                    dispatch_id=dispatch_plan.dispatch_id,
-                    tree_sha=dispatch_plan.tree_sha,
-                    exit_code=exit_code,
-                )
-                evidence = self.sys.receipts.create_evidence(
-                    receipt.receipt_id,
-                    task_id=task_id,
-                    dispatch_id=dispatch_plan.dispatch_id,
-                    tree_sha=dispatch_plan.tree_sha,
-                )
+            try:
+                result = self.runner.run_isolated(cmd, timeout_seconds=30)
+                exit_code = result.exit_code
+            except Exception:
+                exit_code = 1
 
-                # 6. Independent QA review
-                decision = coordinator.qa_review(
-                    qa=qa,
-                    task_id=task_id,
-                    evidence=(evidence,),
-                    covered_criteria=task_contract.acceptance_criteria,
-                    actual_test_hashes=self.sys.qa_gate.test_hashes,
-                    actual_tree_sha=dispatch_plan.tree_sha,
-                    clean=True,
-                    fix_round=0,
-                )
-
-                if decision.status == "QA_VERIFIED":
-                    record["status"] = "VERIFIED"
-                    record["evidence_ids"] = [evidence.evidence_id]
-                    if self.store is not None:
-                        self.store.upsert_task(record)
-                    self._log_event(
-                        run_id,
-                        f"qa_ver:{dispatch_plan.dispatch_id}",
-                        "TASK_VERIFIED",
-                        {
-                            "task_id": task_id,
-                            "dispatch_id": dispatch_plan.dispatch_id,
-                            "evidence_id": evidence.evidence_id,
-                        },
-                    )
-                else:
-                    record["status"] = decision.status
-                    if self.store is not None:
-                        self.store.upsert_task(record)
-                    return {
-                        "status": "FAILED",
-                        "run_id": run_id,
-                        "failed_task_id": task_id,
-                        "reason": decision.reason,
-                    }
-            else:
+            if exit_code != 0:
                 record["status"] = "FAILED"
                 if self.store is not None:
                     self.store.upsert_task(record)
@@ -420,6 +391,109 @@ class SupervisedNativeLifecycle:
                     "run_id": run_id,
                     "failed_task_id": task_id,
                     "reason": f"process execution failed with exit code {exit_code}",
+                }
+
+            # 5. Developer reports process succeeded (with genuine exit_code == 0)
+            coordinator.report_process_succeeded(
+                developer=dev,
+                task_id=task_id,
+                dispatch_id=dispatch_plan.dispatch_id,
+                tree_sha=dispatch_plan.tree_sha,
+            )
+            record["status"] = "PROCESS_SUCCEEDED"
+            if self.store is not None:
+                self.store.upsert_task(record)
+            self._log_event(
+                run_id,
+                f"proc_succ:{dispatch_plan.dispatch_id}",
+                "PROCESS_SUCCEEDED",
+                {"task_id": task_id, "dispatch_id": dispatch_plan.dispatch_id},
+            )
+
+            # 6. ToolExecutor issues trustworthy execution receipt from actual execution
+            receipt = self.sys.receipts.issue(
+                executor,
+                task_id=task_id,
+                dispatch_id=dispatch_plan.dispatch_id,
+                tree_sha=dispatch_plan.tree_sha,
+                exit_code=exit_code,
+            )
+            evidence = self.sys.receipts.create_evidence(
+                receipt.receipt_id,
+                task_id=task_id,
+                dispatch_id=dispatch_plan.dispatch_id,
+                tree_sha=dispatch_plan.tree_sha,
+            )
+
+            # 7. Independent QA review
+            # Inspect actual tree SHA and verify clean checkout without synthetic claims
+            is_clean = check_clean_checkout(self.workspace_path)
+            current_tree_sha = resolve_tree_sha(self.workspace_path)
+
+            # Read actual QA test hashes from disk
+            actual_test_hashes: dict[str, str] = {}
+            for rel_path in self.sys.qa_gate.test_hashes:
+                test_file = (self.workspace_path / rel_path).resolve()
+                if test_file.is_file():
+                    actual_test_hashes[rel_path] = sha256(test_file.read_bytes()).hexdigest()
+                else:
+                    actual_test_hashes[rel_path] = "0" * 64
+
+            # Execute qualifying QA tests
+            qa_passed = False
+            qa_test_files = [
+                str(self.workspace_path / rel_path)
+                for rel_path in self.sys.qa_gate.test_hashes
+                if (self.workspace_path / rel_path).is_file()
+            ]
+            if qa_test_files:
+                import sys as _sys
+                try:
+                    qa_run = self.runner.run_isolated(
+                        [_sys.executable, "-m", "pytest", *qa_test_files],
+                        timeout_seconds=30,
+                    )
+                    qa_passed = (qa_run.exit_code == 0)
+                except Exception:
+                    qa_passed = False
+
+            covered_criteria = task_contract.acceptance_criteria if qa_passed else ()
+
+            decision = coordinator.qa_review(
+                qa=qa,
+                task_id=task_id,
+                evidence=(evidence,),
+                covered_criteria=covered_criteria,
+                actual_test_hashes=actual_test_hashes,
+                actual_tree_sha=current_tree_sha,
+                clean=is_clean,
+                fix_round=0,
+            )
+
+            if decision.status == "QA_VERIFIED":
+                record["status"] = "VERIFIED"
+                record["evidence_ids"] = [evidence.evidence_id]
+                if self.store is not None:
+                    self.store.upsert_task(record)
+                self._log_event(
+                    run_id,
+                    f"qa_ver:{dispatch_plan.dispatch_id}",
+                    "TASK_VERIFIED",
+                    {
+                        "task_id": task_id,
+                        "dispatch_id": dispatch_plan.dispatch_id,
+                        "evidence_id": evidence.evidence_id,
+                    },
+                )
+            else:
+                record["status"] = decision.status
+                if self.store is not None:
+                    self.store.upsert_task(record)
+                return {
+                    "status": "FAILED",
+                    "run_id": run_id,
+                    "failed_task_id": task_id,
+                    "reason": decision.reason,
                 }
 
         return {

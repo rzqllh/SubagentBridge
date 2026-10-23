@@ -69,6 +69,7 @@ _rehydrated_count = _manager.rehydrate(runner_registry)
 # In-memory tracking for runs and tasks, with SQLite persistence and audit logging via composition root
 _runs: dict[str, dict] = {}
 _tasks: dict[str, list[dict]] = {}
+_run_commands: dict[str, dict[str, list[str]]] = {}
 _production_systems: dict[Path, ProductionSystem] = {}
 
 
@@ -79,6 +80,7 @@ def rehydrate_runs_and_tasks(store: SQLiteStore) -> None:
     _runs.update({r["run_id"]: r for r in all_runs})
     _tasks.clear()
     _tasks.update(store.load_all_tasks())
+    _run_commands.clear()
 
 
 rehydrate_runs_and_tasks(_store)
@@ -124,6 +126,7 @@ def submit_goal(
     workspace_path: str | None = None,
     model: str | None = None,
     execute: bool = False,
+    commands: dict[str, list[str]] | None = None,
 ) -> dict:
     """Submit a high-level goal to be decomposed, implemented, and verified."""
     if not goal or not isinstance(goal, str) or not goal.strip():
@@ -132,6 +135,9 @@ def submit_goal(
     ws = Path(workspace_path if workspace_path else Path.cwd()).resolve()
     run_id = f"run_{uuid4().hex[:12]}"
     task_id = f"task_{uuid4().hex[:8]}"
+
+    if commands:
+        _run_commands[run_id] = {k: list(v) for k, v in commands.items()}
 
     run_record = {
         "run_id": run_id,
@@ -166,6 +172,7 @@ def submit_goal(
     except Exception as exc:
         _runs.pop(run_id, None)
         _tasks.pop(run_id, None)
+        _run_commands.pop(run_id, None)
         try:
             _store._conn.execute("DELETE FROM tasks WHERE run_id=?", (run_id,))
             _store._conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
@@ -175,7 +182,7 @@ def submit_goal(
         return {"status": "ERROR", "error": f"audit ledger write failed: {exc}"}
 
     if execute:
-        return _execute_run(run_id)
+        return _execute_run(run_id, command_map=commands)
 
     return {
         "status": "SUBMITTED",
@@ -185,7 +192,7 @@ def submit_goal(
     }
 
 
-def _execute_run(run_id: str) -> dict:
+def _execute_run(run_id: str, command_map: Mapping[str, Sequence[str]] | None = None) -> dict:
     run = _runs.get(run_id)
     if run is None:
         run = _store.get_run(run_id)
@@ -213,6 +220,10 @@ def _execute_run(run_id: str) -> dict:
         _store.upsert_task(r)
     _tasks[run_id] = task_records
 
+    effective_commands = dict(command_map or {})
+    if not effective_commands and run_id in _run_commands:
+        effective_commands.update(_run_commands[run_id])
+
     lifecycle = SupervisedNativeLifecycle(sys=sys, workspace_path=ws, store=_store)
     coordinator, principals = lifecycle.create_coordinator_for_run(
         run_id=run_id,
@@ -225,6 +236,7 @@ def _execute_run(run_id: str) -> dict:
         coordinator=coordinator,
         principals=principals,
         task_records=task_records,
+        command_map=effective_commands,
     )
 
     if result.get("status") == "COMPLETED":
@@ -241,20 +253,41 @@ def _execute_run(run_id: str) -> dict:
 
 
 @mcp.tool()
-def execute_run(run_id: str) -> dict:
-    """Execute the full supervised PM/Developer/QA lifecycle for a submitted run."""
-    return _execute_run(run_id)
+def execute_run(run_id: str, commands: dict[str, list[str]] | None = None) -> dict:
+    """Execute the full supervised PM/Developer/QA lifecycle for a submitted run with explicit commands."""
+    return _execute_run(run_id, command_map=commands)
 
 
 @mcp.tool()
-def execute_task(run_id: str, task_id: str) -> dict:
-    """Execute a specific task in a run through the supervised workflow."""
-    res = _execute_run(run_id)
+def execute_task(run_id: str, task_id: str, command: list[str] | None = None) -> dict:
+    """Execute a specific task in a run through the supervised workflow and return evidence."""
+    cmd_map: dict[str, list[str]] = {}
+    if run_id in _run_commands:
+        cmd_map.update(_run_commands[run_id])
+    if command:
+        cmd_map[task_id] = list(command)
+
+    res = _execute_run(run_id, command_map=cmd_map)
+
+    # Return evidence for the exact requested task
+    ev = get_task_evidence(run_id, task_id)
     tasks = _tasks.get(run_id, [])
+    target_task = None
     for t in tasks:
         if t.get("task_id") == task_id:
-            return {"status": t.get("status"), "run_id": run_id, "task": t}
-    return {"status": res.get("status"), "run_id": run_id, "task_id": task_id}
+            target_task = t
+            break
+
+    status = target_task.get("status") if target_task else res.get("status", "UNKNOWN")
+    return {
+        "status": status,
+        "run_id": run_id,
+        "task_id": task_id,
+        "task": target_task,
+        "evidence": ev,
+        "run_status": res.get("status"),
+        "reason": res.get("reason"),
+    }
 
 
 @mcp.tool()
