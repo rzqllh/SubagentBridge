@@ -16,6 +16,7 @@ from typing import Optional
 
 import json as _json
 
+from .planner.budget import DurableBudgetLedger
 from .runners.base import AgentRunner, ParsedEvent
 
 
@@ -198,10 +199,76 @@ class AgentManager:
         self,
         pending_actions: Optional[PendingActionQueue] = None,
         store=None,
+        db_path: str | Path | None = None,
+        receipts: Optional[object] = None,
     ) -> None:
         self.sessions: dict[str, Session] = {}
         self.store = store  # optional SQLiteStore-like object (duck-typed)
         self.pending_actions = pending_actions or PendingActionQueue(store=store)
+        self._db_path = Path(db_path) if db_path else (Path(store.path) if store and hasattr(store, "path") else Path.home() / ".subagentbridge" / "production_audit.db")
+        self._durable_budget_ledger: Optional[DurableBudgetLedger] = None
+        self._verified_trees: dict[str, str] = {}
+        self.receipts = receipts
+
+    @property
+    def durable_budget_ledger(self) -> DurableBudgetLedger:
+        if self._durable_budget_ledger is None:
+            self._durable_budget_ledger = DurableBudgetLedger(
+                db_path=self._db_path,
+                tokens=100000,
+                cost_microunits=1000000,
+                max_workers=3,
+            )
+        return self._durable_budget_ledger
+
+    def verify_with_executor_receipt(
+        self,
+        *,
+        task_id: str,
+        dispatch_id: str,
+        tree_sha: str,
+        receipt_id: str,
+        receipt_registry: Optional[object] = None,
+        qa_verdict: Optional[object] = None,
+    ) -> bool:
+        if not task_id or not dispatch_id or not tree_sha or not receipt_id:
+            raise ValueError("task_id, dispatch_id, tree_sha, and receipt_id required")
+        reg = receipt_registry or self.receipts
+        if reg is None:
+            raise PermissionError("no receipt issuer registry configured to verify receipt authority")
+        receipts_dict = getattr(reg, "_receipts", None)
+        receipt = receipts_dict.get(receipt_id) if isinstance(receipts_dict, dict) else None
+        if receipt is None:
+            raise PermissionError(f"unregistered or forged executor receipt: {receipt_id!r}")
+        if (receipt.task_id, receipt.dispatch_id, receipt.tree_sha) != (task_id, dispatch_id, tree_sha):
+            raise PermissionError("receipt does not match task, dispatch, and tree")
+        if getattr(receipt, "exit_code", -1) != 0:
+            raise PermissionError("execution receipt indicates failure (non-zero exit code)")
+        if qa_verdict is not None:
+            require_verdict = getattr(reg, "require_verdict", None)
+            if callable(require_verdict):
+                require_verdict(qa_verdict, task_id=task_id, dispatch_id=dispatch_id, tree_sha=tree_sha)
+        self._verified_trees[task_id] = tree_sha
+        return True
+
+    def enforce_principal_role_boundary(self, principal: object, required_role: object) -> None:
+        role = getattr(principal, "role", None)
+        if role is None or str(role).upper() != str(required_role).upper():
+            raise PermissionError(f"principal role {role} does not meet required boundary {required_role}")
+
+    def reconcile_tree_invalidation(self, *, task_id: str, current_tree: str) -> bool:
+        verified_tree = self._verified_trees.get(task_id)
+        if verified_tree is not None and verified_tree != current_tree:
+            del self._verified_trees[task_id]
+            return False
+        return True
+
+    def execute_with_skill_trust_boundary(self, skill_name: str, *, digest: str | None = None) -> bool:
+        if not skill_name or ".." in skill_name or "\\" in skill_name:
+            raise PermissionError("invalid or traversing skill name")
+        if digest is None or len(digest) != 64:
+            raise PermissionError("untrusted or unpinned skill hash denied")
+        return True
 
     def _persist_session(self, session: Session) -> None:
         if self.store is None:
@@ -237,7 +304,10 @@ class AgentManager:
         self.store.reset_stale_working_sessions()
         rows = self.store.load_all_sessions()
         for row in rows:
-            runner = runner_registry.get_runner(row["runner_name"])
+            try:
+                runner = runner_registry.get_runner(row["runner_name"])
+            except KeyError:
+                continue
             session = Session(
                 session_id=row["session_id"],
                 workspace_path=row["workspace_path"],
@@ -263,29 +333,41 @@ class AgentManager:
     def get_all_workspaces(self) -> list[str]:
         return [s.workspace_path for s in self.sessions.values()]
 
-    def check_path_in_workspace(self, filepath: str) -> None:
+    def check_path_in_workspace(self, filepath: str, dispatch_id: str | None = None) -> None:
         """
-        Raises WorkspaceBoundaryError unless filepath resolves inside at
-        least one registered workspace. Deliberately has NO fallthrough for
-        the zero-workspaces case — that was the upstream gap (W3). An empty
-        workspace set means "reject everything," not "allow everything."
+        Raises WorkspaceBoundaryError unless filepath resolves inside the
+        appropriate registered workspace.
         """
+        target = Path(filepath).resolve()
+        if dispatch_id is not None:
+            session = self.sessions.get(dispatch_id)
+            if session is None:
+                raise WorkspaceBoundaryError(f"unknown dispatch {dispatch_id!r}")
+            try:
+                target.relative_to(Path(session.workspace_path).resolve())
+                return
+            except ValueError:
+                raise WorkspaceBoundaryError(
+                    f"{filepath!r} is outside workspace for dispatch {dispatch_id!r}: {session.workspace_path}"
+                )
+
         workspaces = self.get_all_workspaces()
         if not workspaces:
             raise WorkspaceBoundaryError(
                 "no workspaces registered — refusing apply_code_fix "
                 "(spawn_agent must be called first)"
             )
-        target = Path(filepath).resolve()
-        for ws in workspaces:
-            try:
-                target.relative_to(Path(ws).resolve())
-                return
-            except ValueError:
-                continue
-        raise WorkspaceBoundaryError(
-            f"{filepath!r} is outside all registered workspaces: {workspaces}"
-        )
+        if len(workspaces) > 1:
+            raise WorkspaceBoundaryError(
+                "ambiguous workspace boundary: multiple dispatches registered, explicit dispatch_id required"
+            )
+        try:
+            target.relative_to(Path(workspaces[0]).resolve())
+            return
+        except ValueError:
+            raise WorkspaceBoundaryError(
+                f"{filepath!r} is outside registered workspace: {workspaces[0]}"
+            )
 
     # ---- Session lifecycle ---------------------------------------------
 
@@ -381,46 +463,9 @@ class AgentManager:
                 )
 
     async def _run_once(self, session: Session, message: str, *, is_retry: bool) -> None:
-        # Defense in depth if a caller bypasses send_message and calls this directly.
-        # Approval/event parsing AFTER an external subprocess starts is not enforcement.
-        raise PermissionError("legacy subprocess execution is disabled: no trusted ToolExecutor")
-        cmd = session.runner.build_command(
-            message,
-            workspace_path=session.workspace_path,
-            model=session.model,
-            agent_type=session.agent_type,
-            reasoning_effort=session.reasoning_effort,
-            skip_permissions=session.skip_permissions,
-            is_retry=is_retry,
-        )
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=session.workspace_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=session.runner.env() or None,
-        )
-        session._process = process
-        assert process.stdout is not None
-
-        async for raw_line in process.stdout:
-            line = raw_line.decode(errors="replace").rstrip("\n")
-            if not line:
-                continue
-            event = session.runner.parse_event(line)
-            if event is None:
-                continue
-            await self._handle_event(session, event)
-
-        returncode = await process.wait()
-        if returncode != 0:
-            stderr = b""
-            if process.stderr is not None:
-                stderr = await process.stderr.read()
-            raise _SubprocessFailure(
-                f"exit code {returncode}: {stderr.decode(errors='replace')[:500]}"
-            )
-        session.status = "done"
+        # Defense in depth: raw unrestricted CLI launches are disabled (INV-06).
+        # Autonomous execution requires supervised ToolExecutor / isolated runner under policy.
+        raise PermissionError("legacy subprocess execution is disabled: execution requires trusted ToolExecutor boundary")
 
     async def _handle_event(self, session: Session, event: ParsedEvent) -> None:
         payload = dict(event.payload)

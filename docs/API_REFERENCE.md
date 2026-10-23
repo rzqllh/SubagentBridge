@@ -1,34 +1,41 @@
-# API Reference — SubagentBridge (PR-00 lockdown status)
+# Simpul — MCP API reference (development candidate)
 
-This file maps the **current source**, not the unimplemented legacy roadmap. In PR-00 the runner registry has no registered production backends and all legacy worker execution is **disabled before launch**. `AUTONOMY: OFF`.
+The public name is **Simpul**; the Python module and MCP server name remain `subagentbridge`. This reference describes signatures found in `subagentbridge/server.py` on the `integrate/roadmap-v4-verified` branch as reviewed 23 October 2026, **not** the older default-branch implementation.
 
-## MCP tools currently registered in `subagentbridge/server.py`
+## Production-oriented tools
 
-| Tool | PR-00 behavior |
-|---|---|
-| `spawn_agent(session_id, workspace_path, runner="agy", model=None, agent_type=None, reasoning_effort=None, skip_permissions=False, hitl_enabled=True, max_retries=...)` | Rejects unregistered runner names and permission bypass/HITL-off parameters; registration alone does not allow execution. |
-| `send_message(session_id, message)` | Denies the legacy execution path (error string); no agent subprocess starts. |
-| `wait_for_idle(session_id, timeout_seconds=...)` | Inspects legacy session state; **does not** prove Windows process-tree cleanup. |
-| `get_agent_status(session_id)` / `list_agents()` | Inspect legacy session metadata. |
-| `get_model_usage()` | Aggregates legacy accounting, not verified billing. |
-| `kill_agent(session_id)` | Attempts to terminate legacy session process; OS-wide child process guarantees remain unverified. |
-| `reject_action(action_id, reason="")` | Records a **denial** on a pending action; it is not an authenticated human decision channel. |
-| `list_pending_actions(session_id=None)` | Lists pending legacy queue entries. |
+| MCP tool | Actual arguments | Observed behavior / limit |
+| --- | --- | --- |
+| `submit_goal` | `goal: str, workspace_path: str \| None = None, model: str \| None = None` | Creates an in-memory `SUBMITTED` run and one `PENDING` task, attempts to append a submission event. **Does not dispatch an agent in this handler.** |
+| `get_run` | `run_id: str` | Reads the in-process run table, or returns `NOT_FOUND` |
+| `list_tasks` | `run_id: str` | Returns in-process task snapshots |
+| `get_task_evidence` | `run_id: str, task_id: str` | Returns task status, evidence ID list, and status-derived `verified` flag; does **not** itself validate a receipt |
+| `get_pending_approvals` | none | Reads pending actions |
+| `reject_approval` | `action_id: str, reason: str = ""` | Records rejection; not human approval |
+| `cancel_run` | `run_id: str, reason: str = ""` | Marks an in-process run and nonterminal tasks cancelled |
+| `get_model_usage` | none | Reads legacy session usage and, when available, budget snapshot |
+
+Run/task lookup tables are currently in process memory. Treat an audit event as history, **not** proof that run-state rehydration is implemented.
+
+## Legacy diagnostic tools still registered
+
+`spawn_agent(session_id, workspace_path, runner="agy", model=None, agent_type=None, reasoning_effort=None, skip_permissions=False, hitl_enabled=True, max_retries=2)`, `send_message(session_id, message)`, `wait_for_idle(session_id, timeout_seconds=600)`, `get_agent_status(session_id)`, `list_agents()`, `kill_agent(session_id)`, `reject_action(action_id, reason="")`, and `list_pending_actions(session_id=None)`.
+
+These are compatibility/diagnostic surfaces. Existing legacy execution lockdown means registering a tool is not evidence of permission to execute unsafe workers. Do not set `skip_permissions=True` or `hitl_enabled=False` to try to bypass the gate.
 
 ## Removed from MCP exposure by P0 lockdown
 
-- `approve_action(action_id)`: retained only as a Python compatibility callable returning **denied**; never registered as MCP tool. Direct positive `PendingActionQueue.resolve` calls also raise `PermissionError`.
-- `apply_code_fix(filepath, target, replacement)`: retained only as a Python compatibility callable returning **denied**; direct `AgentManager.apply_code_fix` also raises `PermissionError`.
+In the retained legacy raw-runner paths, legacy worker execution is **disabled** before the unsafe subprocess launch. This is not a claim that the new `submit_goal` endpoint automatically dispatches workers. The following legacy compatibility callables do not grant approval or write permission.
 
-These names **must not** be represented as enabled MCP functionality. Do not attempt to bypass this lockdown by calling internals; a trusted broker and scoped ToolExecutor are separate future PR deliverables.
+## Deliberately not exposed as MCP tools
 
-## Current MCP resources
+- `approve_action(...)` is a compatibility callable returning denial, not authenticated permission.
+- `apply_code_fix(...)` is a compatibility callable returning denial, not a code-edit tool.
 
-- `agy://logs/{session_id}` — legacy session log.
-- `agy://pending/{session_id}` — pending legacy queue entries.
+The separate `ApprovalBroker` module has one-time token and fingerprint checks but an authenticated human approval channel, accessible independently of same-user workers, **has not been proven**.
 
-`send_message_with_schema`, `check_inbox`, and `agy://inbox/{session_id}` are historical design/API references, **not registered by the current PR-00 server**.
+## MCP resources
 
-## Runner names
+Currently registered: `agy://logs/{session_id}` and `agy://pending/{session_id}`. Do not assume other legacy or design-only resource URIs are available.
 
-`agy`, `claude`, GPT-family and DeepSeek-family labels in prior PRD and runner specs are **planned only**. No complete, authenticated or enforced runner has been independently certified on this PR. Never claim GPT model names or APIs are implemented solely because old documents name them.
+See [Simpul status](SIMPUL_STATUS.md), [MCP setup](MCP_INTEGRATION.md) and [security](SECURITY_APPROVAL_MODEL.md).

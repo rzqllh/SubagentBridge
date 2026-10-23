@@ -1,42 +1,42 @@
 # Simpul — Project status and evidence boundaries
 
 **As of:** 23 October 2026  
-**Display name:** Simpul (formerly SubagentBridge)  
-**Repository:** `rzqllh/SubagentBridge` (GitHub repository has not been renamed)  
-**Technical compatibility:** `subagentbridge` package/import/CLI; `SUBAGENTBRIDGE_*` environment namespace
+**Public name:** Simpul (formerly SubagentBridge)  
+**Repository:** `rzqllh/SubagentBridge` (repository has not been renamed)  
+**Compatibility:** `subagentbridge` imports/distribution/CLI, `SUBAGENTBRIDGE_*` variable namespace
 
-## Branch and release status
+## Source, branch and publication
 
-- `main` at `2a467bd4a82c65a30931554acef879fda9794a5f` is the imported baseline, not the release candidate.
-- [PR #2](https://github.com/rzqllh/SubagentBridge/pull/2), PR-00 baseline recovery, is open and targets `main`.
-- [PR #3](https://github.com/rzqllh/SubagentBridge/pull/3), `integrate/roadmap-v4-verified` at `44d70b5f05836a867978dcadb166bd1122943a3b`, is open and targets PR #2's branch.
-- `1.0.0rc1` exists as candidate source/packaging metadata in PR #3. **Do not call it a published release or a merged production version.**
+- `main` contains the old imported September 2026 baseline.
+- [PR #2](https://github.com/rzqllh/SubagentBridge/pull/2) contains PR-00 baseline safety recovery; open, unmerged.
+- [PR #3](https://github.com/rzqllh/SubagentBridge/pull/3), branch `integrate/roadmap-v4-verified`, baseline `44d70b5f05836a867978dcadb166bd1122943a3b`, contains the candidate implementations; open and unmerged.
+- Project metadata declares `1.0.0rc1`, but no merge, GitHub release or published package is confirmed.
 
-## Candidate implementation versus verified evidence
+## What the candidate code actually provides
 
-The PR #3 tree includes a composition root, typed contracts, persistent SQLite audit and budget layers, policy classification, one-time approval broker, supervised read-only executor, local-loopback 9Router adapter, skill pinning, QA evidence controls, and MCP tool endpoints. This describes code present in the candidate, **not** comprehensive real-world validation.
+A Python composition root wires SQLite audit and budget layers, a message bus, skill registry, policy classifier, supervised read-only executor, identity and receipt registries, QA evidence gate and local 9Router client. The server exposes MCP stdio tools. Its `submit_goal` handler currently creates an in-memory run with a pending task and appends a `GOAL_SUBMITTED` event; **it does not start worker execution**. `get_task_evidence` reads stored task metadata, rather than returning independently proven receipt bodies.
 
-The candidate's 21 October 2026 evidence report records `250` discovered tests (`246` passed and `4` skipped), `21/21` E01–E21 test methods, and a four-job Windows/Linux CI matrix. These are **reported historical results** tied to an earlier verification scope; they do not prove today's branch state or all security properties.
+## Verification scope and outstanding gates
 
-**Unresolved gates:**
+The 21 October candidate reports 250 tests discovered (246 passed, 4 skipped), E01–E21 acceptance test methods and Windows/Linux CI. Treat those as **dated candidate evidence**. No fresh test, build, real IDE invocation, external model call, or independent clean checkout was performed during the 23 October documentation update.
 
-1. **E18:** Prior token-guessing tests do not establish broker isolation from a malicious same-OS-user worker. An independent same-user adversarial test is still required.
-2. **E22:** Prove checkout-root containment across supported path and platform edge cases.
-3. **E23:** Prove exact pinned remote Git checkout in an independently observed clean environment.
-4. **9Router:** Offline capability tests do not replace live authenticated inference; a prior live completion check returned HTTP 401.
-5. **Integration:** Verify actual PM → Developer → QA progression through a real host, not only contracts or staged simulations.
-6. **Release:** Independent QA, merges, signed/tagged release, and published distribution remain pending.
+- **E18:** token validation test is not a sufficient same-user attacker/broker-secret isolation test; independent adversarial evidence remains needed.
+- **E22:** checkout-root containment has not received completed independent evidence.
+- **E23:** remote pinned Git clone/checkout has not received completed independent evidence.
+- **9Router:** offline discovery/capability tests exist; a prior authenticated live completion attempt returned HTTP 401.
+- **Integration:** a real end-to-end Antigravity MCP PM/Developer/QA workflow has not been demonstrated.
+- **Release:** PR review, merge, independent verifier signoff and published distribution are pending.
 
-## Current safety contract
+## Security posture
 
-- `AUTONOMY: OFF`, including for any security-gated action.
-- D-01: `RISK_ACCEPTED_SAME_IDENTITY` is a documented Phase-A risk acceptance, **not sandbox isolation**.
-- D-03: `CHAT_APPROVAL`; a language model is **not** an authenticated human approver. No auto-approve or Always Allow.
-- D-02: the 9Router client accepts literal HTTP loopback origins and rejects redirects; this **does not** certify the upstream router's own external data flows.
-- Audit data and Git worktrees do not defeat same-user/administrator access or isolate arbitrary test code.
+`AUTONOMY: OFF`. Decision D-01 `RISK_ACCEPTED_SAME_IDENTITY` is risk acceptance, **not container/VM isolation**. Decision D-03 `CHAT_APPROVAL` is an operational gate mode, **not proof of human identity** against same-user workers. No Always Allow or agent self-approval. Decision D-02 restricts the client to literal HTTP loopback addresses; an upstream proxy may have separate provider/network obligations.
 
-## Reading order
+Tests that execute project source are not safe merely because their command lines are allowlisted. Local SQLite entries and Git hashes do not make receipts tamper-proof against a privileged local attacker. Do not enable unattended execution based on the present candidate evidence.
 
-Use this page for public status, the [open release candidate](https://github.com/rzqllh/SubagentBridge/pull/3) for working code, and `docs/TEAM_RULES.md` in the candidate for the governing human gates. Historical reports remain retained as evidence **from their recorded commits**, not current certification.
+## Historical evidence
 
-Last reviewed against GitHub branch/source snapshots on 23 October 2026. No new build, test, live-provider call or security adversarial exercise was executed by this documentation update.
+The [candidate acceptance matrix](ACCEPTANCE_MATRIX_E01_E21_EVIDENCE.md) and [release candidate report](RELEASE_CANDIDATE_V1_0_0.md) are retained as historical reports; more stringent independent checks supersede their unconditional readiness language. The display-name change does not rename Python imports, env vars, or existing repository URLs.
+
+## Next-development source of truth
+
+See [Simpul developer roadmap and handoff](simpul/README.md). Its task list and staged release gates describe proposed work, not independently verified completion.
