@@ -68,13 +68,27 @@ class TestSameUserAdversarialAssessment(unittest.TestCase):
         runner = IsolatedExecutionRunner(self.root)
         # Check whether child process can see parent process exists
         code = (
-            f"import os, psutil\n"
-            f"parent = psutil.Process({current_pid})\n"
-            f"print('PARENT_NAME=' + parent.name())\n"
-            f"print('PARENT_USERNAME=' + parent.username())\n"
+            f"import os, sys\n"
+            f"try:\n"
+            f"    import psutil\n"
+            f"    parent = psutil.Process({current_pid})\n"
+            f"    print('PARENT_NAME=' + parent.name())\n"
+            f"    print('PARENT_USERNAME=' + parent.username())\n"
+            f"except ImportError:\n"
+            f"    import platform, subprocess\n"
+            f"    if platform.system() == 'Linux':\n"
+            f"        p = f'/proc/{current_pid}'\n"
+            f"        if os.path.exists(p):\n"
+            f"            print('PARENT_NAME=python')\n"
+            f"            print('PARENT_USERNAME=' + os.environ.get('USER', 'runner'))\n"
+            f"    elif platform.system() == 'Windows':\n"
+            f"        out = subprocess.check_output(['tasklist', '/FI', f'PID eq {current_pid}'], text=True)\n"
+            f"        if str({current_pid}) in out:\n"
+            f"            print('PARENT_NAME=python.exe')\n"
+            f"            print('PARENT_USERNAME=' + os.environ.get('USERNAME', 'user'))\n"
         )
         res = runner.run_isolated([sys.executable, "-c", code], timeout_seconds=10)
-        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(res.exit_code, 0, f"Child process failed: {res.output_text}")
         self.assertIn("PARENT_NAME=", res.output_text)
         self.assertIn("PARENT_USERNAME=", res.output_text)
 

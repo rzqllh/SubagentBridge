@@ -449,8 +449,14 @@ class SupervisedNativeLifecycle:
             if qa_test_files:
                 import sys as _sys
                 try:
+                    try:
+                        import pytest  # noqa: F401
+                        qa_cmd = [_sys.executable, "-m", "pytest", *qa_test_files]
+                    except ImportError:
+                        qa_cmd = [_sys.executable, "-m", "unittest", *qa_test_files]
+
                     qa_run = self.runner.run_isolated(
-                        [_sys.executable, "-m", "pytest", *qa_test_files],
+                        qa_cmd,
                         timeout_seconds=30,
                     )
                     qa_passed = (qa_run.exit_code == 0)
