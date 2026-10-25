@@ -17,6 +17,8 @@ env/
 build/
 dist/
 *.egg-info/
+*.whl
+*.tar.gz
 
 # Runtime state
 *.db
@@ -25,6 +27,11 @@ dist/
 *.sqlite
 *.sqlite3
 *.log
+
+# Git worktrees & patches
+.worktrees/
+*.patch
+*.bundle
 
 # Secrets / local config
 .env
