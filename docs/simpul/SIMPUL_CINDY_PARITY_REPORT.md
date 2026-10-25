@@ -31,8 +31,8 @@
 
 | Phase | Branch | Status | Acceptance Target |
 |---|---|---|---|
-| C00 | `simpul/08-sprint1-verification` | **COMPLETE (local) - PENDING PUSH** | Security hardening, corrective review, all tests pass |
-| C01 | `simpul/09-parity-foundation` | **NOT STARTED** | Architecture contracts, adapter boundaries, baseline failing tests |
+| C00 | `simpul/08-sprint1-verification` | **COMPLETE (remote PR #9 verified, CI 4/4 PASS)** | Security hardening, corrective review, all tests pass |
+| C01 | `simpul/09-parity-foundation` | **COMPLETE (local) - READY FOR PR/STACK REVIEW** | Architecture contracts, adapter boundaries, 8 baseline tests pass |
 | C02 | `simpul/10-worker-sessions` | **NOT STARTED** | Real independent worker sessions with lifecycle |
 | C03 | `simpul/11-multi-harness` | **NOT STARTED** | Capability-checked host adapters |
 | C04 | `simpul/12-interagent-control` | **NOT STARTED** | Durable message queue, targeting, dedup, interrupt/steer |
@@ -43,10 +43,11 @@
 
 ## C00 - Sprint 1 Closure and Security Hardening
 
-**Status**: COMPLETE locally - awaiting human push to remote
+**Status**: COMPLETE (remote updated, CI verified)
 **Branch**: `simpul/08-sprint1-verification`
-**HEAD**: `f422ed2`
-**Remote PR #9**: Last observed at `dece7bb` - NOT YET UPDATED
+**HEAD Commit**: `eb97397` (pushed to origin)
+**Remote PR #9**: Updated to `eb97397`
+**GitHub Actions Run**: `40202959103` (4/4 jobs PASS in 2m13s)
 
 ### Task Checklist
 
@@ -63,42 +64,71 @@
 | C00-T9 | Mypy type check (47 source files) | **PASS (exit 0)** |
 | C00-T10 | Bandit security scan (0 High, 0 Medium) | **PASS (exit 0)** |
 | C00-T11 | Report Section 15 appended to SIMPUL_02_SPRINT_1_REPORT.md | **COMPLETE** |
-| C00-T12 | Push to remote for CI | **BLOCKED - awaiting human gate** |
+| C00-T12 | Push to remote for CI | **PASS (Authorized: run 40202959103 4/4 green)** |
 
-### Verification Matrix
+### Remote CI Matrix Run 40202959103
 
-| Tool | Result | Exit Code |
-|---|---|---|
-| `pytest tests/ artifacts/bootstrap/v3_1/tests/ -q` | 339 passed, 5 skipped in 59.31s | 0 |
-| `ruff check subagentbridge/` | All checks passed! | 0 |
-| `mypy subagentbridge/ --ignore-missing-imports` | Success: no issues found in 47 source files | 0 |
-| `bandit -r subagentbridge/ -ll` | No issues identified (0 High, 0 Medium) | 0 |
-| `git status` | nothing to commit, working tree clean | 0 |
-
-### Key Security Findings
-
-| Finding | Severity | Status |
-|---|---|---|
-| approve_command callable by same-user process = model self-approval risk | P0 | DOCUMENTED - E18 BLOCKED, no code change; honest disclosure |
-| Default-deny command execution correctly implemented | P0 | PASS |
-| JUnitXML temp file spoofable by same-user co-process | P0 | DOCUMENTED - E18 BLOCKED accepted risk |
-| Thread lock is in-process only, not cross-process | P1 | DOCUMENTED - BLOCKED for cross-process exactly-once |
-| Ruff 109 style violations in tests/ | Style | PRE-EXISTING - not a regression |
-
-### Human Gate Required
-
-Push command for human to execute:
-`git push origin simpul/08-sprint1-verification`
-
-Then verify CI run passes 4/4 matrix jobs before C01 begins.
+| Runner | Python | Status | Duration |
+|---|---|---|---|
+| `ubuntu-latest` | 3.13 | **SUCCESS** | 59s |
+| `ubuntu-latest` | 3.11 | **SUCCESS** | 48s |
+| `windows-latest` | 3.11 | **SUCCESS** | 1m44s |
+| `windows-latest` | 3.13 | **SUCCESS** | 2m13s |
 
 ---
 
 ## C01 - Parity Foundation
 
-**Status**: NOT STARTED
-**Branch**: `simpul/09-parity-foundation` (to be created)
-**Depends on**: C00 push + CI passing + PR #9 accepted (or stacked ancestry explicitly noted)
+**Status**: COMPLETE (local) - ready for PR / stack review
+**Branch**: `simpul/09-parity-foundation`
+**Worktree**: `.worktrees/p09-parity-foundation`
+**Base**: `eb97397` (stacked on `simpul/08-sprint1-verification`)
+
+### Implementation Summary
+
+1. **Domain Architecture Contracts (`subagentbridge/domain/orca_contracts.py`)**:
+   - `OrcaRole` (`LEAD`, `WORKER`): Distinct identity and role separation.
+   - `WorkerStatus` (`IDLE`, `RUNNING`, `PAUSED`, `INTERRUPTED`, `COMPLETED`, `FAILED`, `ARCHIVED`): Comprehensive lifecycle.
+   - `QueueTaskStatus` (`PENDING`, `DISPATCHED`, `RUNNING`, `INTERRUPTED`, `COMPLETED`, `CANCELLED`, `FAILED`): Queue state machine.
+   - `WorkerConfig`: Per-worker model, harness, provider, system prompt, effort, and token budget.
+   - `OrcaSession`: Discrete session container for Lead and Worker.
+   - `QueueItem`: Durable inter-agent task queue handle with `dsp-` IDs.
+   - `WorktreeAssignment`: Per-worker isolated worktree path and branch tracking.
+   - `HandoffEvidence`: Structured completion evidence and artifact transport.
+
+2. **Durable SQLite Persistence (`subagentbridge/storage/orca_store.py`)**:
+   - Dedicated WAL-mode tables: `orca_teams`, `orca_sessions`, `orca_queue`, `orca_worktrees`, `orca_handoffs`.
+   - Context-managed SQLite connection ensuring clean Windows file-handle disposal.
+   - Full rehydration capabilities across process crashes and restarts.
+
+3. **Orca Team Manager (`subagentbridge/team/orca_team.py`)**:
+   - Team and session lifecycle management.
+   - Inter-agent dispatch (`dispatch_task`).
+   - Atomic worker interrupt preemption (`interrupt_worker`).
+   - Worktree isolation mapping (`get_worktree_assignment`).
+   - Structured handoff receipt ingestion (`submit_worker_handoff`).
+   - Enforced default-deny execution policy for worker sessions (`execute_worker_command`).
+
+### Baseline Verification Matrix
+
+| Tool / Check | Result | Exit Code |
+|---|---|---|
+| `pytest tests/test_c01_parity_foundation.py -v` | 8 passed in 0.23s | 0 |
+| `pytest tests/ artifacts/bootstrap/v3_1/tests/ -q` | 347 passed, 5 skipped, 135 subtests in 53.91s | 0 |
+| `ruff check subagentbridge/ tests/test_c01_parity_foundation.py` | All checks passed! | 0 |
+| `mypy subagentbridge/domain/orca_contracts.py subagentbridge/storage/orca_store.py subagentbridge/team/orca_team.py` | Success: no issues found in 3 source files | 0 |
+| `bandit -r subagentbridge/ -ll` | 0 High, 0 Medium | 0 |
+
+### Baseline Tests Verified (8/8 PASS)
+
+1. `test_c01_lead_worker_distinct_sessions`: Lead and Worker have separate IDs, roles, and lifecycles.
+2. `test_c01_worker_has_own_model_config`: Per-worker model, harness, provider, and effort preserved.
+3. `test_c01_dispatch_returns_queue_handle`: Dispatches return typed `QueueItem` with state transitions.
+4. `test_c01_interrupt_preempts_worker`: Atomic interrupt transitions worker and queue item to `INTERRUPTED`.
+5. `test_c01_worker_to_lead_handoff`: Worker returns structured `HandoffEvidence` back to Lead.
+6. `test_c01_restart_reconstructs_sessions`: SQLite store saves and rehydrates sessions and queues across restart.
+7. `test_c01_worktree_assignment_per_worker`: Dedicated worktree paths assigned per worker without collision.
+8. `test_c01_unapproved_command_blocked`: Worker execution through parity contracts enforces default-deny.
 
 ### Cindy Upstream Capabilities Mapped (from orca-team-architecture.md, SHA b7e46bc)
 
