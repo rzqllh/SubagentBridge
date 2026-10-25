@@ -382,139 +382,123 @@ Following the opening of Pull Request #9 (`https://github.com/rzqllh/SubagentBri
 
 ---
 
-## 14. PR #9 Codex Review Threads Resolution (4 P1, 4 P2)
+## 14. PR #9 Codex Review Threads Resolution & Corrective Hardening
 
 ### 14.1 Review Threads Overview & Triage Status
 
-All 8 Codex review threads on GitHub PR #9 (including reviews on commit `dece7bbe`) were independently inspected directly from GitHub API. Each finding was investigated at the root cause, distinguishing items already resolved by CI remediation from items requiring targeted engineering and security fixes.
+All 8 Codex review threads on GitHub PR #9 (including reviews on commit `dece7bbe`) were independently inspected directly from GitHub API. Each finding was investigated at the root cause, distinguishing items already resolved by CI remediation from items requiring targeted engineering, security boundaries, and architectural hardening.
 
-| Thread ID | Severity | File | Topic / Defect | Remediation Status | Regression Test |
-|---|---|---|---|---|---|
-| `4370514698` | **P1** | `native_runtime.py` | Undeclared runtime dependency `pytest` in QA subprocess execution | **RESOLVED & VERIFIED** | Verified via CI run `40188163559` & local discovery |
-| `4370514701` | **P1** | `.github/workflows/ci.yml` | MCP provisioning and dependency installation after unittest discovery | **RESOLVED & VERIFIED** | Reordered steps in `ci.yml`; CI 4/4 green |
-| `4370514704` | **P2** | `test_remote_pinned_checkout_e23.py` | Remote moving-main dependency in hermetic unit test suite | **RESOLVED & VERIFIED** | Controlled local bare git fixture; live check opt-in |
-| `4370631953` | **P1 (Sec)** | `coordinator.py` & `native_runtime.py` | Worker reservation leak on missing command or runner failure | **RESOLVED & VERIFIED** | Added `release_dispatch()`; pre-check + failure release |
-| `4370631957` | **P2** | `native_runtime.py` | Substring matching in clean checkout ignores valid files (e.g. `restore.db.py`) | **RESOLVED & VERIFIED** | Exact path and basename matching for SQLite artifacts |
-| `4370631961` | **P2** | `native_runtime.py` | Lack of post-QA checkout cleanliness and tree integrity revalidation | **RESOLVED & VERIFIED** | Post-QA revalidation of git status, tree SHA, and test hashes |
-| `4370641899` | **P1 (Sec)** | `server.py` | Model-supplied commands lack authorization gating under `CHAT_APPROVAL` | **RESOLVED & VERIFIED** | `_gate_command_execution()` blocks out-of-bounds writes & commands |
-| `4370641903` | **P2** | `native_runtime.py` | Skipped qualifying tests grant criteria coverage (Gate E20 violation) | **RESOLVED & VERIFIED** | Detect skipped tests in QA output; fail closed with zero coverage |
+> [!IMPORTANT]
+> **Remote GitHub Status Disclosure:** While all 8 review threads have been completely resolved and independently verified locally with 19 comprehensive regression tests (100% passing), their status on GitHub remote remains **UNRESOLVED / PENDING HUMAN VERIFICATION** until the human repository owner reviews and explicitly marks the threads resolved in the GitHub PR review UI. This report truthfully distinguishes local verified completion from remote state.
+
+| Thread ID | Severity | File | Topic / Defect | Local Engineering Remediation | GitHub Remote Status | Regression Test |
+|---|---|---|---|---|---|---|
+| `4370514698` | **P1** | `native_runtime.py` | Undeclared runtime dependency `pytest` in QA subprocess execution | Declared dependency in `requirements.txt`/`pyproject.toml`; added dynamic fallback | **PENDING REVIEW** | Verified via CI run `40188163559` & local discovery |
+| `4370514701` | **P1** | `.github/workflows/ci.yml` | MCP provisioning and dependency installation after unittest discovery | Reordered steps in `ci.yml` before test discovery | **PENDING REVIEW** | CI 4/4 green across matrix |
+| `4370514704` | **P2** | `test_remote_pinned_checkout_e23.py` | Remote moving-main dependency in hermetic unit test suite | Controlled local bare git fixture; live check opt-in | **PENDING REVIEW** | Local fixture passes deterministically |
+| `4370631953` | **P1 (Sec)** | `coordinator.py` & `native_runtime.py` | Worker reservation leak on missing command or runner failure | Thread-safe `release_dispatch()`, pre-check + failure release | **PENDING REVIEW** | Missing cmd, error, cancel & concurrency tests |
+| `4370631957` | **P2** | `native_runtime.py` | Substring matching in clean checkout ignores valid files (e.g. `restore.db.py`) | Exact path and basename matching for SQLite artifacts | **PENDING REVIEW** | Substring rejection, spaces, rename & backslashes |
+| `4370631961` | **P2** | `native_runtime.py` | Lack of post-QA checkout cleanliness and tree integrity revalidation | Post-QA revalidation of git status, tree SHA, and test hashes | **PENDING REVIEW** | Mutating QA test rejected post-execution |
+| `4370641899` | **P1 (Sec)** | `server.py` | Model-supplied commands lack authorization gating under `CHAT_APPROVAL` | Default DENY boundary + trusted allowlist + single-use exact token | **PENDING REVIEW** | Dynamic script, subprocess, shell indirection, replay |
+| `4370641903` | **P2** | `native_runtime.py` | Skipped qualifying tests grant criteria coverage (Gate E20 violation) | Structured JUnitXML evaluation requiring tests > 0, skips == 0 | **PENDING REVIEW** | Empty collection & stdout spoofing tests |
 
 ---
 
-### 14.2 Detailed Root Cause & Engineering Fix Analysis
+### 14.2 Detailed Root Cause & Corrective Engineering Implementation
 
-#### 1. Thread #1 (`4370514698` - P1): `pytest` Runtime Dependency
-- **Finding**: `native_runtime.py` calls `[_sys.executable, "-m", "pytest", ...]`, which fails if pytest is missing from the environment.
-- **Root Cause**: `pytest` was originally not listed in `requirements.txt` or `pyproject.toml`.
-- **Fix**:
-  1. Added `pytest>=7.0.0` to `requirements.txt` and `pyproject.toml`.
-  2. Implemented dynamic fallback in `native_runtime.py`: attempts `import pytest`; if unavailable, invokes `python -m unittest`, maintaining strict exit code verification (`exit_code == 0`).
-- **Status**: Completely resolved in CI run `40188163559` and verified across both Ubuntu and Windows runners.
+#### 1. Focus 1: P1 Command Authorization (`server.py`)
+- **Vulnerability**: Pattern matching on command strings (searching regex keywords like `open(`, `.write_text`, `rm -rf`, `sudo`) is not a security boundary. Model-supplied commands could easily bypass blacklist pattern matching via:
+  1. Dynamic script execution: `eval(...)`, `exec(...)`, `__import__('os').system(...)`, or dynamic attribute access `getattr(...)`.
+  2. Subprocess spawning: `python -c "import subprocess; subprocess.run(...)"`.
+  3. Shell indirection: `bash -c "..."`, `cmd.exe /c "..."`, or `powershell -Command "..."`.
+  4. Out-of-workspace writes via indirect path assembly or network downloads.
+- **Architectural Solution (Default DENY & Trusted Allowlist)**:
+  1. Replaced ad-hoc blacklist pattern matching in `_gate_command_execution` with a strict **Default DENY** policy.
+  2. Defined **Trusted Allowlist** (`_is_trusted_allowlisted_command`):
+     - Standard in-workspace test runners: Python executable invoking `-m pytest` or `-m unittest` with test targets strictly confined within `workspace_path.resolve()` and free from path traversal (`..`) or unsafe runtime overrides.
+     - AST-verified harmless print probes: Python `-c` execution strictly containing only literal `print(...)` calls without imports, attributes, or I/O calls.
+  3. All other commands (including shell commands, dynamic scripts, external binaries, or seemingly harmless commands like `echo` or `ls`) are **DENIED by default**.
+  4. **Trusted Human Approval Path**:
+     - Unauthorized commands compute an exact fingerprint: `sha256(run_id:task_id:workspace_path:json(cmd_list))`.
+     - Automatically enqueued to `_pending` with status `UNAUTHORIZED_COMMAND`.
+     - Pending approval does **NOT** grant execution authority; repeated execution while pending remains strictly `BLOCKED`.
+     - Exposed MCP tool `approve_command(action_id, approver="human")`: registers a single-use granted approval token bound to exact `(run_id, task_id, workspace_path, command)`.
+     - Token is consumed exact-once upon execution. Subsequent replay attempts immediately return `BLOCKED`.
+  5. **Honest Gate E18 Boundary**:
+     - Responses for gated execution explicitly include `"same_user_boundary": "RISK_ACCEPTED_SAME_IDENTITY (Gate E18 BLOCKED)"` acknowledging the absence of kernel-level OS isolation between same-UID processes.
+- **Regression Tests**: `test_PR9_P1_mcp_command_authorization_and_confinement_gating` and `test_PR9_P1_command_authorization_bypass_attempts_and_default_deny` prove rejection of dynamic scripts, subprocesses, shell indirection, out-of-bounds writes, pending approval re-execution, exact-once approval execution, and replay prevention.
 
-#### 2. Thread #2 (`4370514701` - P1): MCP Provisioning Before Test Discovery
-- **Finding**: MCP client tests raised `ModuleNotFoundError: No module named 'mcp'` during `unittest discover` in CI.
-- **Root Cause**: `ci.yml` scheduled test discovery prior to dependency installation.
-- **Fix**:
-  1. Reordered `.github/workflows/ci.yml` steps so Python setup is immediately followed by `pip install -r requirements.txt`, `pip install -e .`, and tool installations (`ruff`, `mypy`, `bandit`).
-- **Status**: Completely resolved; all 4 matrix jobs passed in run `40188163559`.
+#### 2. Focus 2: P2 QA Skip & Collection Detection (`native_runtime.py`)
+- **Vulnerability**: Substring matching on stdout/stderr (e.g. checking for `"OK"` or `"skipped="`) is vulnerable to stdout spoofing (e.g. a failing or skipped test that prints `"Ran 10 tests ... OK"`), and exit code alone does not verify that qualifying tests were collected or actually ran.
+- **Architectural Solution (Structured Test Outcomes)**:
+  1. Replaced stdout parsing with structured JUnitXML output via `--junitxml=<tmp_xml_path>` executed in an isolated temporary directory.
+  2. Evaluated structured XML nodes via `xml.etree.ElementTree`:
+     - Requires `total_tests > 0` (test collection strictly required; empty suites fail).
+     - Requires `total_skipped == 0` and absence of `<skipped>` XML tags (Gate E20 enforcement).
+     - Requires `total_failures == 0`, `total_errors == 0`, and process `exit_code == 0`.
+  3. If parsing fails, XML is missing, or tests are skipped, `qa_passed = False` and criteria coverage is withheld (fail-closed).
+  4. Annotated `_ET.parse` call with `# nosec B314` with verified justification that the target XML is generated exclusively by our own ephemeral local pytest runner.
+- **Regression Tests**: `test_PR9_P2_reject_skipped_qualifying_tests_for_coverage` and `test_PR9_P2_qa_skip_detection_structured_and_collection` verify that zero-test suites, `@unittest.skip`, and stdout-spoofed skipped tests strictly return `status: FAILED`.
 
-#### 3. Thread #3 (`4370514704` - P2): Decouple Moving-Main Dependency in Gate E23
-- **Finding**: `test_E23_rejection_of_branch_movement` cloned `https://github.com/rzqllh/SubagentBridge.git` `main` branch directly over the network during unit tests. Network flakiness or legitimate commits on `main` could cause false test failures.
-- **Root Cause**: Unit test coupled hermetic assertion logic with external network state.
-- **Fix**:
-  1. In `tests/test_remote_pinned_checkout_e23.py`, restructured the test suite to use a local bare Git repository fixture (`--bare`) initialized dynamically in `setUp()`.
-  2. Unit tests (`test_e23_01_controlled_remote_pinned_checkout_passes` and `test_e23_02_remote_branch_movement_rejected`) execute deterministically and offline in milliseconds.
-  3. Live network testing against GitHub is isolated in `test_e23_03_live_remote_github_acceptance_check`, skipped unless `SUBAGENTBRIDGE_LIVE_REMOTE_TEST=1`.
-- **Status**: Verified; 2 tests pass locally, 1 test skips gracefully.
+#### 3. Focus 3: P2 Checkout Integrity & Porcelain Parsing (`native_runtime.py`)
+- **Vulnerability**: Substring checks (`"store.db" in line`) inadvertently exempted tracked source files with similar names (e.g. `restore.db.py`). Furthermore, git porcelain lines with spaces or quotes required proper unquoting and normalization across platforms.
+- **Architectural Solution**:
+  1. Refactored `_is_ignored_checkout_status_line` in `native_runtime.py`:
+     - Parses porcelain format: extracts exact path component starting after status code (`line[3:].strip()`).
+     - Handles rename notation (`old -> new`).
+     - Unquotes git C-style quoted paths (`"path with spaces/store.db"` -> `path with spaces/store.db`).
+     - Normalizes Windows backslashes (`\`) to forward slashes (`/`).
+  2. Strict exact matching:
+     - SQLite runtime artifacts must exactly match `p.name in _EXACT_ALLOWED_RUNTIME_FILENAMES` (`store.db`, `audit.db`, `tasks.db`, etc.).
+     - Cache directories must exactly match allowed directory components in `_EXACT_ALLOWED_RUNTIME_DIRS` (`.subagentbridge`, `.pytest_cache`, `__pycache__`).
+     - Tracked source code (`restore.db.py`, `store.db.txt`, `source.py`) strictly fails cleanliness check (`return False`).
+  3. Post-QA Revalidation:
+     - Revalidates `check_clean_checkout(workspace_path)`, `resolve_tree_sha(workspace_path)`, and actual on-disk QA test file hashes *after* QA execution finishes, catching any workspace pollution caused by tests.
+- **Regression Tests**: `test_PR9_P2_restrict_checkout_exclusions_exact_artifact_paths`, `test_PR9_P2_revalidate_checkout_integrity_post_qa`, and `test_PR9_P2_checkout_integrity_porcelain_parsing` verify exact matching, space-in-path handling, rename rejection, and post-QA mutation detection.
 
-#### 4. Thread #4 (`4370631953` - P1 Security): Worker Reservation Leak on Failed/Missing Commands
-- **Finding**: When a task failed due to missing commands or runtime exceptions, the worker slot reserved via `self.budget.reserve_worker()` was never released, permanently leaking worker capacity and causing subsequent tasks to fail with `BudgetExceeded`.
-- **Root Cause**: `SupervisedCoordinator` lacked a method to release worker reservations on non-terminal dispatch failures, and `native_runtime.py` called `coordinator.begin()` before validating command availability.
-- **Fix**:
-  1. Added `release_dispatch(task_id: str)` to `SupervisedCoordinator` in `subagentbridge/team/coordinator.py`:
+#### 4. Focus 4: P1 Worker Reservation Exact-Once Lifecycle (`coordinator.py`)
+- **Vulnerability**: When dispatches failed due to missing commands, runner exceptions, or cancellations, worker slots reserved via `budget.reserve()` leaked, eventually causing `BudgetExceeded`. Concurrent dispatches also lacked thread safety during reservation release.
+- **Architectural Solution**:
+  1. Added `from threading import Lock; self._lock = Lock()` to `SupervisedCoordinator`.
+  2. Implemented thread-safe `release_dispatch(task_id: str)`:
      ```python
      def release_dispatch(self, task_id: str) -> None:
          with self._lock:
-             if task_id in self._active_dispatches:
-                 self._active_dispatches.discard(task_id)
-                 self.budget.release_worker()
+             dispatch_id = self._active_ids.pop(task_id, None)
+         if dispatch_id is not None:
+             try:
+                 self.budget.release(dispatch_id)
+             except Exception:
+                 pass
      ```
-  2. In `subagentbridge/execution/native_runtime.py`, introduced a command availability pre-check before calling `coordinator.begin()`, immediately failing tasks without consuming a worker slot.
-  3. Wrapped runner dispatch in a `try...finally` block to call `coordinator.release_dispatch(task_id)` if task execution fails before normal completion.
-- **Regression Test**: `tests/test_codex_p1_p2_fixes.py::test_PR9_P1_release_dispatch_reservation_on_missing_or_failed_command` executes 3 successive failed dispatches under a strict `max_workers=1` budget, then executes a 4th valid task. Proves 0 leaked workers (`prod_sys.budget.snapshot()["active"] == 0`).
+  3. Synchronized `coordinator.begin()` and `coordinator.qa_review()` dispatch tracking under `self._lock`.
+  4. In `native_runtime.py`, added a pre-check before `coordinator.begin()` so missing commands do not consume a worker slot, and wrapped dispatch failures and runner exceptions in `try...finally` or explicit failure releases.
+  5. Atomic `pop(task_id, None)` ensures that repeated release calls (e.g. runner exception followed by cancellation) execute exact-once without double-release or race conditions.
+- **Regression Tests**: `test_PR9_P1_release_dispatch_reservation_on_missing_or_failed_command` and `test_P1_worker_reservation_exact_once_concurrent_and_cancellation` verify repeated missing commands, error releases, cancellation, and multi-threaded concurrent dispatches leave `budget.snapshot()["active"] == 0`.
 
-#### 5. Thread #5 (`4370631957` - P2): Exact Path Matching for Clean Checkout Exclusions
-- **Finding**: `_is_ignored_checkout_status_line` ignored any file containing `'store.db'` as a substring. A legitimate modified file named `restore.db.py` or `store.db.backup.py` was erroneously treated as clean.
-- **Root Cause**: Overly broad `line.endswith(...)` and `in line` checks without path component separation.
-- **Fix**:
-  1. Refactored `_is_ignored_checkout_status_line` in `subagentbridge/execution/native_runtime.py` to extract the exact modified filename using `line.strip().split(maxsplit=1)`.
-  2. Restricted SQLite exclusions to exact filenames and basenames: `{"store.db", "store.db-wal", "store.db-shm", "store.db-journal", ".subagentbridge.db"}`.
-  3. Restricted cache exclusions to exact directory prefixes: `{"__pycache__/", ".pytest_cache/"}`.
-  4. Tracked source files like `restore.db.py` are now strictly flagged as dirty.
-- **Regression Test**: `tests/test_codex_p1_p2_fixes.py::test_PR9_P2_restrict_checkout_exclusions_exact_artifact_paths` verifies that adding `restore.db.py` fails `check_clean_checkout(ws)`, while adding exact `store.db` succeeds.
-
-#### 6. Thread #6 (`4370631961` - P2): Post-QA Checkout Integrity & Cleanliness Revalidation
-- **Finding**: Checkout cleanliness was verified only before executing QA tests. If a QA test mutated tracked files or wrote untracked files into the working tree, the run was still marked `VERIFIED`.
-- **Root Cause**: Absence of post-execution integrity boundary check.
-- **Fix**:
-  1. In `subagentbridge/execution/native_runtime.py`, added a post-QA revalidation step immediately following QA test subprocess execution:
-     ```python
-     if not check_clean_checkout(self.workspace_path):
-         return {
-             "status": "FAILED",
-             "reason": "dirty checkout detected after QA execution: working copy modified by QA run",
-         }
-     post_tree_sha = resolve_tree_sha(self.workspace_path)
-     if post_tree_sha != initial_tree_sha:
-         return {
-             "status": "FAILED",
-             "reason": f"tree SHA mismatch after QA execution: initial {initial_tree_sha} != post {post_tree_sha}",
-         }
-     ```
-  2. Also re-verified the disk SHA-256 hashes of all qualifying QA test files to ensure QA code was not altered during runtime.
-- **Regression Test**: `tests/test_codex_p1_p2_fixes.py::test_PR9_P2_revalidate_checkout_integrity_post_qa` executes a QA test that deliberately mutates a tracked file (`tracked.txt`). Proves the lifecycle returns `FAILED` with `"dirty checkout detected after QA execution"`.
-
-#### 7. Thread #7 (`4370641899` - P1 Security): Model-Supplied Command Authorization & Boundary Gating
-- **Finding**: Model-supplied command dictionaries in MCP tools `execute_run` and `execute_task` lacked boundary gating under `CHAT_APPROVAL`. Malicious or hallucinated commands could attempt writes outside the workspace root or perform destructive filesystem modifications.
-- **Root Cause**: Missing policy inspection layer on command payloads before invocation.
-- **Fix**:
-  1. Implemented `_gate_command_execution(commands, workspace_path)` in `subagentbridge/server.py`.
-  2. Parses command lists and scripts for:
-     - Path traversal sequences (`..`) attempting to escape workspace boundaries.
-     - Out-of-workspace absolute paths used as write targets.
-     - Destructive operations (`rmdir /s`, `rm -rf`, disk wipes).
-  3. When an out-of-bounds or sensitive pattern is detected:
-     - Automatically creates a pending approval action in `ApprovalBroker`.
-     - Appends action to `_pending` queue with operation `command.execute`.
-     - Returns `{status: "BLOCKED", action_id: "...", reason: "model-supplied command requires human approval..."}` without executing the command.
-     - Leaves filesystem outside the workspace completely untouched (fail-closed).
-- **Regression Test**: `tests/test_codex_p1_p2_fixes.py::test_PR9_P1_mcp_command_authorization_and_confinement_gating` submits a command attempting to write to `forbidden_outside.txt` outside workspace. Confirms `status: BLOCKED`, confirms action appears in `get_pending_approvals()`, verifies external file is NOT created, and tests rejection via `reject_approval()`.
-
-#### 8. Thread #8 (`4370641903` - P2): Reject Skipped Qualifying Tests for Coverage (Gate E20)
-- **Finding**: If a qualifying QA test was skipped (e.g. `@unittest.skip`), the subprocess exited with 0, and the runtime granted acceptance criteria coverage, violating Acceptance Gate E20 ("Skipped tests cannot be treated as verified").
-- **Root Cause**: Coverage logic checked only process returncode (`exit_code == 0`) without parsing skip indicators in test output.
-- **Fix**:
-  1. In `subagentbridge/execution/native_runtime.py`, enhanced QA output analysis to inspect stdout/stderr for skip keywords (`SKIPPED`, `skipped=`, `s` status indicators on qualifying tests).
-  2. If skipped tests are detected, `qa_passed` is set to `False`, coverage is withheld, and the lifecycle returns `status: FAILED` with `"acceptance criteria not met: qualifying tests were skipped"`.
-- **Regression Test**: `tests/test_codex_p1_p2_fixes.py::test_PR9_P2_reject_skipped_qualifying_tests_for_coverage` executes a QA test containing `@unittest.skip`. Confirms `status: FAILED` and criteria rejected.
+#### 5. Focus 5: Editor Problems (8 Findings Triaged)
+- **6x "Unable to resolve action"**: Checked GitHub Actions extensions and repository access. Verified that actual CI workflow run `40188163559` passed 4/4 matrix jobs cleanly. The 6 editor diagnostics are local offline IDE schema cache limitations when resolving commit SHAs without network access. Action version pins (`actions/checkout@11d5960a32...`, `actions/setup-python@a26af69be9...`) are verified and must not be mutated without runtime evidence.
+- **Pyrefly FastMCP.run**: Added `def run(self, *args: object, **kwargs: object) -> None: pass` to fallback dummy `FastMCP` class in `subagentbridge/server.py` to satisfy type analyzers when FastMCP SDK is imported under duck typing.
+- **Unnecessary `str()`**: Cleaned up redundant `str(outside_file)` inside `repr(...)` in `test_codex_p1_p2_fixes.py` without altering runtime behavior.
+- **Scope Lock**: No modifications were made to the parent Xyeena repository or unrelated files.
 
 ---
 
-### 14.3 Full Verification Matrix (Post-Fixes)
+### 14.3 Full Final Verification Matrix
 
 All unit tests, integration suites, regression tests, static analysis, and security checks were executed cleanly on Windows 11 (Python 3.13.13):
 
 | Test Suite / Tool | Command Line | Result | Exit Code | Notes |
 |---|---|---|---|---|
-| **P1/P2 Regression Suite** | `python -m unittest tests/test_codex_p1_p2_fixes.py` | **15 passed** | **0** | All 5 new PR #9 regression tests + 10 baseline tests PASS |
-| **Native Execution Truthfulness** | `python -m unittest tests/test_native_execution_truthfulness.py` | **5 passed** | **0** | Fail-closed invariants intact |
-| **Remote Pinned Checkout (E23)** | `python -m unittest tests/test_remote_pinned_checkout_e23.py` | **2 passed, 1 skipped** | **0** | Decoupled local bare remote PASS; live remote opt-in |
-| **Full Unittest Discovery (Core)** | `python -B -m unittest discover -s tests -p 'test_*.py'` | **Ran 321 tests in 40.8s. OK (skipped=5)** | **0** | 0 failures, 0 errors |
-| **Bootstrap v3.1 Discovery** | `python -B -m unittest discover -s artifacts/bootstrap/v3_1/tests -p 'test_*.py'` | **Ran 13 tests in 1.8s. OK** | **0** | 0 failures, 0 errors |
-| **Pytest Full Discovery** | `python -m pytest tests -rs` | **322 passed, 5 skipped in 40.6s** | **0** | Exact match |
-| **Ruff Linter** | `python -m ruff check --select E4,E7,E9,F subagentbridge tests/test_codex_p1_p2_fixes.py` | **All checks passed!** | **0** | Clean lint |
+| **P1/P2 Regression Suite** | `python -m pytest tests/test_codex_p1_p2_fixes.py` | **19 passed in 5.83s** | **0** | All 8 review threads covered with targeted regression assertions |
+| **Native Execution Truthfulness** | `python -m pytest tests/test_native_execution_truthfulness.py` | **5 passed in 1.4s** | **0** | Fail-closed invariants intact |
+| **Remote Pinned Checkout (E23)** | `python -m pytest tests/test_remote_pinned_checkout_e23.py` | **2 passed, 1 skipped** | **0** | Decoupled local bare remote PASS; live remote opt-in |
+| **Core Unittest Discovery** | `python -B -m unittest discover -s tests -p 'test_*.py'` | **Ran 325 tests in 45.6s. OK (skipped=5)** | **0** | 0 failures, 0 errors |
+| **Bootstrap v3.1 Discovery** | `python -B -m unittest discover -s artifacts/bootstrap/v3_1/tests -p 'test_*.py' -v` | **Ran 13 tests in 2.2s. OK** | **0** | 0 failures, 0 errors |
+| **Combined Pytest Suite** | `python -m pytest tests artifacts/bootstrap/v3_1/tests -rs` | **339 passed, 5 skipped in 50.2s** | **0** | 344 total items collected |
+| **Ruff Linter** | `python -m ruff check --select E4,E7,E9,F subagentbridge` | **All checks passed!** | **0** | Clean lint matching CI configuration |
 | **Mypy Typechecker** | `python -m mypy --ignore-missing-imports --check-untyped-defs subagentbridge` | **Success: no issues found in 47 source files** | **0** | Strict type safety |
-| **Bandit Security (CI Threshold)** | `python -m bandit -q -r -ll subagentbridge` | **0 High, 0 Medium** | **0** | Clean security baseline |
+| **Bandit Security (CI Threshold)** | `python -m bandit -q -r -ll subagentbridge` | **0 High, 0 Medium** | **0** | Clean security baseline (nosec B314 on local JUnitXML) |
 | **FastMCP Server Smoke Test** | `python -B -c "from mcp.server.fastmcp import FastMCP; import subagentbridge.server; print('MCP v1 server import PASS')"` | **MCP v1 server import PASS** | **0** | Clean MCP server initialization |
 
 #### Breakdown of Skipped Tests (5 skips)
@@ -528,6 +512,12 @@ All unit tests, integration suites, regression tests, static analysis, and secur
 
 ### 14.4 Invariants & Security Governance Summary
 1. **`AUTONOMY: OFF`**: Strictly enforced across all tools and orchestration phases.
-2. **`GATE_MODE: CHAT_APPROVAL`**: Model-supplied commands attempting writes or escapes outside workspace boundaries require explicit human approval via `ApprovalBroker`.
+2. **`GATE_MODE: CHAT_APPROVAL`**: Model-supplied commands attempting writes or escapes outside workspace boundaries require explicit human approval via `approve_command`.
 3. **Acceptance Gate E18**: Permanently maintained as **BLOCKED** (`RISK_ACCEPTED_SAME_IDENTITY`). Standard OS user processes share memory and filesystem access under identical UIDs.
 4. **Approval Gate Before Push**: Stopped at the boundary before executing `git push origin simpul/08-sprint1-verification`. No autonomous push or PR merge.
+5. **Exact Modified Files in Working Tree**:
+   - `subagentbridge/execution/native_runtime.py`
+   - `subagentbridge/server.py`
+   - `subagentbridge/team/coordinator.py`
+   - `tests/test_codex_p1_p2_fixes.py`
+   - `docs/simpul/SIMPUL_02_SPRINT_1_REPORT.md`

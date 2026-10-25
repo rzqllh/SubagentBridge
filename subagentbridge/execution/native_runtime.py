@@ -91,18 +91,31 @@ _EXACT_ALLOWED_RUNTIME_DIRS = frozenset({
 
 
 def _is_ignored_checkout_status_line(line: str) -> bool:
-    """Parse git porcelain status line and verify if it represents exclusively allowed runtime artifacts."""
-    if not line.strip():
+    """Parse git porcelain status line and verify if it represents exclusively allowed runtime artifacts.
+
+    Only explicitly allowed generated runtime artifacts (e.g. SQLite databases, cache directories)
+    may be excluded from cleanliness check. Tracked source files or files with similar names
+    (such as restore.db.py) strictly make the checkout dirty.
+    """
+    if not line or not line.strip():
         return True
-    parts = line.strip().split(maxsplit=1)
-    if len(parts) < 2:
+    if len(line) < 3:
         return False
-    raw_path_part = parts[1]
-    paths = [p.strip().strip('"') for p in raw_path_part.split(" -> ")]
+
+    raw_path_part = line[3:].strip()
+    if not raw_path_part:
+        return False
+
+    # Handle rename notation "old -> new" if present
+    paths = [p.strip() for p in raw_path_part.split(" -> ")]
     for raw_p in paths:
         if not raw_p:
             continue
-        p = Path(raw_p)
+        # Unquote git C-style quoted string if wrapped in double quotes
+        if raw_p.startswith('"') and raw_p.endswith('"'):
+            raw_p = raw_p[1:-1]
+        norm_p = raw_p.replace("\\", "/")
+        p = Path(norm_p)
         if p.name in _EXACT_ALLOWED_RUNTIME_FILENAMES:
             continue
         if any(part in _EXACT_ALLOWED_RUNTIME_DIRS for part in p.parts):
@@ -125,9 +138,9 @@ def check_clean_checkout(workspace_path: Path) -> bool:
         )
         if res.returncode == 0:
             dirty_lines = [
-                line.strip()
-                for line in res.stdout.strip().splitlines()
-                if line.strip() and not _is_ignored_checkout_status_line(line.strip())
+                line
+                for line in res.stdout.splitlines()
+                if line.strip() and not _is_ignored_checkout_status_line(line)
             ]
             return len(dirty_lines) == 0
     except Exception:
@@ -472,12 +485,20 @@ class SupervisedNativeLifecycle:
                 if (self.workspace_path / rel_path).is_file()
             ]
             if qa_test_files:
-                import sys as _sys
                 import re as _re
+                import sys as _sys
+                import tempfile as _tempfile
+                import xml.etree.ElementTree as _ET
+
+                # Create dedicated temp file outside workspace for structured results
+                tmp_xml = _tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
+                tmp_xml_path = Path(tmp_xml.name).resolve()
+                tmp_xml.close()
+
                 try:
                     try:
                         import pytest  # noqa: F401
-                        qa_cmd = [_sys.executable, "-m", "pytest", "-ra", "-v", *qa_test_files]
+                        qa_cmd = [_sys.executable, "-m", "pytest", f"--junitxml={tmp_xml_path}", "-ra", "-v", *qa_test_files]
                     except ImportError:
                         qa_cmd = [_sys.executable, "-m", "unittest", "-v", *qa_test_files]
 
@@ -485,14 +506,59 @@ class SupervisedNativeLifecycle:
                         qa_cmd,
                         timeout_seconds=30,
                     )
-                    out_text = qa_run.output_text or ""
-                    # Thread #8 fix: reject skipped qualifying tests before granting coverage (Gate E20)
-                    has_skipped = bool(_re.search(r"\b(skipped|SKIPPED)\b", out_text)) or "skipped=" in out_text
-                    has_passed = bool(_re.search(r"\b\d+\s+passed\b", out_text)) or "OK" in out_text or (qa_run.exit_code == 0 and not has_skipped)
 
-                    qa_passed = (qa_run.exit_code == 0 and not has_skipped and has_passed)
+                    # Structured result evaluation (P2 QA Skip & Collection Detection)
+                    if tmp_xml_path.exists() and tmp_xml_path.stat().st_size > 0:
+                        try:
+                            tree = _ET.parse(str(tmp_xml_path))  # nosec B314
+                            root = tree.getroot()
+                            if root.tag == "testsuite":
+                                suites = [root]
+                            else:
+                                suites = list(root.findall("testsuite")) or [root]
+
+                            total_tests = 0
+                            total_failures = 0
+                            total_errors = 0
+                            total_skipped = 0
+                            has_skipped_tags = bool(root.findall(".//skipped"))
+
+                            for s in suites:
+                                total_tests += int(s.attrib.get("tests", 0))
+                                total_failures += int(s.attrib.get("failures", 0))
+                                total_errors += int(s.attrib.get("errors", 0))
+                                total_skipped += int(s.attrib.get("skipped", 0))
+
+                            # Qualifying tests must have been collected and executed without any skips
+                            qa_passed = (
+                                qa_run.exit_code == 0
+                                and total_tests > 0
+                                and total_skipped == 0
+                                and not has_skipped_tags
+                                and total_failures == 0
+                                and total_errors == 0
+                            )
+                        except Exception:
+                            qa_passed = False
+                    else:
+                        out_text = qa_run.output_text or ""
+                        ran_match = _re.search(r"Ran (\d+) tests?", out_text)
+                        tests_count = int(ran_match.group(1)) if ran_match else 0
+                        has_skipped = ("skipped=" in out_text or "SKIPPED" in out_text or "skip" in out_text.lower())
+                        qa_passed = (
+                            qa_run.exit_code == 0
+                            and tests_count > 0
+                            and not has_skipped
+                            and "OK" in out_text
+                        )
                 except Exception:
                     qa_passed = False
+                finally:
+                    try:
+                        if tmp_xml_path.exists():
+                            tmp_xml_path.unlink()
+                    except Exception:
+                        pass
 
             # Thread #6 fix: revalidate checkout integrity, tree SHA, and test hashes AFTER running QA
             is_clean = check_clean_checkout(self.workspace_path)

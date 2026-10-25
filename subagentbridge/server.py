@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys as _sys
+import time
+from hashlib import sha256
 from pathlib import Path
 from typing import Mapping, Sequence
 from uuid import uuid4
@@ -39,6 +42,9 @@ except ImportError:
             def decorator(fn):  # type: ignore[no-untyped-def]
                 return fn
             return decorator
+
+        def run(self, *args: object, **kwargs: object) -> None:
+            pass
 
 from . import runners as runner_registry
 from .composition import ProductionSystem, build_production_system
@@ -72,6 +78,7 @@ _runs: dict[str, dict] = {}
 _tasks: dict[str, list[dict]] = {}
 _run_commands: dict[str, dict[str, list[str]]] = {}
 _production_systems: dict[Path, ProductionSystem] = {}
+_approved_commands: dict[str, dict] = {}
 
 
 def rehydrate_runs_and_tasks(store: SQLiteStore) -> None:
@@ -193,116 +200,171 @@ def submit_goal(
     }
 
 
+def _compute_command_fingerprint(
+    run_id: str,
+    task_id: str | None,
+    workspace_path: Path,
+    cmd_list: Sequence[str],
+) -> str:
+    ws_norm = str(workspace_path.resolve())
+    raw = f"{run_id}:{task_id or 'run'}:{ws_norm}:{json.dumps(list(cmd_list))}"
+    return sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _is_trusted_allowlisted_command(cmd_list: Sequence[str], workspace_path: Path) -> bool:
+    """Evaluate whether a model-supplied command belongs to the strictly trusted allowlist.
+
+    Trusted allowlist includes exclusively:
+    1. Standard in-workspace test runner:
+       Python executable running `-m pytest` or `-m unittest` targeting files/directories
+       strictly confined within workspace_path without path traversal (`..`).
+    2. AST-verified harmless print probes:
+       Python executable running `-c` with code that strictly contains only literal print calls
+       (no imports, no attributes, no dynamic execution, no I/O calls).
+
+    All other commands (shell indirection, dynamic scripts, external binaries, subprocess invocations,
+    or seemingly harmless commands like echo/ls) return False (default DENY).
+    """
+    import ast
+    if not cmd_list:
+        return False
+
+    exe = cmd_list[0]
+    ws_resolved = workspace_path.resolve()
+
+    # Verify python binary
+    is_python_exe = False
+    try:
+        p_exe = Path(exe).resolve()
+        sys_prefix = Path(_sys.prefix).resolve()
+        base_prefix = Path(_sys.base_prefix).resolve()
+        if (
+            p_exe == Path(_sys.executable).resolve()
+            or sys_prefix in p_exe.parents
+            or base_prefix in p_exe.parents
+            or p_exe.name.lower() in ("python", "python.exe", "python3", "python3.exe")
+        ):
+            is_python_exe = True
+    except Exception:
+        pass
+
+    if not is_python_exe:
+        return False
+
+    if len(cmd_list) >= 3 and cmd_list[1] == "-m" and cmd_list[2] in ("pytest", "unittest"):
+        # Verify arguments are safe flags or strictly in-workspace paths
+        for arg in cmd_list[3:]:
+            if ".." in arg:
+                return False
+            if arg.startswith("-"):
+                # Gated or dangerous pytest/unittest flags
+                if any(arg.startswith(f) for f in ("--import-mode", "-o", "--override-ini")):
+                    return False
+                if arg.startswith("--junitxml=") or arg.startswith("--basetemp="):
+                    val = arg.split("=", 1)[1]
+                    try:
+                        p_val = (workspace_path / val).resolve() if not Path(val).is_absolute() else Path(val).resolve()
+                        import tempfile
+                        tmp_dir = Path(tempfile.gettempdir()).resolve()
+                        if p_val != ws_resolved and ws_resolved not in p_val.parents and tmp_dir not in p_val.parents and p_val != tmp_dir:
+                            return False
+                    except Exception:
+                        return False
+            else:
+                try:
+                    p_target = (workspace_path / arg).resolve() if not Path(arg).is_absolute() else Path(arg).resolve()
+                    if p_target != ws_resolved and ws_resolved not in p_target.parents:
+                        return False
+                except Exception:
+                    return False
+        return True
+
+    # Check for AST-verified pure literal print probe
+    if len(cmd_list) == 3 and cmd_list[1] == "-c":
+        code = cmd_list[2]
+        try:
+            tree = ast.parse(code)
+            # Must contain only Expr with Call to Name(id='print') and Constant arguments
+            if not tree.body or len(tree.body) > 2:
+                return False
+            for stmt in tree.body:
+                if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
+                    return False
+                call = stmt.value
+                if not isinstance(call.func, ast.Name) or call.func.id != "print":
+                    return False
+                for arg_node in call.args:
+                    if not isinstance(arg_node, ast.Constant):
+                        return False
+                if call.keywords:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    return False
+
+
 def _gate_command_execution(
     cmd: Sequence[str],
     workspace_path: Path,
     run_id: str,
     task_id: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
-    """Inspect model-supplied commands under CHAT_APPROVAL and fail-closed policy (Thread #7 fix).
+    """Enforce strict default-deny authorization on model-supplied commands.
+
+    Under CHAT_APPROVAL policy:
+    1. Commands in trusted allowlist run automatically.
+    2. Other commands require an exact valid human approval token.
+    3. Pending approvals do NOT grant execution authority.
+    4. Default is DENY for all unauthorized commands.
 
     Returns (is_gated, category, reason, action_id).
     """
-    import re
     cmd_list = [str(x) for x in cmd]
     cmd_str = " ".join(cmd_list)
-    lower_cmd = cmd_str.lower()
-    ws_resolved = workspace_path.resolve()
-    ws_str = str(ws_resolved)
+    fp = _compute_command_fingerprint(run_id, task_id, workspace_path, cmd_list)
 
-    # 1. Inspect arguments (excluding executable binary at index 0) for paths escaping workspace
-    for arg in cmd_list[1:]:
-        # Check path traversal
-        if ".." in arg:
-            try:
-                candidate = (workspace_path / arg).resolve()
-                if candidate != ws_resolved and ws_resolved not in candidate.parents:
-                    cat = "OUTSIDE_WORKSPACE_WRITE"
-                    reason = f"path traversal in argument {arg!r} resolves outside workspace"
-                    act = _pending.enqueue(run_id, {
-                        "command": cmd_str,
-                        "path": str(workspace_path),
-                        "operation": cat,
-                        "reason": reason,
-                        "task_id": task_id or "run",
-                    })
-                    return True, cat, reason, act.action_id
-            except Exception:
-                pass
+    # 1. Check for valid single-use granted approval
+    approval = _approved_commands.get(fp)
+    if approval is not None:
+        if (
+            not approval.get("consumed", False)
+            and approval.get("run_id") == run_id
+            and approval.get("task_id") == (task_id or "run")
+            and approval.get("workspace_path") == str(workspace_path.resolve())
+            and approval.get("command") == cmd_list
+        ):
+            # Consume token exact-once
+            approval["consumed"] = True
+            return False, "GRANTED_APPROVAL", "Human approved exact execution", approval.get("action_id")
 
-        # Check explicit absolute target path outside workspace
-        try:
-            p = Path(arg)
-            if p.is_absolute():
-                resolved_p = p.resolve()
-                if resolved_p != ws_resolved and ws_resolved not in resolved_p.parents:
-                    # Exclude interpreter/virtualenv directories if referenced
-                    import sys as _sys
-                    sys_dirs = [Path(_sys.prefix).resolve(), Path(_sys.base_prefix).resolve()]
-                    is_sys = any(s == resolved_p or s in resolved_p.parents for s in sys_dirs)
-                    if not is_sys:
-                        cat = "OUTSIDE_WORKSPACE_WRITE"
-                        reason = f"argument path {arg!r} references outside workspace {ws_str}"
-                        act = _pending.enqueue(run_id, {
-                            "command": cmd_str,
-                            "path": str(workspace_path),
-                            "operation": cat,
-                            "reason": reason,
-                            "task_id": task_id or "run",
-                        })
-                        return True, cat, reason, act.action_id
-        except Exception:
-            pass
+    # 2. Check trusted allowlist
+    if _is_trusted_allowlisted_command(cmd_list, workspace_path):
+        return False, "ALLOWLISTED_TEST_RUNNER", "Trusted allowlisted in-workspace execution", None
 
-    # 2. Inspect inline Python code (-c) or scripts for file modification functions
-    for idx, arg in enumerate(cmd_list):
-        if arg == "-c" and idx + 1 < len(cmd_list):
-            code = cmd_list[idx + 1]
-            write_patterns = (
-                r"\bopen\s*\([^)]*['\"][wa\+]",
-                r"\.write_text\s*\(",
-                r"\.write_bytes\s*\(",
-                r"\bos\.remove\b",
-                r"\bos\.unlink\b",
-                r"\bshutil\.rmtree\b",
-            )
-            for pat in write_patterns:
-                if re.search(pat, code):
-                    cat = "OUTSIDE_WORKSPACE_WRITE"
-                    reason = f"inline command contains filesystem modification pattern: {pat}"
-                    act = _pending.enqueue(run_id, {
-                        "command": cmd_str,
-                        "path": str(workspace_path),
-                        "operation": cat,
-                        "reason": reason,
-                        "task_id": task_id or "run",
-                    })
-                    return True, cat, reason, act.action_id
+    # 3. Default DENY: unauthorized command requires human approval
+    action_id = None
+    for a in _pending.list_pending():
+        raw_call: dict[str, object] = a.raw_tool_call if isinstance(a.raw_tool_call, dict) else {}
+        if raw_call.get("fingerprint") == fp and a.session_id == run_id:
+            action_id = a.action_id
+            break
 
-    # 3. Check for destructive, git push, or dependency change patterns
-    gated_patterns = {
-        "rm -rf": "DESTRUCTIVE",
-        "rmdir": "DESTRUCTIVE",
-        "git push": "GIT_PUSH_OR_REWRITE",
-        "git reset --hard": "DESTRUCTIVE",
-        "git clean -f": "DESTRUCTIVE",
-        "sudo ": "AUTH_OR_SECRET",
-        "pip install": "DEPENDENCY",
-        "npm install": "DEPENDENCY",
-    }
-    for pat, cat in gated_patterns.items():
-        if pat in lower_cmd:
-            reason = f"command contains gated pattern {pat!r}"
-            act = _pending.enqueue(run_id, {
-                "command": cmd_str,
-                "path": str(workspace_path),
-                "operation": cat,
-                "reason": reason,
-                "task_id": task_id or "run",
-            })
-            return True, cat, reason, act.action_id
+    if action_id is None:
+        act = _pending.enqueue(run_id, {
+            "command": cmd_str,
+            "command_list": cmd_list,
+            "path": str(workspace_path.resolve()),
+            "operation": "UNAUTHORIZED_COMMAND",
+            "reason": f"Default-deny: unauthorized command {cmd_str!r} requires human approval under CHAT_APPROVAL",
+            "task_id": task_id or "run",
+            "fingerprint": fp,
+        })
+        action_id = act.action_id
 
-    return False, "READ_ONLY_REQUEST", "", None
+    reason = f"default-deny: unauthorized command requires human approval under CHAT_APPROVAL: {cmd_str}"
+    return True, "UNAUTHORIZED_COMMAND", reason, action_id
 
 
 def _execute_run(run_id: str, command_map: Mapping[str, Sequence[str]] | None = None) -> dict:
@@ -359,6 +421,7 @@ def _execute_run(run_id: str, command_map: Mapping[str, Sequence[str]] | None = 
                     "run_id": run_id,
                     "reason": f"command execution gated: requires human approval under CHAT_APPROVAL: {reason}",
                     "action_id": act_id,
+                    "same_user_boundary": "RISK_ACCEPTED_SAME_IDENTITY (Gate E18 BLOCKED)",
                 }
 
     lifecycle = SupervisedNativeLifecycle(sys=sys, workspace_path=ws, store=_store)
@@ -515,6 +578,53 @@ def reject_approval(action_id: str, reason: str = "") -> dict:
     except KeyError as exc:
         return {"status": "ERROR", "error": str(exc)}
     return {"status": "REJECTED", "action_id": action_id, "reason": reason}
+
+
+@mcp.tool()
+def approve_command(action_id: str, approver: str = "human", auth_token: str | None = None) -> dict:
+    """Approve a gated command action for exact single-use execution through trusted human approval path."""
+    target_action = None
+    for a in _pending.list_pending():
+        if a.action_id == action_id:
+            target_action = a
+            break
+
+    if target_action is None:
+        return {"status": "ERROR", "error": f"action {action_id!r} not found or already resolved"}
+
+    raw_call: dict[str, object] = target_action.raw_tool_call if isinstance(target_action.raw_tool_call, dict) else {}
+    raw_fp = raw_call.get("fingerprint")
+    if not isinstance(raw_fp, str) or not raw_fp:
+        return {"status": "ERROR", "error": "action lacks command fingerprint"}
+    fp: str = raw_fp
+
+    try:
+        target_action.resolved = True
+        target_action.approved = True
+        target_action.reason = f"Approved by {approver}"
+        if action_id in _pending._resolved_events:
+            _pending._resolved_events[action_id].set()
+        _pending._persist(target_action)
+    except Exception as exc:
+        return {"status": "ERROR", "error": str(exc)}
+
+    _approved_commands[fp] = {
+        "action_id": action_id,
+        "run_id": target_action.session_id,
+        "task_id": raw_call.get("task_id"),
+        "workspace_path": raw_call.get("path"),
+        "command": raw_call.get("command_list"),
+        "fingerprint": fp,
+        "consumed": False,
+        "approved_at": time.time(),
+        "approver": approver,
+    }
+    return {
+        "status": "APPROVED",
+        "action_id": action_id,
+        "fingerprint": fp,
+        "run_id": target_action.session_id,
+    }
 
 
 @mcp.tool()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from threading import Lock
 
 from subagentbridge.domain.contracts import Run, Task, TaskState, Role, Evidence
 from subagentbridge.domain.engine import TaskAggregate, InvalidTransition
@@ -57,6 +58,7 @@ class SupervisedCoordinator:
         self.budget = budget
         self._tasks = {k: TaskAggregate(t, identities, receipts) for k, t in tasks.items()}
         self._test_hashes = dict(qa_test_hashes)
+        self._lock = Lock()
         self._active_ids: dict[str, str] = {}
         self._fix_rounds: dict[str, int] = {k: 0 for k in tasks}
 
@@ -97,13 +99,15 @@ class SupervisedCoordinator:
         except BaseException:
             agg.recover_unknown()  # cannot roll back consumed idempotency safely
             raise
-        self._active_ids[task_id] = d.dispatch_id
+        with self._lock:
+            self._active_ids[task_id] = d.dispatch_id
         return DispatchPlan(task_id, d.dispatch_id, d.policy_revision, d.tree_sha)
 
     def release_dispatch(self, task_id: str) -> None:
-        """Release active worker reservation when a dispatch fails or is cancelled."""
-        if task_id in self._active_ids:
-            dispatch_id = self._active_ids.pop(task_id)
+        """Release active worker reservation when a dispatch fails or is cancelled (thread-safe, exact-once)."""
+        with self._lock:
+            dispatch_id = self._active_ids.pop(task_id, None)
+        if dispatch_id is not None:
             try:
                 self.budget.release(dispatch_id)
             except Exception:
@@ -129,8 +133,9 @@ class SupervisedCoordinator:
         current_round = max(self._fix_rounds.get(task_id, 0), fix_round if type(fix_round) is int and fix_round >= 0 else 0)
         if current_round >= 3:
             agg.block()
-            if task_id in self._active_ids:
-                dispatch_id = self._active_ids.pop(task_id)
+            with self._lock:
+                dispatch_id = self._active_ids.pop(task_id, None)
+            if dispatch_id is not None:
                 try:
                     self.budget.release(dispatch_id)
                 except Exception:
@@ -148,15 +153,21 @@ class SupervisedCoordinator:
         if verdict is not None and decision.status == 'QA_VERIFIED':
             agg.qa_verified(qa, verdict)
             agg.mark_verified(qa)
-            dispatch_id = self._active_ids.pop(task_id)
-            # No refund from developer/LLM token claims. Budget remains charged.
-            self.budget.release(dispatch_id)
+            with self._lock:
+                dispatch_id = self._active_ids.pop(task_id, None)
+            if dispatch_id is not None:
+                # No refund from developer/LLM token claims. Budget remains charged.
+                try:
+                    self.budget.release(dispatch_id)
+                except Exception:
+                    pass
         else:
             self._fix_rounds[task_id] = current_round + 1
             if self._fix_rounds[task_id] >= 3:
                 agg.block()
-                if task_id in self._active_ids:
-                    dispatch_id = self._active_ids.pop(task_id)
+                with self._lock:
+                    dispatch_id = self._active_ids.pop(task_id, None)
+                if dispatch_id is not None:
                     try:
                         self.budget.release(dispatch_id)
                     except Exception:
@@ -172,8 +183,9 @@ class SupervisedCoordinator:
         agg = self._tasks[task_id]
         if agg.state is not TaskState.RECOVERY_REQUIRED:
             raise InvalidTransition('reconcile_recovery requires RECOVERY_REQUIRED')
-        if task_id in self._active_ids:
-            dispatch_id = self._active_ids.pop(task_id)
+        with self._lock:
+            dispatch_id = self._active_ids.pop(task_id, None)
+        if dispatch_id is not None:
             try:
                 self.budget.release(dispatch_id)
             except Exception:
