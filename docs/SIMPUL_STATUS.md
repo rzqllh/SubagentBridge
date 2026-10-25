@@ -7,14 +7,14 @@
 
 ## Source, branch and publication
 
-- `main` contains the old imported September 2026 baseline.
-- [PR #2](https://github.com/rzqllh/SubagentBridge/pull/2) contains PR-00 baseline safety recovery; open, unmerged.
-- [PR #3](https://github.com/rzqllh/SubagentBridge/pull/3), branch `integrate/roadmap-v4-verified`, baseline `44d70b5f05836a867978dcadb166bd1122943a3b`, contains the candidate implementations; open and unmerged.
-- Project metadata declares `1.0.0rc1`, but no merge, GitHub release or published package is confirmed.
+- `main` contains the fully integrated and hardened release commit `953c0f5a34c7ae8917d8febde92354eb8ed8a4ef`.
+- PRs #2 through #8 covering phases P00 through P06 have all been sequentially merged into `main` on 2026-10-23.
+- Release `v1.0.0` is published on GitHub Releases (`https://github.com/rzqllh/SubagentBridge/releases/tag/v1.0.0`) with verified SHA-256 asset checksums.
+- Active development and sprint verification occurs on dedicated sprint branches (e.g. `simpul/08-sprint1-verification`), never directly on `main`.
 
-## What the candidate code actually provides
+## What the code actually provides
 
-A Python composition root wires SQLite audit and budget layers, a message bus, skill registry, policy classifier, supervised read-only executor, identity and receipt registries, QA evidence gate and local 9Router client. The server exposes MCP stdio tools. Its `submit_goal` handler currently creates an in-memory run with a pending task and appends a `GOAL_SUBMITTED` event; **it does not start worker execution**. `get_task_evidence` reads stored task metadata, rather than returning independently proven receipt bodies.
+A Python composition root wires SQLite audit and budget layers, a message bus, skill registry, policy classifier, supervised read-only executor, identity and receipt registries, QA evidence gate and local 9Router client. The server exposes production MCP stdio tools. Its execution lifecycle coordinator (`SupervisedNativeLifecycle`) executes the complete PM → Developer → QA workflow under strict fail-closed enforcement: tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status. `get_task_evidence` reads independently issued receipts and evidence records.
 
 ## Verification scope and corrective audit status
 

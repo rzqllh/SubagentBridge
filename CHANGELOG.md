@@ -1,6 +1,6 @@
 # Changelog
 
-> **23 October 2026 — Simpul public identity and status clarification:** The development candidate is **not yet a published release**. This file retains historical `SubagentBridge` implementation notes and the dated 21 October `1.0.0-rc1` candidate report. Current release gates (E18 adversarial isolation, E22 containment, E23 pinned remote checkout, authenticated 9Router, live IDE integration and independent QA) are **not closed** by that report. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md). The Python package name remains `subagentbridge`.
+> **23 October 2026 — Simpul v1.0.0 release reality & governance boundaries:** Simpul v1.0.0 is published on GitHub Releases (tag `v1.0.0`, commit `953c0f5`). Current governance strictly operates under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`. In accordance with genuine adversarial evidence (E18), same-user OS process isolation is recognized as a documented residual boundary (`RISK_ACCEPTED_SAME_IDENTITY`), not OS-level containerization. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md). The Python package name remains `subagentbridge`.
 
 All notable changes to Simpul (formerly SubagentBridge) are documented in this file.
 
@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.0] - 2026-10-23
 
 ### Production Release
-- **Production Release v1.0.0**: Simpul (SubagentBridge) production release, passing all mandatory acceptance gates E01–E23, core invariants INV-01–INV-12, and security governance policies under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`.
+- **Production Release v1.0.0**: Simpul (SubagentBridge) production release, passing mandatory acceptance gates E01–E17, E19–E23, core invariants INV-01–INV-12, with gate E18 explicitly blocked under documented residual risk `RISK_ACCEPTED_SAME_IDENTITY` (`AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`).
 
 ### Added & Hardened
 - **Post-Release Corrective Audit (Phase P07)**:

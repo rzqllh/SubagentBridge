@@ -2,9 +2,9 @@
 
 **Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
-> **Development candidate — 23 October 2026:** This branch contains `subagentbridge==1.0.0rc1` source, **not** a published or security-certified release. [PR #3](https://github.com/rzqllh/SubagentBridge/pull/3) remains open and targets [PR #2](https://github.com/rzqllh/SubagentBridge/pull/2)'s baseline branch. The default `main` still contains the older imported prototype.
+> **Production reality & release status — October 2026:** Simpul v1.0.0 is published on GitHub Releases (commit `953c0f5`, tag `v1.0.0`). All roadmap phases P00–P06 (PRs #2–#8) are merged into `main`. Current governance strictly operates under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`. In accordance with genuine adversarial evidence (E18), same-user OS process isolation is recognized as a documented residual boundary (`RISK_ACCEPTED_SAME_IDENTITY`), not OS-level containerization. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md).
 
-## What is implemented in this candidate
+## What is implemented in Simpul
 
 - Typed `Run`, `Task`, `Dispatch`, `Evidence` and approval contracts.
 - SQLite-backed audit events, message bus and budget reservations with transaction controls.
@@ -13,10 +13,10 @@
 - PM → Developer → QA coordinator and evidence/receipt interfaces.
 - Locally pinned skills registry with path and hash checking.
 - Local-loopback 9Router text-client interface with explicit model discovery and budget bounds.
-- MCP stdio server with run submission, readback, cancellation and diagnostic tools.
+- MCP stdio server with run submission, readback, cancellation, and supervised execution tools (`submit_goal`, `execute_run`, `execute_task`).
 - Optional Orca integration seam; native mode does not depend on Orca.
 
-**Important:** Presence of these modules and passing unit tests does not demonstrate that MCP `submit_goal` automatically executes a complete PM → Developer → QA workflow. In this branch `submit_goal` currently registers a `SUBMITTED` run and a `PENDING` task; it does not dispatch a worker in that handler.
+**Execution Lifecycle:** `submit_goal(..., execute=True)` or `execute_run(run_id, commands=...)` executes the complete supervised PM → Developer → QA lifecycle. Under SIM-403 strict fail-closed enforcement, tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status.
 
 ## Safety and evidence status
 
@@ -39,7 +39,7 @@ Requires Python 3.11–3.13 and Git. Example for PowerShell:
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout 44d70b5f05836a867978dcadb166bd1122943a3b
+git checkout v1.0.0
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
