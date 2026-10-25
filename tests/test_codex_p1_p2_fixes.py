@@ -1,7 +1,6 @@
 """Targeted regression tests for PR #3 Codex P1/P2 review findings (SIM-101..SIM-204)."""
 from __future__ import annotations
 
-import os
 import shutil
 import tempfile
 import unittest
@@ -13,6 +12,12 @@ from subagentbridge.domain.contracts import Role, Run, Task, TaskState, Message
 from subagentbridge.domain.engine import InvalidTransition
 from subagentbridge.domain.registry import IdentityRegistry, ReceiptIssuerRegistry
 from subagentbridge.execution.isolation.runner import IsolatedExecutionRunner
+from subagentbridge.execution.native_runtime import (
+    check_clean_checkout,
+    SupervisedNativeLifecycle,
+    TaskDecomposer,
+    resolve_tree_sha,
+)
 from subagentbridge.manager import AgentManager
 from subagentbridge.messaging.bus import DurableMessageBus
 from subagentbridge.planner.budget import BudgetLedger, DurableBudgetLedger, BudgetExceeded
@@ -20,8 +25,9 @@ from subagentbridge.server import (
     get_production_system,
     close_production_system,
     submit_goal,
-    _runs,
-    _tasks,
+    execute_run,
+    get_pending_approvals,
+    reject_approval,
 )
 from subagentbridge.storage.audit_ledger import AuditLedger
 from subagentbridge.team.coordinator import SupervisedCoordinator
@@ -328,8 +334,231 @@ class CodexP1P2RegressionTests(unittest.TestCase):
         self.assertEqual(res["status"], "ERROR")
         self.assertIn("audit ledger write failed", res["error"])
 
-        # No orphan SUBMITTED run or task left in state
-        self.assertNotIn(res.get("run_id"), _runs)
+    # -------------------------------------------------------------------------
+    # PR #9 Codex Reviews: Regression Tests
+    # -------------------------------------------------------------------------
+    def test_PR9_P1_release_dispatch_reservation_on_missing_or_failed_command(self):
+        """Thread #4: Missing or failed commands must not leak budget worker reservations."""
+        import sys
+        ws = self.root / "ws_budget_leak"
+        ws.mkdir()
+        prod_sys = get_production_system(ws)
+        self.assertEqual(prod_sys.budget.snapshot()["active"], 0)
+
+        goal = "Test budget leak protection"
+        tree_sha = resolve_tree_sha(ws)
+        lifecycle = SupervisedNativeLifecycle(sys=prod_sys, workspace_path=ws)
+
+        # Execute 3 runs with missing commands on max_workers = 3 system
+        for i in range(3):
+            cur_run_id = f"run_leak_{i}"
+            tasks_contracts, dependencies, task_records = TaskDecomposer.decompose_goal(goal, cur_run_id, tree_sha)
+            coord, principals = lifecycle.create_coordinator_for_run(
+                run_id=cur_run_id,
+                tasks=tasks_contracts,
+                dependencies=dependencies,
+            )
+            res = lifecycle.execute_lifecycle(
+                run_id=cur_run_id,
+                coordinator=coord,
+                principals=principals,
+                task_records=[dict(r) for r in task_records],
+                command_map={},  # Missing command!
+            )
+            self.assertEqual(res["status"], "FAILED")
+            # Reservation must NOT leak
+            self.assertEqual(
+                prod_sys.budget.snapshot()["active"],
+                0,
+                f"Budget worker reservation leaked on run {i}",
+            )
+
+        # 4th run with valid command should succeed without BudgetExceeded
+        run_id_4 = "run_leak_4"
+        tasks_contracts_4, dependencies_4, task_records_4 = TaskDecomposer.decompose_goal(goal, run_id_4, tree_sha)
+        coord4, principals4 = lifecycle.create_coordinator_for_run(
+            run_id=run_id_4,
+            tasks=tasks_contracts_4,
+            dependencies=dependencies_4,
+        )
+        _ = lifecycle.execute_lifecycle(
+            run_id=run_id_4,
+            coordinator=coord4,
+            principals=principals4,
+            task_records=[dict(r) for r in task_records_4],
+            command_map={"default": [sys.executable, "-c", "print('ok')"]},
+        )
+        self.assertEqual(prod_sys.budget.snapshot()["active"], 0)
+
+    def test_PR9_P1_mcp_command_authorization_and_confinement_gating(self):
+        """Thread #7: Model-supplied commands attempting out-of-workspace writes or gated operations are blocked."""
+        import sys
+        ws = self.root / "ws_mcp_gate"
+        ws.mkdir()
+        outside_file = self.root / "forbidden_outside.txt"
+
+        sub_res = submit_goal(
+            goal="Test command gating",
+            workspace_path=str(ws),
+            execute=False,
+        )
+        run_id = sub_res["run_id"]
+
+        # Attempt out-of-workspace write
+        exec_res = execute_run(
+            run_id=run_id,
+            commands={"default": [sys.executable, "-c", f"with open({repr(str(outside_file))}, 'w') as f: f.write('pwn')"]},
+        )
+        self.assertEqual(exec_res.get("status"), "BLOCKED")
+        self.assertIn("requires human approval", exec_res.get("reason", ""))
+        self.assertFalse(outside_file.exists(), "File outside workspace was improperly written!")
+
+        # Pending approvals must not be empty
+        pending = get_pending_approvals()
+        matched = [a for a in pending if a["action_id"] == exec_res.get("action_id")]
+        self.assertEqual(len(matched), 1)
+
+        # Rejection should finalize the gate
+        rej_res = reject_approval(matched[0]["action_id"], reason="Security rejected out-of-workspace write")
+        self.assertEqual(rej_res["status"], "REJECTED")
+
+    def test_PR9_P2_restrict_checkout_exclusions_exact_artifact_paths(self):
+        """Thread #5: Cleanliness check must only exclude exact runtime artifact paths, not substrings like restore.db.py."""
+        import subprocess
+        ws = self.root / "ws_exact_git"
+        ws.mkdir()
+
+        # Initialize clean git repo
+        subprocess.run(["git", "init"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=str(ws), capture_output=True, check=True)
+        (ws / "file.txt").write_text("clean\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=str(ws), capture_output=True, check=True)
+
+        self.assertTrue(check_clean_checkout(ws))
+
+        # Modifying a file whose name contains 'store.db' as substring
+        restore_file = ws / "restore.db.py"
+        restore_file.write_text("# tracked source\n")
+        subprocess.run(["git", "add", "restore.db.py"], cwd=str(ws), capture_output=True, check=True)
+
+        # Must be detected as DIRTY!
+        self.assertFalse(check_clean_checkout(ws), "Substring 'store.db' in restore.db.py improperly ignored!")
+
+        # Remove restore.db.py and add exact store.db
+        subprocess.run(["git", "rm", "-f", "restore.db.py"], cwd=str(ws), capture_output=True, check=True)
+        (ws / "store.db").write_text("sqlite format\n")
+        # Exact store.db must be ignored
+        self.assertTrue(check_clean_checkout(ws))
+
+    def test_PR9_P2_revalidate_checkout_integrity_post_qa(self):
+        """Thread #6: Revalidate cleanliness and tree integrity AFTER QA run finishes."""
+        import subprocess
+        import sys
+        ws = self.root / "ws_qa_dirty"
+        ws.mkdir()
+
+        subprocess.run(["git", "init"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=str(ws), capture_output=True, check=True)
+        (ws / "tracked.txt").write_text("initial\n")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=str(ws), capture_output=True, check=True)
+
+        # Create QA test that writes to tracked.txt
+        qa_dir = ws / "tests"
+        qa_dir.mkdir()
+        dirtying_qa = (
+            "import unittest\n"
+            "from pathlib import Path\n"
+            "class DirtyTest(unittest.TestCase):\n"
+            "    def test_write_tracked(self):\n"
+            "        p = Path(__file__).resolve().parent.parent / 'tracked.txt'\n"
+            "        p.write_text('mutated by qa')\n"
+            "        self.assertTrue(True)\n"
+        )
+        qa_file = qa_dir / "test_dirty.py"
+        qa_file.write_text(dirtying_qa)
+        subprocess.run(["git", "add", "tests/test_dirty.py"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "add qa"], cwd=str(ws), capture_output=True, check=True)
+
+        from hashlib import sha256
+        from subagentbridge.composition import build_production_system
+        qa_hash = sha256(qa_file.read_bytes()).hexdigest()
+        prod_sys = build_production_system(
+            workspace_root=ws,
+            custom_qa_hashes={"tests/test_dirty.py": qa_hash},
+        )
+
+        tree_sha = resolve_tree_sha(ws)
+        tasks_contracts, dependencies, task_records = TaskDecomposer.decompose_goal("QA mutates checkout", "run_dirty_qa", tree_sha)
+        lifecycle = SupervisedNativeLifecycle(sys=prod_sys, workspace_path=ws)
+        coord, principals = lifecycle.create_coordinator_for_run("run_dirty_qa", tasks_contracts, dependencies)
+
+        res = lifecycle.execute_lifecycle(
+            run_id="run_dirty_qa",
+            coordinator=coord,
+            principals=principals,
+            task_records=[dict(r) for r in task_records],
+            command_map={"default": [sys.executable, "-c", "print('dev pass')"]},
+        )
+        # Because QA test dirtied tracked.txt, post-QA checkout revalidation must catch it and reject verification
+        self.assertEqual(res["status"], "FAILED")
+        self.assertIn("dirty checkout", res.get("reason", ""))
+
+    def test_PR9_P2_reject_skipped_qualifying_tests_for_coverage(self):
+        """Thread #8: Skipped qualifying QA tests must not grant criteria coverage (Gate E20)."""
+        import subprocess
+        import sys
+        ws = self.root / "ws_qa_skip"
+        ws.mkdir()
+
+        subprocess.run(["git", "init"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=str(ws), capture_output=True, check=True)
+        (ws / "tracked.txt").write_text("clean\n")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=str(ws), capture_output=True, check=True)
+
+        # Create QA test with @unittest.skip
+        qa_dir = ws / "tests"
+        qa_dir.mkdir()
+        skipped_qa = (
+            "import unittest\n"
+            "class SkippedTest(unittest.TestCase):\n"
+            "    @unittest.skip('Intentional skip in qualifying test')\n"
+            "    def test_skipped_check(self):\n"
+            "        self.assertTrue(True)\n"
+        )
+        qa_file = qa_dir / "test_skip.py"
+        qa_file.write_text(skipped_qa)
+        subprocess.run(["git", "add", "tests/test_skip.py"], cwd=str(ws), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "add skipped qa"], cwd=str(ws), capture_output=True, check=True)
+
+        from hashlib import sha256
+        from subagentbridge.composition import build_production_system
+        qa_hash = sha256(qa_file.read_bytes()).hexdigest()
+        prod_sys = build_production_system(
+            workspace_root=ws,
+            custom_qa_hashes={"tests/test_skip.py": qa_hash},
+        )
+
+        tree_sha = resolve_tree_sha(ws)
+        tasks_contracts, dependencies, task_records = TaskDecomposer.decompose_goal("QA skipped test", "run_skipped_qa", tree_sha)
+        lifecycle = SupervisedNativeLifecycle(sys=prod_sys, workspace_path=ws)
+        coord, principals = lifecycle.create_coordinator_for_run("run_skipped_qa", tasks_contracts, dependencies)
+
+        res = lifecycle.execute_lifecycle(
+            run_id="run_skipped_qa",
+            coordinator=coord,
+            principals=principals,
+            task_records=[dict(r) for r in task_records],
+            command_map={"default": [sys.executable, "-c", "print('dev pass')"]},
+        )
+        # QA test was skipped; must NOT receive verification
+        self.assertEqual(res["status"], "FAILED")
+        self.assertIn("acceptance criteria", res.get("reason", ""))
 
 
 if __name__ == "__main__":

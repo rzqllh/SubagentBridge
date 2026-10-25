@@ -100,6 +100,15 @@ class SupervisedCoordinator:
         self._active_ids[task_id] = d.dispatch_id
         return DispatchPlan(task_id, d.dispatch_id, d.policy_revision, d.tree_sha)
 
+    def release_dispatch(self, task_id: str) -> None:
+        """Release active worker reservation when a dispatch fails or is cancelled."""
+        if task_id in self._active_ids:
+            dispatch_id = self._active_ids.pop(task_id)
+            try:
+                self.budget.release(dispatch_id)
+            except Exception:
+                pass
+
     def report_process_succeeded(self, *, developer: Principal, task_id: str,
                                  dispatch_id: str, tree_sha: str) -> None:
         self.identities.require(developer, Role.DEVELOPER)

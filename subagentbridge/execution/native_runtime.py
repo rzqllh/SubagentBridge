@@ -66,6 +66,51 @@ def resolve_tree_sha(workspace_path: Path) -> str:
     return digest if digest != sha256().hexdigest() else ("0" * 40)
 
 
+_EXACT_ALLOWED_RUNTIME_FILENAMES = frozenset({
+    "store.db",
+    "store.db-wal",
+    "store.db-shm",
+    "audit.db",
+    "audit.db-wal",
+    "audit.db-shm",
+    "production_audit.db",
+    "production_audit.db-wal",
+    "production_audit.db-shm",
+    "sessions.db",
+    "sessions.db-wal",
+    "sessions.db-shm",
+})
+
+_EXACT_ALLOWED_RUNTIME_DIRS = frozenset({
+    ".subagentbridge",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    ".mypy_cache",
+})
+
+
+def _is_ignored_checkout_status_line(line: str) -> bool:
+    """Parse git porcelain status line and verify if it represents exclusively allowed runtime artifacts."""
+    if not line.strip():
+        return True
+    parts = line.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        return False
+    raw_path_part = parts[1]
+    paths = [p.strip().strip('"') for p in raw_path_part.split(" -> ")]
+    for raw_p in paths:
+        if not raw_p:
+            continue
+        p = Path(raw_p)
+        if p.name in _EXACT_ALLOWED_RUNTIME_FILENAMES:
+            continue
+        if any(part in _EXACT_ALLOWED_RUNTIME_DIRS for part in p.parts):
+            continue
+        return False
+    return True
+
+
 def check_clean_checkout(workspace_path: Path) -> bool:
     """Verify whether workspace checkout is genuinely clean without uncommitted changes."""
     try:
@@ -79,20 +124,10 @@ def check_clean_checkout(workspace_path: Path) -> bool:
             timeout=5,
         )
         if res.returncode == 0:
-            ignored_prefixes = (
-                ".subagentbridge",
-                "store.db",
-                "audit.db",
-                ".pytest_cache",
-                "__pycache__",
-                ".ruff_cache",
-            )
             dirty_lines = [
                 line.strip()
                 for line in res.stdout.strip().splitlines()
-                if line.strip() and not any(
-                    ig in line for ig in ignored_prefixes
-                )
+                if line.strip() and not _is_ignored_checkout_status_line(line.strip())
             ]
             return len(dirty_lines) == 0
     except Exception:
@@ -279,6 +314,20 @@ class SupervisedNativeLifecycle:
                 self.store.upsert_task(record)
             self._log_event(run_id, f"freeze:{task_id}", "TASK_FROZEN", {"task_id": task_id})
 
+            # Check developer command availability BEFORE reserving dispatch budget (Thread #4 fix)
+            cmd = commands.get(task_id) or commands.get(record.get("role", "")) or commands.get("default")
+            if not cmd:
+                record["status"] = "FAILED"
+                if self.store is not None:
+                    self.store.upsert_task(record)
+                self._log_event(run_id, f"no_cmd:{task_id}", "COMMAND_MISSING", {"task_id": task_id})
+                return {
+                    "status": "FAILED",
+                    "run_id": run_id,
+                    "failed_task_id": task_id,
+                    "reason": f"no developer command provided for execution of task {task_id}; synthetic exit code is prohibited",
+                }
+
             # 2. Begin dispatch (reserve budget)
             idempotency_key = f"dispatch:{run_id}:{task_id}"
             dispatch_plan = coordinator.begin(
@@ -318,6 +367,7 @@ class SupervisedNativeLifecycle:
             # Optional model consultation under D-02 review gate
             if consult_model:
                 if not provider_terms_approved:
+                    coordinator.release_dispatch(task_id)
                     return {
                         "status": "FAILED",
                         "run_id": run_id,
@@ -363,19 +413,6 @@ class SupervisedNativeLifecycle:
                     )
 
             # 4. Developer execution under ToolExecutor supervision
-            cmd = commands.get(task_id) or commands.get(record.get("role", "")) or commands.get("default")
-            if not cmd:
-                record["status"] = "FAILED"
-                if self.store is not None:
-                    self.store.upsert_task(record)
-                self._log_event(run_id, f"no_cmd:{task_id}", "COMMAND_MISSING", {"task_id": task_id})
-                return {
-                    "status": "FAILED",
-                    "run_id": run_id,
-                    "failed_task_id": task_id,
-                    "reason": f"no developer command provided for execution of task {task_id}; synthetic exit code is prohibited",
-                }
-
             try:
                 result = self.runner.run_isolated(cmd, timeout_seconds=30)
                 exit_code = result.exit_code
@@ -383,6 +420,7 @@ class SupervisedNativeLifecycle:
                 exit_code = 1
 
             if exit_code != 0:
+                coordinator.release_dispatch(task_id)
                 record["status"] = "FAILED"
                 if self.store is not None:
                     self.store.upsert_task(record)
@@ -426,20 +464,7 @@ class SupervisedNativeLifecycle:
             )
 
             # 7. Independent QA review
-            # Inspect actual tree SHA and verify clean checkout without synthetic claims
-            is_clean = check_clean_checkout(self.workspace_path)
-            current_tree_sha = resolve_tree_sha(self.workspace_path)
-
-            # Read actual QA test hashes from disk
-            actual_test_hashes: dict[str, str] = {}
-            for rel_path in self.sys.qa_gate.test_hashes:
-                test_file = (self.workspace_path / rel_path).resolve()
-                if test_file.is_file():
-                    actual_test_hashes[rel_path] = sha256(test_file.read_bytes()).hexdigest()
-                else:
-                    actual_test_hashes[rel_path] = "0" * 64
-
-            # Execute qualifying QA tests
+            # Execute qualifying QA tests first so post-QA integrity can be re-evaluated
             qa_passed = False
             qa_test_files = [
                 str(self.workspace_path / rel_path)
@@ -448,20 +473,39 @@ class SupervisedNativeLifecycle:
             ]
             if qa_test_files:
                 import sys as _sys
+                import re as _re
                 try:
                     try:
                         import pytest  # noqa: F401
-                        qa_cmd = [_sys.executable, "-m", "pytest", *qa_test_files]
+                        qa_cmd = [_sys.executable, "-m", "pytest", "-ra", "-v", *qa_test_files]
                     except ImportError:
-                        qa_cmd = [_sys.executable, "-m", "unittest", *qa_test_files]
+                        qa_cmd = [_sys.executable, "-m", "unittest", "-v", *qa_test_files]
 
                     qa_run = self.runner.run_isolated(
                         qa_cmd,
                         timeout_seconds=30,
                     )
-                    qa_passed = (qa_run.exit_code == 0)
+                    out_text = qa_run.output_text or ""
+                    # Thread #8 fix: reject skipped qualifying tests before granting coverage (Gate E20)
+                    has_skipped = bool(_re.search(r"\b(skipped|SKIPPED)\b", out_text)) or "skipped=" in out_text
+                    has_passed = bool(_re.search(r"\b\d+\s+passed\b", out_text)) or "OK" in out_text or (qa_run.exit_code == 0 and not has_skipped)
+
+                    qa_passed = (qa_run.exit_code == 0 and not has_skipped and has_passed)
                 except Exception:
                     qa_passed = False
+
+            # Thread #6 fix: revalidate checkout integrity, tree SHA, and test hashes AFTER running QA
+            is_clean = check_clean_checkout(self.workspace_path)
+            current_tree_sha = resolve_tree_sha(self.workspace_path)
+
+            # Read actual QA test hashes from disk post-QA
+            actual_test_hashes: dict[str, str] = {}
+            for rel_path in self.sys.qa_gate.test_hashes:
+                test_file = (self.workspace_path / rel_path).resolve()
+                if test_file.is_file():
+                    actual_test_hashes[rel_path] = sha256(test_file.read_bytes()).hexdigest()
+                else:
+                    actual_test_hashes[rel_path] = "0" * 64
 
             covered_criteria = task_contract.acceptance_criteria if qa_passed else ()
 
@@ -492,6 +536,7 @@ class SupervisedNativeLifecycle:
                     },
                 )
             else:
+                coordinator.release_dispatch(task_id)
                 record["status"] = decision.status
                 if self.store is not None:
                     self.store.upsert_task(record)

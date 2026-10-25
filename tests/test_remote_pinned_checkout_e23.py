@@ -8,6 +8,7 @@ Proves:
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -83,11 +84,27 @@ def verify_remote_pinned_checkout(
         "checkout_clean": True,
     }
 
-
 class TestRemotePinnedCheckoutE23(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.tmp.name).resolve()
+
+        # Controlled local bare remote repository fixture (Thread #3 fix)
+        self.local_remote_dir = self.root / "fixture_remote.git"
+        run_git("init", "--bare", "--initial-branch=main", str(self.local_remote_dir))
+
+        # Create an initial commit in a seed working copy and push to local bare remote
+        seed_dir = self.root / "seed_repo"
+        seed_dir.mkdir()
+        run_git("init", "--initial-branch=main", str(seed_dir))
+        run_git("config", "user.name", "Simpul Tester", cwd=seed_dir)
+        run_git("config", "user.email", "tester@simpul.local", cwd=seed_dir)
+        (seed_dir / "README.md").write_text("# Simpul Pinned Checkout Fixture\n")
+        run_git("add", "README.md", cwd=seed_dir)
+        run_git("commit", "-m", "Initial pinned commit", cwd=seed_dir)
+        self.pinned_local_sha = run_git("rev-parse", "HEAD", cwd=seed_dir)
+        run_git("remote", "add", "origin", str(self.local_remote_dir), cwd=seed_dir)
+        run_git("push", "origin", "main", cwd=seed_dir)
 
     def tearDown(self):
         try:
@@ -95,30 +112,55 @@ class TestRemotePinnedCheckoutE23(unittest.TestCase):
         except Exception:
             pass
 
-    def test_e23_01_actual_remote_pinned_checkout_passes(self):
-        """Verify real remote GitHub checkout matches exact released main SHA."""
+    def test_e23_01_controlled_remote_pinned_checkout_passes(self):
+        """Verify controlled remote checkout matches exact pinned SHA without moving-main dependency."""
+        target_dir = self.root / "target_clean"
+        target_dir.mkdir()
         result = verify_remote_pinned_checkout(
-            remote_url=REMOTE_REPO_URL,
+            remote_url=str(self.local_remote_dir),
             branch="main",
-            expected_pinned_sha=PINNED_MAIN_SHA,
-            target_dir=self.root,
+            expected_pinned_sha=self.pinned_local_sha,
+            target_dir=target_dir,
         )
         self.assertEqual(result["status"], "QA_VERIFIED")
-        self.assertEqual(result["pinned_sha"], PINNED_MAIN_SHA)
+        self.assertEqual(result["pinned_sha"], self.pinned_local_sha)
         self.assertTrue(result["checkout_clean"])
 
     def test_e23_02_remote_branch_movement_rejected(self):
-        """Verify that if the remote branch moves or does not match pinned SHA, verification is BLOCKED."""
-        # Simulated stale or moved pin
-        stale_sha = "8d2b019000000000000000000000000000000000"
+        """Verify that when remote tip differs from expected pinned SHA, verification is BLOCKED."""
+        stale_sha = "0" * 40
+        target_dir = self.root / "target_stale"
+        target_dir.mkdir()
         result = verify_remote_pinned_checkout(
-            remote_url=REMOTE_REPO_URL,
+            remote_url=str(self.local_remote_dir),
             branch="main",
             expected_pinned_sha=stale_sha,
-            target_dir=self.root,
+            target_dir=target_dir,
         )
         self.assertEqual(result["status"], "BLOCKED")
         self.assertIn("branch movement detected", result["reason"])
+
+    @unittest.skipUnless(
+        os.environ.get("SUBAGENTBRIDGE_LIVE_REMOTE_TEST") == "1",
+        "Live remote GitHub checkout check requires SUBAGENTBRIDGE_LIVE_REMOTE_TEST=1",
+    )
+    def test_e23_03_live_remote_github_acceptance_check(self):
+        """Live remote GitHub checkout check: queries remote branch HEAD dynamically."""
+        target_dir = self.root / "target_live"
+        target_dir.mkdir()
+        ls_output = run_git("ls-remote", REMOTE_REPO_URL, "refs/heads/main")
+        lines = [line.strip() for line in ls_output.splitlines() if line.strip()]
+        if not lines:
+            self.skipTest("Remote branch refs/heads/main unreachable")
+        current_live_sha = lines[0].split()[0]
+        result = verify_remote_pinned_checkout(
+            remote_url=REMOTE_REPO_URL,
+            branch="main",
+            expected_pinned_sha=current_live_sha,
+            target_dir=target_dir,
+        )
+        self.assertEqual(result["status"], "QA_VERIFIED")
+        self.assertTrue(result["checkout_clean"])
 
 
 if __name__ == "__main__":

@@ -193,6 +193,118 @@ def submit_goal(
     }
 
 
+def _gate_command_execution(
+    cmd: Sequence[str],
+    workspace_path: Path,
+    run_id: str,
+    task_id: str | None = None,
+) -> tuple[bool, str, str, str | None]:
+    """Inspect model-supplied commands under CHAT_APPROVAL and fail-closed policy (Thread #7 fix).
+
+    Returns (is_gated, category, reason, action_id).
+    """
+    import re
+    cmd_list = [str(x) for x in cmd]
+    cmd_str = " ".join(cmd_list)
+    lower_cmd = cmd_str.lower()
+    ws_resolved = workspace_path.resolve()
+    ws_str = str(ws_resolved)
+
+    # 1. Inspect arguments (excluding executable binary at index 0) for paths escaping workspace
+    for arg in cmd_list[1:]:
+        # Check path traversal
+        if ".." in arg:
+            try:
+                candidate = (workspace_path / arg).resolve()
+                if candidate != ws_resolved and ws_resolved not in candidate.parents:
+                    cat = "OUTSIDE_WORKSPACE_WRITE"
+                    reason = f"path traversal in argument {arg!r} resolves outside workspace"
+                    act = _pending.enqueue(run_id, {
+                        "command": cmd_str,
+                        "path": str(workspace_path),
+                        "operation": cat,
+                        "reason": reason,
+                        "task_id": task_id or "run",
+                    })
+                    return True, cat, reason, act.action_id
+            except Exception:
+                pass
+
+        # Check explicit absolute target path outside workspace
+        try:
+            p = Path(arg)
+            if p.is_absolute():
+                resolved_p = p.resolve()
+                if resolved_p != ws_resolved and ws_resolved not in resolved_p.parents:
+                    # Exclude interpreter/virtualenv directories if referenced
+                    import sys as _sys
+                    sys_dirs = [Path(_sys.prefix).resolve(), Path(_sys.base_prefix).resolve()]
+                    is_sys = any(s == resolved_p or s in resolved_p.parents for s in sys_dirs)
+                    if not is_sys:
+                        cat = "OUTSIDE_WORKSPACE_WRITE"
+                        reason = f"argument path {arg!r} references outside workspace {ws_str}"
+                        act = _pending.enqueue(run_id, {
+                            "command": cmd_str,
+                            "path": str(workspace_path),
+                            "operation": cat,
+                            "reason": reason,
+                            "task_id": task_id or "run",
+                        })
+                        return True, cat, reason, act.action_id
+        except Exception:
+            pass
+
+    # 2. Inspect inline Python code (-c) or scripts for file modification functions
+    for idx, arg in enumerate(cmd_list):
+        if arg == "-c" and idx + 1 < len(cmd_list):
+            code = cmd_list[idx + 1]
+            write_patterns = (
+                r"\bopen\s*\([^)]*['\"][wa\+]",
+                r"\.write_text\s*\(",
+                r"\.write_bytes\s*\(",
+                r"\bos\.remove\b",
+                r"\bos\.unlink\b",
+                r"\bshutil\.rmtree\b",
+            )
+            for pat in write_patterns:
+                if re.search(pat, code):
+                    cat = "OUTSIDE_WORKSPACE_WRITE"
+                    reason = f"inline command contains filesystem modification pattern: {pat}"
+                    act = _pending.enqueue(run_id, {
+                        "command": cmd_str,
+                        "path": str(workspace_path),
+                        "operation": cat,
+                        "reason": reason,
+                        "task_id": task_id or "run",
+                    })
+                    return True, cat, reason, act.action_id
+
+    # 3. Check for destructive, git push, or dependency change patterns
+    gated_patterns = {
+        "rm -rf": "DESTRUCTIVE",
+        "rmdir": "DESTRUCTIVE",
+        "git push": "GIT_PUSH_OR_REWRITE",
+        "git reset --hard": "DESTRUCTIVE",
+        "git clean -f": "DESTRUCTIVE",
+        "sudo ": "AUTH_OR_SECRET",
+        "pip install": "DEPENDENCY",
+        "npm install": "DEPENDENCY",
+    }
+    for pat, cat in gated_patterns.items():
+        if pat in lower_cmd:
+            reason = f"command contains gated pattern {pat!r}"
+            act = _pending.enqueue(run_id, {
+                "command": cmd_str,
+                "path": str(workspace_path),
+                "operation": cat,
+                "reason": reason,
+                "task_id": task_id or "run",
+            })
+            return True, cat, reason, act.action_id
+
+    return False, "READ_ONLY_REQUEST", "", None
+
+
 def _execute_run(run_id: str, command_map: Mapping[str, Sequence[str]] | None = None) -> dict:
     run = _runs.get(run_id)
     if run is None:
@@ -224,6 +336,30 @@ def _execute_run(run_id: str, command_map: Mapping[str, Sequence[str]] | None = 
     effective_commands = dict(command_map or {})
     if not effective_commands and run_id in _run_commands:
         effective_commands.update(_run_commands[run_id])
+
+    # Gate model-supplied commands under CHAT_APPROVAL (Thread #7 fix)
+    for target_key, cmd_seq in effective_commands.items():
+        if cmd_seq:
+            is_gated, cat, reason, act_id = _gate_command_execution(cmd_seq, ws, run_id, target_key)
+            if is_gated:
+                try:
+                    sys.ledger.append_once(
+                        stream=f"run:{run_id}",
+                        idempotency_key=f"gate:{act_id}",
+                        event_type="COMMAND_GATED",
+                        payload={"run_id": run_id, "category": cat, "reason": reason, "action_id": act_id},
+                    )
+                except Exception:
+                    pass
+                run["status"] = "BLOCKED"
+                _store.upsert_run(run)
+                _runs[run_id] = run
+                return {
+                    "status": "BLOCKED",
+                    "run_id": run_id,
+                    "reason": f"command execution gated: requires human approval under CHAT_APPROVAL: {reason}",
+                    "action_id": act_id,
+                }
 
     lifecycle = SupervisedNativeLifecycle(sys=sys, workspace_path=ws, store=_store)
     coordinator, principals = lifecycle.create_coordinator_for_run(
@@ -269,6 +405,16 @@ def execute_task(run_id: str, task_id: str, command: list[str] | None = None) ->
         cmd_map[task_id] = list(command)
 
     res = _execute_run(run_id, command_map=cmd_map)
+    if res.get("status") == "BLOCKED":
+        return {
+            "status": "BLOCKED",
+            "run_id": run_id,
+            "task_id": task_id,
+            "reason": res.get("reason"),
+            "action_id": res.get("action_id"),
+            "evidence": None,
+            "run_status": "BLOCKED",
+        }
 
     # Return evidence for the exact requested task
     ev = get_task_evidence(run_id, task_id)
