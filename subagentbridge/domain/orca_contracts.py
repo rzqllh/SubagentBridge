@@ -49,6 +49,8 @@ class WorkerConfig:
     effort: str | None = None
     budget_tokens: int | None = None
     pid: int | None = None
+    process_create_time: float | None = None
+    tokens_consumed: int = 0
 
 
 @dataclass

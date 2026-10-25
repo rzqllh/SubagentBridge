@@ -1,18 +1,22 @@
 """Worker process controller for independent OS process execution.
 
 Spawns, monitors, communicates with, and reaps real independent worker processes.
-Guarantees distinct OS process boundaries, IPC messaging, heartbeat polling,
-interrupt preemption, clean resource cleanup, and durable crash reconciliation.
+Guarantees distinct OS process boundaries, IPC messaging with timeout deadlines,
+safe process-tree cleanup, process identity verification (create_time check),
+heartbeat polling, interrupt preemption, and durable crash reconciliation.
 """
 from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from secrets import token_hex
+from typing import Any, IO
 
 import psutil
 
@@ -23,6 +27,82 @@ from subagentbridge.domain.orca_contracts import (
     OrcaSession,
 )
 from subagentbridge.storage.orca_store import OrcaStore
+from subagentbridge.approval.trusted_authority import (
+    TrustedApprovalAuthority,
+    get_trusted_authority,
+)
+
+
+class TimedStreamReader:
+    """Non-blocking queue-based line reader with timeout deadlines."""
+
+    def __init__(self, stream: IO[str]) -> None:
+        self.stream = stream
+        self.queue: queue.Queue[str | None] = queue.Queue()
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def _reader(self) -> None:
+        try:
+            for line in iter(self.stream.readline, ""):
+                self.queue.put(line)
+        except (ValueError, OSError):
+            pass
+        finally:
+            self.queue.put(None)
+
+    def readline(self, timeout: float = 5.0) -> str | None:
+        try:
+            return self.queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+
+def kill_process_tree(pid: int, timeout: float = 2.0) -> None:
+    """Recursively terminates and reaps child and grandchild processes safely on Windows and Linux."""
+    if pid <= 0:
+        return
+    try:
+        parent = psutil.Process(pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return
+
+    try:
+        children = parent.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        children = []
+
+    procs = children + [parent]
+    for p in procs:
+        try:
+            p.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    gone, alive = psutil.wait_procs(procs, timeout=timeout)
+    for p in alive:
+        try:
+            p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+
+def is_process_identically_alive(pid: int, expected_create_time: float | None = None) -> bool:
+    """Checks PID existence AND creation timestamp to protect against OS PID reuse."""
+    if pid <= 0:
+        return False
+    try:
+        p = psutil.Process(pid)
+        if not p.is_running():
+            return False
+        if p.status() == psutil.STATUS_ZOMBIE:
+            return False
+        if expected_create_time is not None:
+            if abs(p.create_time() - expected_create_time) > 1.0:
+                return False  # PID was recycled by another process
+        return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
 
 
 @dataclass
@@ -33,16 +113,25 @@ class WorkerProcessRecord:
     status: WorkerStatus
     started_at: float
     last_heartbeat: float
+    create_time: float | None = None
+    tokens_consumed: int = 0
     worktree_path: str | None = None
     exit_code: int | None = None
+    session_secret: str = ""
 
 
 class WorkerProcessController:
     """Manages real independent worker child processes and durable session tracking."""
 
-    def __init__(self, store: OrcaStore) -> None:
+    def __init__(
+        self,
+        store: OrcaStore,
+        approval_authority: TrustedApprovalAuthority | None = None,
+    ) -> None:
         self.store = store
+        self.approval_authority = approval_authority or get_trusted_authority()
         self._processes: dict[str, subprocess.Popen[str]] = {}
+        self._readers: dict[str, TimedStreamReader] = {}
         self._records: dict[str, WorkerProcessRecord] = {}
 
     def spawn_worker(
@@ -52,6 +141,7 @@ class WorkerProcessController:
         branch_name: str | None = None,
     ) -> WorkerProcessRecord:
         """Spawns a real child OS process running worker_runtime_entrypoint."""
+        session_secret = token_hex(32)
         cmd = [
             sys.executable,
             "-m",
@@ -62,9 +152,13 @@ class WorkerProcessController:
             config.team_id,
             "--role",
             config.role,
+            "--session-secret",
+            session_secret,
         ]
         if config.budget_tokens is not None:
             cmd.extend(["--budget-tokens", str(config.budget_tokens)])
+        if worktree_path:
+            cmd.extend(["--worktree-path", worktree_path])
 
         cwd = worktree_path if worktree_path and os.path.isdir(worktree_path) else None
 
@@ -78,18 +172,27 @@ class WorkerProcessController:
             cwd=cwd,
         )
 
-        # Read the INIT handshake event from child stdout
         if proc.stdout is None or proc.stdin is None:
             proc.kill()
             raise RuntimeError(f"failed to initialize IPC pipes for worker {config.worker_id}")
 
-        init_line = proc.stdout.readline().strip()
-        if not init_line:
-            proc.kill()
-            raise RuntimeError(f"worker {config.worker_id} failed to emit INIT event")
+        reader = TimedStreamReader(proc.stdout)
+        self._readers[config.worker_id] = reader
 
-        init_event = json.loads(init_line)
-        child_pid = init_event.get("pid", proc.pid)
+        # Read the INIT handshake event from child stdout with timeout
+        init_line = reader.readline(timeout=5.0)
+        if not init_line:
+            kill_process_tree(proc.pid)
+            raise RuntimeError(f"worker {config.worker_id} failed to emit INIT event within deadline")
+
+        init_event = json.loads(init_line.strip())
+        child_pid = int(init_event.get("pid", proc.pid))
+        create_time = float(init_event.get("create_time", 0.0))
+        if create_time <= 0:
+            try:
+                create_time = psutil.Process(child_pid).create_time()
+            except Exception:
+                create_time = time.time()
 
         now = time.time()
         record = WorkerProcessRecord(
@@ -99,13 +202,16 @@ class WorkerProcessController:
             status=WorkerStatus.IDLE,
             started_at=now,
             last_heartbeat=now,
+            create_time=create_time,
+            tokens_consumed=0,
             worktree_path=worktree_path,
+            session_secret=session_secret,
         )
 
         self._processes[config.worker_id] = proc
         self._records[config.worker_id] = record
 
-        # Persist session to store with child PID
+        # Persist session to store with child PID and creation time
         config_with_pid = WorkerConfig(
             worker_id=config.worker_id,
             team_id=config.team_id,
@@ -118,6 +224,8 @@ class WorkerProcessController:
             effort=config.effort,
             budget_tokens=config.budget_tokens,
             pid=child_pid,
+            process_create_time=create_time,
+            tokens_consumed=0,
         )
         session = OrcaSession(
             session_id=config.worker_id,
@@ -134,15 +242,17 @@ class WorkerProcessController:
 
     def is_worker_alive(self, worker_id: str) -> bool:
         proc = self._processes.get(worker_id)
-        if not proc:
-            record = self._records.get(worker_id)
-            if record and psutil.pid_exists(record.pid):
-                return True
-            session = self.store.load_session(worker_id)
-            if session and session.config.pid and psutil.pid_exists(session.config.pid):
-                return True
-            return False
-        return proc.poll() is None
+        record = self._records.get(worker_id)
+        if proc and proc.poll() is None:
+            pid = proc.pid
+            c_time = record.create_time if record else None
+            return is_process_identically_alive(pid, c_time)
+        if record:
+            return is_process_identically_alive(record.pid, record.create_time)
+        session = self.store.load_session(worker_id)
+        if session and session.config.pid:
+            return is_process_identically_alive(session.config.pid, session.config.process_create_time)
+        return False
 
     def get_worker_record(self, worker_id: str) -> WorkerProcessRecord | None:
         rec = self._records.get(worker_id)
@@ -157,23 +267,33 @@ class WorkerProcessController:
                 status=session.status,
                 started_at=session.created_at,
                 last_heartbeat=session.updated_at,
+                create_time=session.config.process_create_time,
+                tokens_consumed=session.config.tokens_consumed,
                 worktree_path=session.config.working_dir,
             )
         return None
 
     def ping_worker(self, worker_id: str, timeout: float = 3.0) -> dict[str, Any] | None:
         proc = self._processes.get(worker_id)
-        if not proc or proc.poll() is not None or proc.stdin is None or proc.stdout is None:
+        reader = self._readers.get(worker_id)
+        if not proc or proc.poll() is not None or proc.stdin is None or not reader:
             return None
 
-        proc.stdin.write(json.dumps({"command": "PING"}) + "\n")
-        proc.stdin.flush()
+        try:
+            proc.stdin.write(json.dumps({"command": "PING"}) + "\n")
+            proc.stdin.flush()
+        except OSError:
+            return None
 
-        line = proc.stdout.readline().strip()
+        line = reader.readline(timeout=timeout)
         if not line:
             return None
 
-        event_raw = json.loads(line)
+        try:
+            event_raw = json.loads(line.strip())
+        except json.JSONDecodeError:
+            return None
+
         if not isinstance(event_raw, dict):
             return None
         event: dict[str, Any] = event_raw
@@ -191,37 +311,131 @@ class WorkerProcessController:
         timeout: float = 5.0,
     ) -> dict[str, Any]:
         proc = self._processes.get(worker_id)
-        if not proc or proc.poll() is not None or proc.stdin is None or proc.stdout is None:
+        reader = self._readers.get(worker_id)
+        record = self._records.get(worker_id)
+        if not proc or proc.poll() is not None or proc.stdin is None or not reader or not record:
             return {"status": "ERROR", "error": f"worker {worker_id!r} not alive"}
 
-        proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
-        proc.stdin.flush()
+        # Handle authorization binding if command is present
+        if "command" in payload:
+            cmd_val = payload["command"]
+            cmd_list = [str(x) for x in cmd_val] if isinstance(cmd_val, list) else [str(cmd_val)]
+            action_id = payload.get("approval_action_id") or ""
+            ws = record.worktree_path or ""
+            valid, reason, ticket = self.approval_authority.issue_execution_ticket(
+                action_id=action_id,
+                worker_id=worker_id,
+                task_id=task_id,
+                command=cmd_list,
+                workspace_path=ws,
+                session_secret=record.session_secret,
+            )
+            if not valid or not ticket:
+                return {
+                    "status": "DENIED",
+                    "task_id": task_id,
+                    "reason": f"Default-deny: {reason}",
+                    "error": f"AuthorizationFailed: {reason}",
+                    "timestamp": time.time(),
+                }
+            payload = dict(payload)
+            payload["execution_ticket"] = ticket
+            payload["workspace_path"] = ws
 
-        line = proc.stdout.readline().strip()
-        if not line:
-            return {"status": "ERROR", "error": "worker returned empty response"}
+        try:
+            proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
+            proc.stdin.flush()
+        except OSError as exc:
+            return {"status": "ERROR", "error": f"IPC pipe write failed: {exc}"}
 
-        res_raw = json.loads(line)
-        if not isinstance(res_raw, dict):
+        line = reader.readline(timeout=timeout)
+        if line is None:
+            return {
+                "status": "TIMEOUT",
+                "task_id": task_id,
+                "error": f"Worker IPC deadline exceeded ({timeout}s)",
+                "timestamp": time.time(),
+            }
+
+        try:
+            res_raw = json.loads(line.strip())
+        except json.JSONDecodeError:
             return {"status": "ERROR", "error": "malformed JSON from worker"}
+
+        if not isinstance(res_raw, dict):
+            return {"status": "ERROR", "error": "malformed JSON response"}
+
         res: dict[str, Any] = res_raw
+
+        # Update metered token tracking
+        if "tokens_consumed" in res:
+            record.tokens_consumed = int(res["tokens_consumed"])
+            session = self.store.load_session(worker_id)
+            if session:
+                session.config = WorkerConfig(
+                    worker_id=session.config.worker_id,
+                    team_id=session.config.team_id,
+                    role=session.config.role,
+                    harness=session.config.harness,
+                    model=session.config.model,
+                    provider=session.config.provider,
+                    system_prompt=session.config.system_prompt,
+                    working_dir=session.config.working_dir,
+                    effort=session.config.effort,
+                    budget_tokens=session.config.budget_tokens,
+                    pid=session.config.pid,
+                    process_create_time=session.config.process_create_time,
+                    tokens_consumed=record.tokens_consumed,
+                )
+                session.updated_at = time.time()
+                self.store.save_session(session)
+
         return res
 
     def send_task_async(self, worker_id: str, task_id: str, payload: dict[str, Any]) -> None:
         proc = self._processes.get(worker_id)
-        if not proc or proc.poll() is not None or proc.stdin is None:
+        record = self._records.get(worker_id)
+        if not proc or proc.poll() is not None or proc.stdin is None or not record:
             raise RuntimeError(f"worker {worker_id!r} not running")
+
+        # If command is present, attach ticket
+        if "command" in payload:
+            cmd_val = payload["command"]
+            cmd_list = [str(x) for x in cmd_val] if isinstance(cmd_val, list) else [str(cmd_val)]
+            action_id = payload.get("approval_action_id") or ""
+            ws = record.worktree_path or ""
+            valid, reason, ticket = self.approval_authority.issue_execution_ticket(
+                action_id=action_id,
+                worker_id=worker_id,
+                task_id=task_id,
+                command=cmd_list,
+                workspace_path=ws,
+                session_secret=record.session_secret,
+            )
+            if not valid or not ticket:
+                raise PermissionError(f"Default-deny: {reason}")
+            payload = dict(payload)
+            payload["execution_ticket"] = ticket
+            payload["workspace_path"] = ws
 
         proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
         proc.stdin.flush()
 
-    def interrupt_worker(self, worker_id: str) -> bool:
+    def interrupt_worker(self, worker_id: str, task_id: str = "") -> bool:
         proc = self._processes.get(worker_id)
+        reader = self._readers.get(worker_id)
         if not proc or proc.poll() is not None or proc.stdin is None:
             return False
 
-        proc.stdin.write(json.dumps({"command": "INTERRUPT"}) + "\n")
-        proc.stdin.flush()
+        try:
+            proc.stdin.write(json.dumps({"command": "INTERRUPT", "task_id": task_id}) + "\n")
+            proc.stdin.flush()
+        except OSError:
+            return False
+
+        # Read the INTERRUPTED event confirmation if available within deadline
+        if reader:
+            reader.readline(timeout=1.0)
 
         record = self._records.get(worker_id)
         if record:
@@ -237,11 +451,11 @@ class WorkerProcessController:
 
     def terminate_worker(self, worker_id: str, timeout: float = 3.0) -> bool:
         proc = self._processes.get(worker_id)
-        if not proc:
-            return True
+        record = self._records.get(worker_id)
+        pid = proc.pid if proc else (record.pid if record else 0)
 
         # 1. Try sending graceful STOP command over IPC
-        if proc.poll() is None and proc.stdin:
+        if proc and proc.poll() is None and proc.stdin:
             try:
                 proc.stdin.write(json.dumps({"command": "STOP"}) + "\n")
                 proc.stdin.flush()
@@ -249,35 +463,33 @@ class WorkerProcessController:
             except (subprocess.TimeoutExpired, OSError):
                 pass
 
-        # 2. Force termination if still alive
-        if proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=1.0)
-            except (subprocess.TimeoutExpired, OSError):
-                proc.kill()
-                proc.wait(timeout=1.0)
+        # 2. Force recursive process tree cleanup if still alive
+        if pid > 0:
+            kill_process_tree(pid, timeout=1.0)
 
         # 3. Clean up pipes
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            if stream:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
+        if proc:
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
 
-        record = self._records.get(worker_id)
         if record:
-            record.exit_code = proc.returncode
-            record.status = WorkerStatus.ARCHIVED if proc.returncode == 0 else WorkerStatus.FAILED
+            ret_code = proc.returncode if proc else 0
+            record.exit_code = ret_code
+            record.status = WorkerStatus.ARCHIVED if ret_code == 0 else WorkerStatus.FAILED
 
         session = self.store.load_session(worker_id)
         if session:
-            session.status = WorkerStatus.ARCHIVED if proc.returncode == 0 else WorkerStatus.FAILED
+            ret_code = proc.returncode if proc else 0
+            session.status = WorkerStatus.ARCHIVED if ret_code == 0 else WorkerStatus.FAILED
             session.updated_at = time.time()
             self.store.save_session(session)
 
         self._processes.pop(worker_id, None)
+        self._readers.pop(worker_id, None)
         return True
 
     def reap_dead_workers(self) -> list[str]:
@@ -296,9 +508,16 @@ class WorkerProcessController:
                     self.store.save_session(session)
                 reaped.append(worker_id)
                 self._processes.pop(worker_id, None)
+                self._readers.pop(worker_id, None)
         return reaped
 
-    def register_persisted_session(self, worker_id: str, config: WorkerConfig, pid: int) -> None:
+    def register_persisted_session(
+        self,
+        worker_id: str,
+        config: WorkerConfig,
+        pid: int,
+        create_time: float | None = None,
+    ) -> None:
         now = time.time()
         record = WorkerProcessRecord(
             worker_id=worker_id,
@@ -307,6 +526,8 @@ class WorkerProcessController:
             status=WorkerStatus.RUNNING,
             started_at=now,
             last_heartbeat=now,
+            create_time=create_time,
+            tokens_consumed=config.tokens_consumed,
         )
         self._records[worker_id] = record
 
@@ -322,6 +543,8 @@ class WorkerProcessController:
             effort=config.effort,
             budget_tokens=config.budget_tokens,
             pid=pid,
+            process_create_time=create_time,
+            tokens_consumed=config.tokens_consumed,
         )
         session = OrcaSession(
             session_id=worker_id,
@@ -339,7 +562,7 @@ class WorkerProcessController:
 
         # 1. Check in-memory records
         for worker_id, record in list(self._records.items()):
-            if not psutil.pid_exists(record.pid):
+            if not is_process_identically_alive(record.pid, record.create_time):
                 record.status = WorkerStatus.FAILED
                 reconciled[worker_id] = WorkerStatus.FAILED
                 session = self.store.load_session(worker_id)
@@ -354,9 +577,10 @@ class WorkerProcessController:
             w_id = session.session_id
             if w_id in reconciled:
                 continue
-            if session.orca_role == OrcaRole.WORKER and session.status == WorkerStatus.RUNNING:
+            if session.orca_role == OrcaRole.WORKER and session.status in (WorkerStatus.RUNNING, WorkerStatus.IDLE):
                 pid = session.config.pid
-                if pid is None or not psutil.pid_exists(pid):
+                c_time = session.config.process_create_time
+                if pid is None or not is_process_identically_alive(pid, c_time):
                     session.status = WorkerStatus.FAILED
                     session.updated_at = time.time()
                     self.store.save_session(session)
@@ -368,5 +592,7 @@ class WorkerProcessController:
                         status=WorkerStatus.FAILED,
                         started_at=session.created_at,
                         last_heartbeat=session.updated_at,
+                        create_time=c_time,
+                        tokens_consumed=session.config.tokens_consumed,
                     )
         return reconciled

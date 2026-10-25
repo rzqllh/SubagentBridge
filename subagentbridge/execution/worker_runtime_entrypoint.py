@@ -2,16 +2,25 @@
 
 Runs as a separate Python child process spawned by WorkerProcessController.
 Communicates strictly via JSON-lines over stdin/stdout IPC.
-Enforces default-deny tool execution and budget checks inside its own process boundary.
+Enforces default-deny tool execution, verified human approval tickets,
+real command execution with observable evidence, interrupt preemption,
+and cumulative metered token budget enforcement.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import queue
+import subprocess
 import sys
+import threading
 import time
 from typing import Any
+
+import psutil
+
+from subagentbridge.approval.trusted_authority import verify_ticket_binding
 
 
 def send_event(event: dict[str, Any]) -> None:
@@ -25,34 +34,88 @@ def main() -> int:
     parser.add_argument("--team-id", required=True, help="Team ID")
     parser.add_argument("--role", default="worker", help="Worker role")
     parser.add_argument("--budget-tokens", type=int, default=None, help="Token budget ceiling")
+    parser.add_argument("--session-secret", default=None, help="Session secret for ticket verification")
+    parser.add_argument("--worktree-path", default=None, help="Assigned worktree directory path")
     args = parser.parse_args()
 
     worker_id: str = args.worker_id
     team_id: str = args.team_id
     role: str = args.role
     budget_tokens: int | None = args.budget_tokens
+    session_secret: str = args.session_secret or os.environ.get("SIMPUL_WORKER_SECRET", "")
+    worktree_path: str | None = args.worktree_path
 
-    # 1. Send INIT event with real OS PID
+    # Process identity metadata
+    current_pid = os.getpid()
+    try:
+        proc_identity = psutil.Process(current_pid)
+        proc_create_time = proc_identity.create_time()
+    except Exception:
+        proc_create_time = time.time()
+
+    # 1. Send INIT event with real OS PID and process creation timestamp
     send_event({
         "type": "INIT",
         "worker_id": worker_id,
         "team_id": team_id,
         "role": role,
-        "pid": os.getpid(),
+        "pid": current_pid,
+        "create_time": proc_create_time,
         "timestamp": time.time(),
     })
 
-    # 2. Main IPC event loop
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    # Internal state tracking
+    total_tokens_consumed: int = 0
+    consumed_action_ids: set[str] = set()
 
+    # Threading controls for interrupt preemption
+    cancel_event = threading.Event()
+    active_subproc: subprocess.Popen[str] | None = None
+    subproc_lock = threading.Lock()
+
+    msg_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+    def stdin_reader_thread() -> None:
         try:
-            msg = json.loads(line)
-        except json.JSONDecodeError as exc:
-            send_event({"type": "ERROR", "error": f"Invalid JSON: {exc}"})
-            continue
+            while True:
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                line_str = line.strip()
+                if not line_str:
+                    continue
+                try:
+                    data = json.loads(line_str)
+                    if isinstance(data, dict):
+                        # Preempt immediately on interrupt line arrival
+                        if data.get("command") == "INTERRUPT":
+                            cancel_event.set()
+                            with subproc_lock:
+                                if active_subproc is not None:
+                                    try:
+                                        active_subproc.terminate()
+                                    except OSError:
+                                        pass
+                        msg_queue.put(data)
+                except json.JSONDecodeError as exc:
+                    send_event({"type": "ERROR", "error": f"Invalid JSON: {exc}"})
+        except (ValueError, OSError):
+            pass
+        finally:
+            msg_queue.put(None)
+
+    reader = threading.Thread(target=stdin_reader_thread, daemon=True)
+    reader.start()
+
+    # 2. Main IPC event loop
+    while True:
+        try:
+            msg = msg_queue.get()
+        except Exception:
+            break
+
+        if msg is None:
+            break
 
         cmd = msg.get("command")
 
@@ -60,60 +123,271 @@ def main() -> int:
             send_event({
                 "type": "PONG",
                 "worker_id": worker_id,
-                "pid": os.getpid(),
+                "pid": current_pid,
+                "create_time": proc_create_time,
+                "timestamp": time.time(),
+            })
+
+        elif cmd == "INTERRUPT":
+            task_id = msg.get("task_id", "")
+            cancel_event.set()
+            with subproc_lock:
+                if active_subproc is not None:
+                    try:
+                        active_subproc.terminate()
+                    except OSError:
+                        pass
+            send_event({
+                "type": "INTERRUPTED",
+                "worker_id": worker_id,
+                "task_id": task_id,
                 "timestamp": time.time(),
             })
 
         elif cmd == "TASK":
             task_id = msg.get("task_id", "unknown")
             payload = msg.get("payload", {})
+            cancel_event.clear()
 
-            # Budget check
+            # Pre-flight budget admission check
             requested_tokens = payload.get("tokens_requested", 0)
-            if budget_tokens is not None and requested_tokens > budget_tokens:
+            if budget_tokens is not None and (total_tokens_consumed + requested_tokens) > budget_tokens:
+                remaining = max(0, budget_tokens - total_tokens_consumed)
                 send_event({
                     "type": "RESULT",
                     "task_id": task_id,
                     "status": "DENIED",
-                    "error": f"BudgetExceeded: requested {requested_tokens} tokens exceeds budget {budget_tokens}",
+                    "reason": f"BudgetExceeded: requested {requested_tokens} tokens exceeds remaining budget {remaining}",
+                    "error": f"BudgetExceeded: requested {requested_tokens} tokens exceeds remaining budget {remaining}",
+                    "tokens_consumed": total_tokens_consumed,
+                    "remaining_tokens": remaining,
                     "timestamp": time.time(),
                 })
                 continue
 
-            # Command execution authorization gate (fail-closed default-deny)
+            # Anti-spoofing check: reject untrusted in-payload booleans
+            if "approved" in payload or "approver" in payload:
+                send_event({
+                    "type": "RESULT",
+                    "task_id": task_id,
+                    "status": "DENIED",
+                    "reason": "Default-deny: unapproved command execution blocked by policy",
+                    "error": "ApprovalSpoofingDetected: in-payload approval booleans are untrusted and rejected by policy",
+                    "timestamp": time.time(),
+                })
+                continue
+
+            # Check if this task requests command execution
             if "command" in payload:
-                approved = payload.get("approved", False)
-                approver = payload.get("approver")
-                if not approved or not approver:
+                command = payload.get("command")
+                if isinstance(command, str):
+                    command_list = [command]
+                elif isinstance(command, list):
+                    command_list = [str(x) for x in command]
+                else:
+                    send_event({
+                        "type": "RESULT",
+                        "task_id": task_id,
+                        "status": "DENIED",
+                        "reason": "Default-deny: invalid command payload",
+                        "error": "InvalidCommandFormat",
+                        "timestamp": time.time(),
+                    })
+                    continue
+
+                # Verify human execution ticket
+                ticket = payload.get("execution_ticket")
+                if not ticket or not session_secret:
                     send_event({
                         "type": "RESULT",
                         "task_id": task_id,
                         "status": "DENIED",
                         "reason": "Default-deny: unapproved command execution blocked by policy",
+                        "error": "AuthorizationFailed: missing execution ticket or session secret",
                         "timestamp": time.time(),
                     })
                     continue
 
-            # Task execution simulation / completion
-            instruction = payload.get("instruction", "execute")
+                effective_ws = payload.get("workspace_path") or worktree_path or ""
+                valid, reason = verify_ticket_binding(
+                    ticket, session_secret, worker_id, task_id, command_list, effective_ws
+                )
+                if not valid:
+                    send_event({
+                        "type": "RESULT",
+                        "task_id": task_id,
+                        "status": "DENIED",
+                        "reason": f"Default-deny: {reason}",
+                        "error": f"AuthorizationFailed: {reason}",
+                        "timestamp": time.time(),
+                    })
+                    continue
+
+                # Replay check in worker process
+                action_id = ticket.get("action_id", "")
+                if action_id in consumed_action_ids:
+                    send_event({
+                        "type": "RESULT",
+                        "task_id": task_id,
+                        "status": "DENIED",
+                        "reason": "Default-deny: replayed execution ticket rejected",
+                        "error": "TicketReplayPrevented",
+                        "timestamp": time.time(),
+                    })
+                    continue
+                consumed_action_ids.add(action_id)
+
+                # Real command execution
+                if cancel_event.is_set():
+                    send_event({
+                        "type": "RESULT",
+                        "task_id": task_id,
+                        "status": "CANCELLED",
+                        "reason": "Task execution was cancelled before spawn",
+                        "timestamp": time.time(),
+                    })
+                    continue
+
+                exec_cwd = effective_ws if effective_ws and os.path.isdir(effective_ws) else None
+                start_time = time.time()
+                timeout = float(payload.get("timeout", 30.0))
+
+                try:
+                    proc = subprocess.Popen(
+                        command_list,
+                        cwd=exec_cwd,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    with subproc_lock:
+                        active_subproc = proc
+
+                    is_timed_out = False
+                    while proc.poll() is None:
+                        if cancel_event.is_set():
+                            try:
+                                proc.terminate()
+                                proc.wait(timeout=0.5)
+                            except (subprocess.TimeoutExpired, OSError):
+                                proc.kill()
+                            break
+                        if (time.time() - start_time) > timeout:
+                            is_timed_out = True
+                            proc.kill()
+                            break
+                        time.sleep(0.05)
+
+                    with subproc_lock:
+                        active_subproc = None
+
+                    if cancel_event.is_set():
+                        send_event({
+                            "type": "RESULT",
+                            "task_id": task_id,
+                            "status": "CANCELLED",
+                            "reason": "Task was interrupted by controller",
+                            "timestamp": time.time(),
+                        })
+                        continue
+
+                    stdout, stderr = proc.communicate()
+                    duration = time.time() - start_time
+
+                    if is_timed_out:
+                        send_event({
+                            "type": "RESULT",
+                            "task_id": task_id,
+                            "status": "FAILED",
+                            "error": f"Command timed out after {timeout}s",
+                            "duration": duration,
+                            "timestamp": time.time(),
+                        })
+                        continue
+
+                    # Metered token accounting
+                    metered_tokens = int(payload.get("tokens_metered", max(1, len(stdout) // 4)))
+                    total_tokens_consumed += metered_tokens
+                    rem = (budget_tokens - total_tokens_consumed) if budget_tokens is not None else None
+
+                    if proc.returncode == 0:
+                        send_event({
+                            "type": "RESULT",
+                            "task_id": task_id,
+                            "status": "COMPLETED",
+                            "summary": f"Worker {worker_id} executed command successfully",
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "exit_code": proc.returncode,
+                            "duration": duration,
+                            "metered_tokens": metered_tokens,
+                            "tokens_consumed": total_tokens_consumed,
+                            "remaining_tokens": rem,
+                            "evidence": {
+                                "command": command_list,
+                                "exit_code": 0,
+                                "pid": proc.pid,
+                                "duration": duration,
+                            },
+                            "timestamp": time.time(),
+                        })
+                    else:
+                        send_event({
+                            "type": "RESULT",
+                            "task_id": task_id,
+                            "status": "FAILED",
+                            "error": f"Command failed with exit code {proc.returncode}",
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "exit_code": proc.returncode,
+                            "duration": duration,
+                            "metered_tokens": metered_tokens,
+                            "tokens_consumed": total_tokens_consumed,
+                            "remaining_tokens": rem,
+                            "timestamp": time.time(),
+                        })
+
+                except Exception as exc:
+                    send_event({
+                        "type": "RESULT",
+                        "task_id": task_id,
+                        "status": "FAILED",
+                        "error": f"SubprocessExecutionError: {exc}",
+                        "timestamp": time.time(),
+                    })
+                continue
+
+            # Non-command task: handle simulation duration or reject false completion
             duration = payload.get("duration", 0)
             if duration > 0:
-                time.sleep(min(duration, 0.5))
+                was_cancelled = cancel_event.wait(timeout=min(float(duration), 10.0))
+                if was_cancelled or cancel_event.is_set():
+                    send_event({
+                        "type": "RESULT",
+                        "task_id": task_id,
+                        "status": "CANCELLED",
+                        "reason": "Task was interrupted by controller",
+                        "timestamp": time.time(),
+                    })
+                else:
+                    send_event({
+                        "type": "RESULT",
+                        "task_id": task_id,
+                        "status": "NOT_IMPLEMENTED",
+                        "reason": "Simulated sleep cannot report COMPLETED without real tool execution",
+                        "error": "Simulated sleep cannot report COMPLETED without real tool execution",
+                        "timestamp": time.time(),
+                    })
+                continue
 
+            # Abstract instruction without real runner/command
             send_event({
                 "type": "RESULT",
                 "task_id": task_id,
-                "status": "COMPLETED",
-                "summary": f"Worker {worker_id} executed instruction: {instruction}",
-                "timestamp": time.time(),
-            })
-
-        elif cmd == "INTERRUPT":
-            task_id = msg.get("task_id", "")
-            send_event({
-                "type": "INTERRUPTED",
-                "worker_id": worker_id,
-                "task_id": task_id,
+                "status": "NOT_IMPLEMENTED",
+                "reason": "Abstract instruction execution without harness/tool runner is not implemented in C02 (real authorized command required)",
+                "error": "Abstract instruction execution without harness/tool runner is not implemented in C02 (real authorized command required)",
                 "timestamp": time.time(),
             })
 

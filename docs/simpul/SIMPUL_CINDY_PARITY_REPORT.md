@@ -33,8 +33,8 @@
 |---|---|---|---|
 | C00 | `simpul/08-sprint1-verification` | **COMPLETE (remote PR #9 verified, CI 4/4 PASS)** | Security hardening, corrective review, all tests pass |
 | C01 | `simpul/09-parity-foundation` | **COMPLETE (remote PR #10 verified, CI 4/4 PASS)** | Architecture contracts, adapter boundaries, 8 baseline tests pass |
-| C02 | `simpul/10-worker-sessions` | **COMPLETE (local verified) - READY FOR PR/STACK REVIEW** | Real independent worker processes with lifecycle, IPC & recovery |
-| C03 | `simpul/11-multi-harness` | **NOT STARTED** | Capability-checked host adapters |
+| C02 | `simpul/10-worker-sessions` | **COMPLETE (Correctness Gate passed, 15/15 tests PASS, PR #11 updated)** | Real independent worker processes with lifecycle, IPC, anti-spoofing & recovery |
+| C03 | `simpul/11-multi-harness` | **READY TO START (Worktree `.worktrees/p11-multi-harness`)** | Capability-checked host adapters |
 | C04 | `simpul/12-interagent-control` | **NOT STARTED** | Durable message queue, targeting, dedup, interrupt/steer |
 | C05 | `simpul/13-durable-continuity` | **NOT STARTED** | Restart/resume, checkpoint/recovery, worktree lifecycle |
 | C06 | `simpul/14-parity-acceptance` | **NOT STARTED** | End-to-end, failure injection, adversarial, cross-platform CI |
@@ -157,31 +157,45 @@
 
 2. **Subprocess Runtime Entrypoint (`subagentbridge/execution/worker_runtime_entrypoint.py`)**:
    - Independent Python executable entrypoint (`python -m subagentbridge.execution.worker_runtime_entrypoint`).
-   - Emits handshake `INIT` event with real OS PID.
-   - Enforces per-worker token budget ceilings: rejects tasks exceeding `budget_tokens` with `BudgetExceeded`.
-   - Enforces fail-closed command execution: unapproved commands inside worker subprocess are rejected with `Default-deny: unapproved command execution blocked by policy`.
+   - Emits handshake `INIT` event with real OS PID and process creation time.
+   - Rejects false task completion: requires real authorized execution or returns `NOT_IMPLEMENTED`.
+   - Prevents approval spoofing: in-payload approval booleans rejected as untrusted; requires exact worker/task/command/workspace HMAC execution ticket from `TrustedApprovalAuthority`.
+   - Single-use replay protection and context mismatch rejection.
+   - Real task cancellation: background stdin reader with `threading.Event`, immediate child subprocess termination, and strict guarantee that cancelled tasks never emit late `COMPLETED`.
+   - Enforceable IPC deadlines via `TimedStreamReader` with timeout deadlines.
+   - Safe process tree cleanup via `kill_process_tree` with recursive child termination.
+   - Process identity verification via `is_process_identically_alive` with `create_time` comparison protecting against OS PID recycling.
+   - Clarified token budget semantics: pre-flight admission checks vs actual metered consumption.
 
-3. **C02 Verification Matrix**:
+3. **C02 Correctness Gate Verification Matrix**:
 
 | Tool / Check | Result | Exit Code |
 |---|---|---|
-| `pytest tests/test_c02_worker_sessions.py -v` | 9 passed in 1.86s | 0 |
-| `pytest tests/ artifacts/bootstrap/v3_1/tests/ -q` | 356 passed, 5 skipped, 135 subtests in 50.12s | 0 |
-| `ruff check subagentbridge/ tests/test_c02_worker_sessions.py` | All checks passed! | 0 |
-| `mypy subagentbridge/execution/worker_process.py subagentbridge/execution/worker_runtime_entrypoint.py` | Success: no issues found in 2 source files | 0 |
-| `bandit -r subagentbridge/ -ll` | 0 High, 0 Medium | 0 |
+| `pytest tests/test_c02_worker_sessions.py -v` | 15 passed in 4.70s | 0 |
+| `pytest tests/ artifacts/bootstrap/v3_1/tests/ -q` | 362 passed, 5 skipped, 135 subtests in 60.13s | 0 |
+| `python -m unittest discover -s tests -p 'test_*.py'` | 325 passed, 5 skipped in 60.87s | 0 |
+| `ruff check --select E4,E7,E9,F subagentbridge` | All checks passed! | 0 |
+| `mypy --ignore-missing-imports --check-untyped-defs subagentbridge` | Success: no issues found in 53 source files | 0 |
+| `bandit -q -r -ll subagentbridge` | 0 High, 0 Medium findings | 0 |
+| `python -B -c "...FastMCP...subagentbridge.server..."` | MCP v1 server import PASS | 0 |
 
-### C02 Acceptance Tests Verified (9/9 PASS)
+### C02 Correctness Gate Acceptance Tests Verified (15/15 PASS)
 
-1. `test_c02_real_worker_process_spawn`: Spawns real child process with distinct OS PID.
-2. `test_c02_worker_heartbeat_and_status`: Pings worker over IPC, verifies PONG and updated heartbeat.
-3. `test_c02_worker_task_dispatch_ipc`: Dispatches task payload over IPC, receives structured completion result.
-4. `test_c02_worker_interrupt_preemption`: Sends interrupt signal, child process preempts task.
-5. `test_c02_worker_clean_termination_resource_cleanup`: Graceful termination, closes pipes, exits with code 0.
-6. `test_c02_reap_stale_worker_process`: Detects crashed child process, transitions status to `FAILED`.
-7. `test_c02_per_worker_budget_enforcement`: Rejects tasks exceeding worker token budget with `BudgetExceeded`.
-8. `test_c02_restart_process_reconciliation`: Reconciles dead PIDs after simulated crash restart without false claims.
-9. `test_c02_fail_closed_unauthorized_tool_execution`: Rejects unapproved command execution with fail-closed denial.
+1. `test_c02_real_worker_process_spawn`: Distinct OS process spawn, PID, create_time recorded, alive.
+2. `test_c02_worker_heartbeat_and_status`: IPC ping/pong and heartbeat tracking.
+3. `test_c02_worker_task_dispatch_ipc_real_authorized_execution`: Real authorized execution with observable evidence and exit code.
+4. `test_c02_reject_false_completion_for_abstract_instruction`: Abstract instruction returns `NOT_IMPLEMENTED` instead of false completion.
+5. `test_c02_prevent_approval_spoofing_in_payload`: Rejects untrusted in-payload approval booleans with `DENIED`.
+6. `test_c02_reject_replayed_approval_ticket`: Single-use replay protection rejects replayed tickets with `DENIED`.
+7. `test_c02_reject_approval_context_mismatch`: Rejects ticket used by unauthorized worker or command mismatch.
+8. `test_c02_worker_interrupt_preemption_prevents_late_completion`: Cancellation interrupts running task and strictly prevents late completion.
+9. `test_c02_worker_clean_termination_resource_cleanup`: Clean termination, closes pipes, exits with code 0.
+10. `test_c02_reap_stale_worker_process`: Detects crashed child process, transitions status to `FAILED`.
+11. `test_c02_budget_semantics_admission_vs_metered_consumption`: Pre-flight admission vs cumulative metered consumption tracking.
+12. `test_c02_restart_process_reconciliation`: Reconciles dead PIDs after simulated crash restart without false claims.
+13. `test_c02_pid_reuse_protection`: Rejects recycled PIDs when create_time mismatches.
+14. `test_c02_ipc_deadline_hanging_worker`: Enforces IPC deadlines without blocking forever on hung worker.
+15. `test_c02_process_tree_cleanup`: Safe recursive process-tree cleanup terminates parent and child processes.
 
 ---
 
@@ -238,4 +252,4 @@ Distinguishes:
 
 ---
 
-*Report last updated: 2026-10-25T22:04+07:00 - C01 complete and verified, C02 worktree setup next*
+*Report last updated: 2026-10-25T22:50+07:00 - C02 Correctness Gate passed, verified 15/15 tests, PR #11 updated*
