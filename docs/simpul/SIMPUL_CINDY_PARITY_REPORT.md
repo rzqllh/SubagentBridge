@@ -197,34 +197,53 @@
 
 Sections will be appended after each phase completes.
 
+## Feature Parity Matrix (Post-C01 Foundation State)
+
+Distinguishes:
+- **SCHEMA**: Data models and contracts defined and type-checked
+- **WORKING**: Working in-process implementation with unit and persistence coverage
+- **HOST_INTEGRATED**: Bound to real host execution/processes (Antigravity/Codex/Claude)
+- **MISSING / SCHEDULED**: Not yet implemented; scheduled for designated phase
+
+| Feature Category | Capability / Contract | Cindy Upstream Source (SHA `b7e46bc`) | Simpul Source File | Parity Classification | Phase Target |
+|---|---|---|---|---|---|
+| **Lead Session** | Distinct session ID & role (`lead`) | `orcaLifecycleService.ts` / `sessions.orca_role='lead'` | `subagentbridge/domain/orca_contracts.py` | **WORKING (In-Process)** | C01 (Done) |
+| **Lead Session** | Team lifecycle & ownership | `orca_teams` table / `OrcaTeamService` | `subagentbridge/team/orca_team.py` | **WORKING (In-Process)** | C01 (Done) |
+| **Worker Session** | Distinct session ID & role (`worker`) | `orca_workers` table / `sessions.orca_role='worker'` | `subagentbridge/domain/orca_contracts.py` | **WORKING (In-Process)** | C01 (Done) |
+| **Worker Session** | Per-worker model / harness / provider config | `workerCreationPrefs` / `OrcaWorkerCreationService` | `subagentbridge/domain/orca_contracts.py` (`WorkerConfig`) | **WORKING (In-Process)** | C01 (Done) |
+| **Worker Session** | Real independent worker OS process / host session | Subagent child process / MCP stdio session | Scheduled for `subagentbridge/execution/worker_process.py` | **SCHEMA (Not yet spawned)** | **C02** |
+| **Worker Lifecycle** | Status state machine (`IDLE`..`ARCHIVED`) | `orca_workers.status` (7 lifecycle states) | `subagentbridge/domain/orca_contracts.py` (`WorkerStatus`) | **WORKING (State machine)** | C01 (Done) |
+| **Worker Lifecycle** | Persistent vs Ephemeral lifecycle kind | `orca-team-architecture.md` (Section 3) | `subagentbridge/domain/orca_contracts.py` | **SCHEMA (Classified)** | **C02** |
+| **Dispatch & Queue** | Typed inter-agent queue handle (`dsp-*`) | `OrcaTeamService.dispatchWorkerTask` | `subagentbridge/domain/orca_contracts.py` (`QueueItem`) | **WORKING (SQLite Queue)** | C01 (Done) |
+| **Dispatch & Queue** | Queue state transitions (`PENDING`..`COMPLETED`) | `OrcaTeamService` queue state machine | `subagentbridge/team/orca_team.py` | **WORKING (In-Process)** | C01 (Done) |
+| **Queue Controls** | Worker interrupt preemption (`INTERRUPTED`) | `interrupt_worker` atomic cancellation | `subagentbridge/team/orca_team.py` (`interrupt_worker`) | **WORKING (In-Process)** | C01 (Done) |
+| **Queue Controls** | Queue control tools (steer, cancel, update) | 6 queue tools in `OrcaTeamService` | `subagentbridge/team/orca_team.py` | **WORKING (Partial)** | **C04** |
+| **Inter-Agent Channel**| Structured Worker-to-Lead handoff | `OrcaInterAgentDispatcher` / auto-bridge | `subagentbridge/domain/orca_contracts.py` (`HandoffEvidence`) | **WORKING (Ingested & Ledgered)** | C01 (Done) |
+| **Inter-Agent Channel**| Worker reads Lead message history | `orca_worker_bridge.read_lead_history` | Scheduled for `subagentbridge/team/interagent_channel.py` | **SCHEDULED** | **C04** |
+| **Worktree** | Per-worker isolated worktree path & branch | `WorktreeManager` / `create_worker working_dir` | `subagentbridge/domain/orca_contracts.py` (`WorktreeAssignment`) | **WORKING (Mapping & Tracking)** | C01 (Done) |
+| **Worktree** | Automated git worktree creation & tear down | `WorktreeManager.createWorktree` | Scheduled for `subagentbridge/workspaces/worktree_manager.py` | **SCHEDULED** | **C05** |
+| **Crash Recovery** | Rehydrate sessions, teams, and queues across crash | SQLite WAL persistence / session resume | `subagentbridge/storage/orca_store.py` (`OrcaStore`) | **WORKING (SQLite Rehydration)** | C01 (Done) |
+| **Multi-Harness** | Host adapters (Antigravity, Codex, Claude Code, Pi) | Host specific adapter IPC | Scheduled for `subagentbridge/runners/harness_adapters.py` | **SCHEDULED** | **C03** |
+| **Security & Safety** | Default-deny command authorization | N/A (Simpul-specific hardening) | `subagentbridge/team/orca_team.py` (`execute_worker_command`) | **WORKING (Fail-Closed)** | C01 (Done) |
+| **Security & Safety** | E18 Same-user co-process confinement | Accepted risk boundary | Documented as `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)` | **VERIFIED BOUNDARY** | Ongoing |
+
 ---
 
-## Feature Parity Matrix (Pre-C01 Baseline)
+## 9 Review Threads on PR #9 Status (Truthful Verification)
 
-| Feature | Cindy/Orca | Simpul | Status |
-|---|---|---|---|
-| Lead session with persistent identity | Yes | No - in-process PM only | **MISSING** |
-| Worker session - real independent | Yes | No - sequential simulation | **MISSING** |
-| Per-worker model/harness/provider config | Yes | No - single model | **MISSING** |
-| Worker creation (single + batch) | Yes | No | **MISSING** |
-| Worker lifecycle (idle/running/done/error/archive) | Yes | No | **MISSING** |
-| Durable message queue | Yes | No | **MISSING** |
-| Queue control (6 tools) | Yes | No | **MISSING** |
-| Interrupt/steer worker | Yes | No | **MISSING** |
-| Lead-Worker dispatch | Yes | No | **MISSING** |
-| Worker-Lead auto-bridge | Yes | No | **MISSING** |
-| Per-worker worktree ownership | Yes | No | **MISSING** |
-| Crash recovery - session reconstruction | Yes | Partial | **PARTIAL** |
-| Crash recovery - pending queue | Yes | Partial | **PARTIAL** |
-| Default-deny command authorization | No | Yes | **SIMPUL-SPECIFIC** |
-| JUnitXML-based QA evidence | No | Yes | **SIMPUL-SPECIFIC** |
-| Receipt authority and tree SHA binding | No | Yes | **SIMPUL-SPECIFIC** |
-| Single-process supervised lifecycle | No | Yes | **SIMPUL-SPECIFIC** |
-| Native no-Orca operation | Yes (optional Orca) | Yes (always native) | **PRESENT** |
-| Budget ledger | Yes | Yes (in-process) | **PARTIAL** |
-| SQLite persistence | Yes | Yes | **PRESENT** |
-| Audit ledger | No | Yes | **SIMPUL-SPECIFIC** |
+| Thread / Topic | Severity | Local Code Remediation | Regression Test Evidence | Remote Thread Status |
+|---|---|---|---|---|
+| Command Authorization (`_gate_command_execution`) | P1 | Fixed in `f422ed2` | `test_p1_command_bypass_attempts` PASS | **UNRESOLVED on GitHub** (Code remediated, awaits reviewer signoff) |
+| Worker Reservation exact-once | P1 | Fixed in `f422ed2` | `test_p1_worker_reservation_lock` PASS | **UNRESOLVED on GitHub** (Code remediated, in-process locked, cross-process documented) |
+| Moving-main test isolation | P2 | Fixed in `8500019` | `test_remote_pinned_checkout_e23.py` PASS | **UNRESOLVED on GitHub** (Code remediated) |
+| Dirty checkout filtering | P2 | Fixed in `f422ed2` | `test_p2_dirty_checkout_subpath` PASS | **UNRESOLVED on GitHub** (Code remediated) |
+| Post-QA integrity recheck | P2 | Fixed in `8500019` | `test_p2_post_qa_tree_modification` PASS | **UNRESOLVED on GitHub** (Code remediated) |
+| Skipped tests as verified | P2 | Fixed in `f422ed2` | `test_p2_qa_skip_detection_junitxml` PASS | **UNRESOLVED on GitHub** (Code remediated) |
+| approve_command self-approval | P0 | Documented in `eb97397` | E18 BLOCKED disclosure | **UNRESOLVED on GitHub** (Risk accepted under E18) |
+| Symlink skip on Windows | Lim | Documented in `eb97397` | Linux CI passes 4 symlink tests | **UNRESOLVED on GitHub** (Documented limitation) |
+
+*Never claim that remediation automatically resolves a GitHub review thread. Threads remain open until the human author/reviewer explicitly marks them resolved.*
 
 ---
 
-*Report last updated: 2026-10-25T21:30+07:00 - C00 complete locally, awaiting human push gate*
+*Report last updated: 2026-10-25T22:04+07:00 - C01 complete and verified, C02 worktree setup next*
