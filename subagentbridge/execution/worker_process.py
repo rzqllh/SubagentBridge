@@ -157,10 +157,17 @@ class WorkerProcessController:
         ]
         if config.budget_tokens is not None:
             cmd.extend(["--budget-tokens", str(config.budget_tokens)])
+        if config.harness:
+            cmd.extend(["--harness", config.harness])
         if worktree_path:
             cmd.extend(["--worktree-path", worktree_path])
 
         cwd = worktree_path if worktree_path and os.path.isdir(worktree_path) else None
+
+        env = dict(os.environ)
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        existing_pp = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{existing_pp}" if existing_pp else repo_root
 
         proc = subprocess.Popen(
             cmd,
@@ -170,6 +177,7 @@ class WorkerProcessController:
             text=True,
             bufsize=1,
             cwd=cwd,
+            env=env,
         )
 
         if proc.stdout is None or proc.stdin is None:
@@ -182,8 +190,16 @@ class WorkerProcessController:
         # Read the INIT handshake event from child stdout with timeout
         init_line = reader.readline(timeout=5.0)
         if not init_line:
+            err_msg = ""
+            if proc.stderr:
+                try:
+                    err_msg = proc.stderr.read()
+                except Exception:
+                    pass
             kill_process_tree(proc.pid)
-            raise RuntimeError(f"worker {config.worker_id} failed to emit INIT event within deadline")
+            raise RuntimeError(
+                f"worker {config.worker_id} failed to emit INIT event within deadline: {err_msg.strip()}"
+            )
 
         init_event = json.loads(init_line.strip())
         child_pid = int(init_event.get("pid", proc.pid))
