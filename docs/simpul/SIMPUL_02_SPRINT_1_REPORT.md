@@ -18,9 +18,9 @@
 - **Branch**: `simpul/08-sprint1-verification` (dedicated sprint working branch)
 - **Baseline HEAD SHA**: `953c0f5a34c7ae8917d8febde92354eb8ed8a4ef` (PR #8 merge commit on `main`)
 - **Baseline TREE SHA**: `5c42ea6be4941181af29a93c99a395cc26c0436c`
-- **Final HEAD SHA**: `26814583be9b658f36fbfa0a8a6ed2569a7d5367` (Sprint 1 branch commit)
-- **Final TREE SHA**: `2a0c15f5440c990cdf192df5ddb3740395be42d3`
-- **Working tree status**: Clean (pending report commit)
+- **Final HEAD SHA**: `4c47770b56de8b7a1ba83e707314512e7921ca89` (Sprint 1 branch commit)
+- **Final TREE SHA**: `a390ba830c94a47d6771aec62c05daa47bbbaf5e`
+- **Working tree status**: Clean on dedicated branch `simpul/08-sprint1-verification`
 
 ## 3. Sprint Checklist
 | ID | Task | Status | Evidence | Blocker |
