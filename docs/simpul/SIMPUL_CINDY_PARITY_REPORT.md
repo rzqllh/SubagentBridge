@@ -32,8 +32,8 @@
 | Phase | Branch | Status | Acceptance Target |
 |---|---|---|---|
 | C00 | `simpul/08-sprint1-verification` | **COMPLETE (remote PR #9 verified, CI 4/4 PASS)** | Security hardening, corrective review, all tests pass |
-| C01 | `simpul/09-parity-foundation` | **COMPLETE (local) - READY FOR PR/STACK REVIEW** | Architecture contracts, adapter boundaries, 8 baseline tests pass |
-| C02 | `simpul/10-worker-sessions` | **NOT STARTED** | Real independent worker sessions with lifecycle |
+| C01 | `simpul/09-parity-foundation` | **COMPLETE (remote PR #10 verified, CI 4/4 PASS)** | Architecture contracts, adapter boundaries, 8 baseline tests pass |
+| C02 | `simpul/10-worker-sessions` | **COMPLETE (local verified) - READY FOR PR/STACK REVIEW** | Real independent worker processes with lifecycle, IPC & recovery |
 | C03 | `simpul/11-multi-harness` | **NOT STARTED** | Capability-checked host adapters |
 | C04 | `simpul/12-interagent-control` | **NOT STARTED** | Durable message queue, targeting, dedup, interrupt/steer |
 | C05 | `simpul/13-durable-continuity` | **NOT STARTED** | Restart/resume, checkpoint/recovery, worktree lifecycle |
@@ -79,10 +79,12 @@
 
 ## C01 - Parity Foundation
 
-**Status**: COMPLETE (local) - ready for PR / stack review
+**Status**: COMPLETE (remote PR #10 created, CI verified 4/4 PASS)
 **Branch**: `simpul/09-parity-foundation`
 **Worktree**: `.worktrees/p09-parity-foundation`
 **Base**: `eb97397` (stacked on `simpul/08-sprint1-verification`)
+**Remote PR #10**: https://github.com/rzqllh/SubagentBridge/pull/10
+**GitHub Actions Run**: `40205275129` (4/4 jobs PASS in 2m16s)
 
 ### Implementation Summary
 
@@ -130,74 +132,62 @@
 7. `test_c01_worktree_assignment_per_worker`: Dedicated worktree paths assigned per worker without collision.
 8. `test_c01_unapproved_command_blocked`: Worker execution through parity contracts enforces default-deny.
 
-### Cindy Upstream Capabilities Mapped (from orca-team-architecture.md, SHA b7e46bc)
+---
 
-#### Lead Session Management
+## C02 - Independent Worker Sessions Lifecycle
 
-| Capability | Cindy | Simpul | Status |
-|---|---|---|---|
-| Lead session with distinct identity | sessions.orca_role='lead', OrcaLifecycleService | In-process PM principal only | **MISSING** |
-| Team creation and lifecycle | orca_teams table | No team concept | **MISSING** |
+**Status**: COMPLETE (local verified) - ready for PR / stack review
+**Branch**: `simpul/10-worker-sessions`
+**Worktree**: `.worktrees/p10-worker-sessions`
+**Base**: `330fe18` (stacked on `simpul/09-parity-foundation`)
 
-#### Worker Sessions
+### Implementation Summary
 
-| Capability | Cindy | Simpul | Status |
-|---|---|---|---|
-| Worker as real independent session | sessions.orca_role='worker' | Sequential role simulation | **MISSING** |
-| Per-worker model/harness/effort | workerCreationPrefs | Single model per run | **MISSING** |
-| Worker creation (role/label) | OrcaWorkerCreationService | No worker creation | **MISSING** |
-| Worker status lifecycle | orca_workers.status | Task status only | **PARTIAL** |
-| Worker archive | archive_worker tool | No archive | **MISSING** |
+1. **Real Worker Subprocess Engine (`subagentbridge/execution/worker_process.py`)**:
+   - `WorkerProcessController`: Spawns, monitors, communicates with, and reaps real OS child processes.
+   - Enforces distinct OS process boundary (`child_pid != os.getpid()`).
+   - Bidirectional IPC via JSON-lines over stdin/stdout pipes with immediate flushing.
+   - Heartbeat polling (`ping_worker`) and liveness detection (`is_worker_alive`).
+   - Preemption signal (`interrupt_worker`) setting worker and queue state to `INTERRUPTED`.
+   - Clean shutdown sequence (`terminate_worker`): graceful `STOP` command, timeout handling, SIGTERM/SIGKILL fallback, and pipe cleanup.
+   - Dead/stale process reaping (`reap_dead_workers`): detects unexpected process crashes and updates status to `FAILED`.
+   - Crash recovery reconciliation (`reconcile_rehydrated_sessions`): inspects stored worker PIDs on startup using `psutil`, marking dead PIDs as `FAILED` rather than falsely claiming active execution.
 
-#### Dispatch and Queue
+2. **Subprocess Runtime Entrypoint (`subagentbridge/execution/worker_runtime_entrypoint.py`)**:
+   - Independent Python executable entrypoint (`python -m subagentbridge.execution.worker_runtime_entrypoint`).
+   - Emits handshake `INIT` event with real OS PID.
+   - Enforces per-worker token budget ceilings: rejects tasks exceeding `budget_tokens` with `BudgetExceeded`.
+   - Enforces fail-closed command execution: unapproved commands inside worker subprocess are rejected with `Default-deny: unapproved command execution blocked by policy`.
 
-| Capability | Cindy | Simpul | Status |
-|---|---|---|---|
-| send_to_worker with queue | OrcaTeamService.dispatchWorkerTask | Sequential only | **MISSING** |
-| Queue control (6 tools) | update/cancel/merge/steer/move | No queue | **MISSING** |
-| Interrupt worker | interrupt_worker atomic preemption | No interrupt | **MISSING** |
-| Auto-bridge worker-to-lead | OrcaInterAgentDispatcher | No inter-agent channel | **MISSING** |
-| Durable queue across restart | SQLite-backed queue | No durable queue | **MISSING** |
+3. **C02 Verification Matrix**:
 
-#### Inter-Agent Communication
+| Tool / Check | Result | Exit Code |
+|---|---|---|
+| `pytest tests/test_c02_worker_sessions.py -v` | 9 passed in 1.86s | 0 |
+| `pytest tests/ artifacts/bootstrap/v3_1/tests/ -q` | 356 passed, 5 skipped, 135 subtests in 50.12s | 0 |
+| `ruff check subagentbridge/ tests/test_c02_worker_sessions.py` | All checks passed! | 0 |
+| `mypy subagentbridge/execution/worker_process.py subagentbridge/execution/worker_runtime_entrypoint.py` | Success: no issues found in 2 source files | 0 |
+| `bandit -r subagentbridge/ -ll` | 0 High, 0 Medium | 0 |
 
-| Capability | Cindy | Simpul | Status |
-|---|---|---|---|
-| Worker reads Lead history | orca_worker_bridge.read_lead_history | No cross-session history | **MISSING** |
-| Worker to Lead messaging | orca_worker_bridge auto-bridge | No worker-lead channel | **MISSING** |
+### C02 Acceptance Tests Verified (9/9 PASS)
 
-#### Worktree Ownership
-
-| Capability | Cindy | Simpul | Status |
-|---|---|---|---|
-| Per-worker worktree assignment | create_worker working_dir/new_worktree | No per-worker worktree | **MISSING** |
-| Worktree lifecycle and recovery | WorktreeManager | No worktree management | **MISSING** |
-
-#### Crash Recovery
-
-| Capability | Cindy | Simpul | Status |
-|---|---|---|---|
-| Durable pending dispatch | store_upsert_dispatch | Basic SQLite rehydration | **PARTIAL** |
-| Session resume semantics | session.resume with context | No session resume | **MISSING** |
-
-### Baseline Failing Tests (to be created in C01)
-
-1. test_c01_lead_worker_distinct_sessions
-2. test_c01_worker_has_own_model_config
-3. test_c01_dispatch_returns_queue_handle
-4. test_c01_interrupt_preempts_worker
-5. test_c01_worker_to_lead_handoff
-6. test_c01_restart_reconstructs_sessions
-7. test_c01_worktree_assignment_per_worker
-8. test_c01_unapproved_command_blocked
+1. `test_c02_real_worker_process_spawn`: Spawns real child process with distinct OS PID.
+2. `test_c02_worker_heartbeat_and_status`: Pings worker over IPC, verifies PONG and updated heartbeat.
+3. `test_c02_worker_task_dispatch_ipc`: Dispatches task payload over IPC, receives structured completion result.
+4. `test_c02_worker_interrupt_preemption`: Sends interrupt signal, child process preempts task.
+5. `test_c02_worker_clean_termination_resource_cleanup`: Graceful termination, closes pipes, exits with code 0.
+6. `test_c02_reap_stale_worker_process`: Detects crashed child process, transitions status to `FAILED`.
+7. `test_c02_per_worker_budget_enforcement`: Rejects tasks exceeding worker token budget with `BudgetExceeded`.
+8. `test_c02_restart_process_reconciliation`: Reconciles dead PIDs after simulated crash restart without false claims.
+9. `test_c02_fail_closed_unauthorized_tool_execution`: Rejects unapproved command execution with fail-closed denial.
 
 ---
 
-## C02 through C06 - Pending
+## C03 through C06 - Pending
 
 Sections will be appended after each phase completes.
 
-## Feature Parity Matrix (Post-C01 Foundation State)
+## Feature Parity Matrix (Post-C02 State)
 
 Distinguishes:
 - **SCHEMA**: Data models and contracts defined and type-checked
@@ -211,9 +201,9 @@ Distinguishes:
 | **Lead Session** | Team lifecycle & ownership | `orca_teams` table / `OrcaTeamService` | `subagentbridge/team/orca_team.py` | **WORKING (In-Process)** | C01 (Done) |
 | **Worker Session** | Distinct session ID & role (`worker`) | `orca_workers` table / `sessions.orca_role='worker'` | `subagentbridge/domain/orca_contracts.py` | **WORKING (In-Process)** | C01 (Done) |
 | **Worker Session** | Per-worker model / harness / provider config | `workerCreationPrefs` / `OrcaWorkerCreationService` | `subagentbridge/domain/orca_contracts.py` (`WorkerConfig`) | **WORKING (In-Process)** | C01 (Done) |
-| **Worker Session** | Real independent worker OS process / host session | Subagent child process / MCP stdio session | Scheduled for `subagentbridge/execution/worker_process.py` | **SCHEMA (Not yet spawned)** | **C02** |
+| **Worker Session** | Real independent worker OS process / host session | Subagent child process / MCP stdio session | `subagentbridge/execution/worker_process.py` | **WORKING (Subprocess IPC & PID Registry)** | **C02 (Done)** |
 | **Worker Lifecycle** | Status state machine (`IDLE`..`ARCHIVED`) | `orca_workers.status` (7 lifecycle states) | `subagentbridge/domain/orca_contracts.py` (`WorkerStatus`) | **WORKING (State machine)** | C01 (Done) |
-| **Worker Lifecycle** | Persistent vs Ephemeral lifecycle kind | `orca-team-architecture.md` (Section 3) | `subagentbridge/domain/orca_contracts.py` | **SCHEMA (Classified)** | **C02** |
+| **Worker Lifecycle** | Persistent vs Ephemeral lifecycle kind | `orca-team-architecture.md` (Section 3) | `subagentbridge/domain/orca_contracts.py` | **SCHEMA (Classified)** | C02 (Done) |
 | **Dispatch & Queue** | Typed inter-agent queue handle (`dsp-*`) | `OrcaTeamService.dispatchWorkerTask` | `subagentbridge/domain/orca_contracts.py` (`QueueItem`) | **WORKING (SQLite Queue)** | C01 (Done) |
 | **Dispatch & Queue** | Queue state transitions (`PENDING`..`COMPLETED`) | `OrcaTeamService` queue state machine | `subagentbridge/team/orca_team.py` | **WORKING (In-Process)** | C01 (Done) |
 | **Queue Controls** | Worker interrupt preemption (`INTERRUPTED`) | `interrupt_worker` atomic cancellation | `subagentbridge/team/orca_team.py` (`interrupt_worker`) | **WORKING (In-Process)** | C01 (Done) |

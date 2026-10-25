@@ -136,6 +136,7 @@ class OrcaStore:
             "working_dir": session.config.working_dir,
             "effort": session.config.effort,
             "budget_tokens": session.config.budget_tokens,
+            "pid": session.config.pid,
         }
         with self._conn:
             self._conn.execute(
@@ -175,6 +176,7 @@ class OrcaStore:
             working_dir=raw_cfg.get("working_dir"),
             effort=raw_cfg.get("effort"),
             budget_tokens=raw_cfg.get("budget_tokens"),
+            pid=raw_cfg.get("pid"),
         )
         return OrcaSession(
             session_id=row["session_id"],
@@ -185,6 +187,37 @@ class OrcaStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    def list_all_sessions(self) -> list[OrcaSession]:
+        cur = self._conn.execute("SELECT * FROM orca_sessions ORDER BY created_at ASC")
+        sessions = []
+        for row in cur.fetchall():
+            raw_cfg = json.loads(row["config_json"])
+            cfg = WorkerConfig(
+                worker_id=raw_cfg.get("worker_id", row["session_id"]),
+                team_id=raw_cfg.get("team_id", row["team_id"]),
+                role=raw_cfg.get("role", "worker"),
+                harness=raw_cfg.get("harness", "native"),
+                model=raw_cfg.get("model"),
+                provider=raw_cfg.get("provider"),
+                system_prompt=raw_cfg.get("system_prompt"),
+                working_dir=raw_cfg.get("working_dir"),
+                effort=raw_cfg.get("effort"),
+                budget_tokens=raw_cfg.get("budget_tokens"),
+                pid=raw_cfg.get("pid"),
+            )
+            sessions.append(
+                OrcaSession(
+                    session_id=row["session_id"],
+                    orca_role=OrcaRole(row["orca_role"]),
+                    team_id=row["team_id"],
+                    status=WorkerStatus(row["status"]),
+                    config=cfg,
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
+            )
+        return sessions
 
     def list_sessions_by_team(self, team_id: str) -> list[OrcaSession]:
         cur = self._conn.execute(

@@ -48,6 +48,7 @@ class WorkerConfig:
     working_dir: str | None = None
     effort: str | None = None
     budget_tokens: int | None = None
+    pid: int | None = None
 
 
 @dataclass
