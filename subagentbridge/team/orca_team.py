@@ -5,8 +5,10 @@ interrupt preemption, worktree isolation, structured handoffs, and default-deny 
 """
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from subagentbridge.domain.orca_contracts import (
@@ -301,7 +303,11 @@ class OrcaTeamManager:
 
     # ---- Handoff & Inter-Agent Channels ----------------------------------
 
-    def submit_worker_handoff(self, evidence: HandoffEvidence) -> dict[str, Any]:
+    def submit_worker_handoff(
+        self,
+        evidence: HandoffEvidence,
+        verify_artifacts: bool = True,
+    ) -> dict[str, Any]:
         item = self.store.load_queue_item(evidence.dispatch_id)
         if not item:
             raise KeyError(f"dispatch {evidence.dispatch_id!r} not found")
@@ -331,6 +337,39 @@ class OrcaTeamManager:
             raise PermissionError(
                 f"Lead identity mismatch: team lead is {team.lead_session_id if team else None!r}"
             )
+
+        # Replay protection: cannot submit duplicate handoff for already finalized dispatch
+        existing_handoffs = self.store.list_handoffs_by_team(item.team_id)
+        if any(h.dispatch_id == evidence.dispatch_id for h in existing_handoffs):
+            raise ValueError(f"Handoff already finalized for dispatch {evidence.dispatch_id!r}")
+
+        # Artifact existence and hash verification
+        if verify_artifacts and evidence.artifacts:
+            wt = self.store.load_worktree(evidence.from_worker_id)
+            base_dir = Path(wt.worktree_path) if wt and Path(wt.worktree_path).exists() else (
+                Path(worker.config.working_dir) if worker.config.working_dir and Path(worker.config.working_dir).exists() else None
+            )
+
+            declared_hashes = evidence.metrics.get("artifact_hashes", {})
+            for art in evidence.artifacts:
+                art_path = (base_dir / art) if base_dir else Path(art)
+                if not art_path.exists() or not art_path.is_file():
+                    raise FileNotFoundError(f"Handoff rejected: declared artifact {art!r} does not exist on disk")
+
+                # Verify SHA256 if hash was declared
+                if art in declared_hashes:
+                    h = hashlib.sha256(art_path.read_bytes()).hexdigest()
+                    if h.lower() != declared_hashes[art].lower():
+                        raise ValueError(f"Handoff rejected: hash mismatch for artifact {art!r}")
+
+        # Execution receipt check: reject SUCCESS if metrics indicate failure or missing execution evidence
+        if evidence.status == "SUCCESS":
+            exit_code = evidence.metrics.get("exit_code")
+            if exit_code is not None and exit_code != 0:
+                raise ValueError(f"Handoff rejected: execution receipt indicates non-zero exit code ({exit_code})")
+            qa_verdict = evidence.metrics.get("qa_verdict")
+            if qa_verdict is not None and qa_verdict not in ("PASS", "VERIFIED"):
+                raise ValueError(f"Handoff rejected: QA verdict is {qa_verdict!r}, not PASS")
 
         self.store.save_handoff(item.team_id, evidence)
 

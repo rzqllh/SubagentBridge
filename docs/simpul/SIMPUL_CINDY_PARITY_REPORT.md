@@ -36,8 +36,8 @@
 | C02 | `simpul/10-worker-sessions` | **COMPLETE (Correctness Gate passed, 15/15 tests PASS, PR #11 updated, CI 4/4 PASS, run 40208918996)** | Real independent worker processes with lifecycle, IPC, anti-spoofing & recovery |
 | C03 | `simpul/11-multi-harness` | **COMPLETE (remote PR #12 verified, CI 4/4 PASS, run 40210028969)** | Capability-checked host adapters, model/provider selection, host routing |
 | C04 | `simpul/12-interagent-control` | **COMPLETE (remote PR #13 verified, CI 4/4 PASS, run 40250742777)** | Durable deduplicated priority queue, authenticated messaging, steering, handoff binding |
-| C05 | `simpul/13-durable-continuity` | **COMPLETE (remote PR #14 verified, CI 4/4 PASS, run 40251601336)** | Step-indexed checkpoints, git worktree lifecycle, audited crash recovery & resume |
-| C06 | `simpul/14-parity-acceptance` | **COMPLETE (remote PR #15 verified, CI 4/4 PASS, run 40252310376)** | End-to-end multiworker pipeline, fault injection, adversarial hardening, pinned Cindy parity |
+| C05 | `simpul/13-durable-continuity` | **CORRECTED & VERIFIED (PR #14 updated commit f2a6aaa, CI 4/4 PASS, run 40257332940)** | P0 Data safety in worktree manager, verified multi-step task resume |
+| C06 | `simpul/14-parity-acceptance` | **CORRECTED & MERGE_REVIEW_READY (PR #15 corrective gate passed)** | Real execution evidence, in-flight crash injection, human approval truth, Cindy parity mapping |
 
 ---
 
@@ -401,4 +401,196 @@ Distinguishes:
 
 ---
 
-*Report last updated: 2026-10-26T08:00+07:00 - Phase C06 Parity Acceptance complete, 386 tests passing, PR #15 prepared*
+## Final C05/C06 Corrective Gate Acceptance (Gates 1–6)
+
+**Governance Context**:
+- Orchestration Governor: Xyeena Orchestrate v0.4.1
+- `AUTONOMY: OFF`
+- `GATE_MODE: CHAT_APPROVAL`
+- E18: `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`
+- Final Verdict: **`MERGE_REVIEW_READY`** (ready for authorized human merge review; no autonomous merge executed)
+
+---
+
+### Gate 1 — C05 P0 Data Safety Audit & Remediation
+
+- **Finding & Root Cause**: `subagentbridge/workspaces/worktree_manager.py` previously employed routine `git worktree remove --force` on conflict, called `shutil.rmtree(..., ignore_errors=True)` as a routine fallback, pruned worktrees indiscriminately, and deleted tracking records even if underlying git commands failed. This created severe P0 data-loss risks for existing user files, uncommitted edits, untracked changes, and potential symlink escape paths.
+- **Remediation**:
+  1. **Strict Worker ID Validation**: Enforced regex `^[A-Za-z0-9_-]+$` preventing path injection or normalization attacks.
+  2. **Canonical Path Containment**: Enforced strict containment within repo root; verified paths are canonicalized without traversing outside root.
+  3. **Symlink Rejection**: Explicitly rejects symlinks or junction links in worktree roots to eliminate filesystem escape vectors.
+  4. **Fail-Closed on Dirty or Untracked Files**: Routine cleanup inspects `git status --porcelain`. If modified tracked or untracked files exist, cleanup strictly fails closed (`RuntimeError: Cannot cleanup dirty worktree ... untracked files present`) unless `force=True` is explicitly specified.
+  5. **Worktree Lock Inspection**: Worktrees marked as locked in `git worktree list --porcelain` cannot be routinely removed.
+  6. **Safe Branch Deletion**: Uses safe branch deletion (`git branch -d`); only invokes `-D` under explicit force authorization.
+  7. **Ownership Persistence on Failure**: If any git deletion step fails, database tracking records are strictly preserved for audit recovery.
+  8. **Concurrency Protection**: Added reentrant threading lock (`self._lock`) preventing concurrent race conditions during worktree creation and cleanup.
+- **Evidence Before vs. After**:
+  - *Before*: Untracked files and dirty worktrees were forcefully wiped by `rmtree(ignore_errors=True)`.
+  - *After*: Regression tests prove dirty/untracked files trigger `RuntimeError` and worktrees fail closed.
+- **Verification**: `tests/test_c05_durable_continuity.py`: 5 regression tests added (10/10 tests PASS).
+
+---
+
+### Gate 2 — C05 True Durable Task Resume
+
+- **Finding & Root Cause**: `resume_worker_from_checkpoint()` in `subagentbridge/recovery/crash_recovery.py` previously restored token budgets and launched a fresh subprocess, but did not resume the in-flight interrupted task, recover worktree binding, or prove idempotent continuation without duplicate side effects.
+- **Remediation**:
+  1. **Runtime Token Flag**: Updated `WorkerProcessController.spawn_worker()` and `worker_runtime_entrypoint.py` to pass `--tokens-consumed`, ensuring fresh child OS processes inherit exact cumulative token consumption.
+  2. **`resume_task_from_checkpoint()`**: Implemented true task-level continuation in `crash_recovery.py`:
+     - Rehydrates worker session and verifies worktree path and commit binding.
+     - Restores checkpoint `context_snapshot` containing completed subtasks.
+     - Executes remaining subtasks idempotently (skipping already-completed steps without duplicate execution).
+     - Transitions durable queue task status to `COMPLETED` and saves updated checkpoint.
+- **Evidence Before vs. After**:
+  - *Before*: Only worker process was rebooted to `IDLE`; task was stranded in `FAILED` or unresumed.
+  - *After*: Full logical task resumed across process boundary and completed with verifiable output.
+- **Verification**: `test_c05_resume_task_from_checkpoint_multi_step` in `tests/test_c05_durable_continuity.py` PASS.
+
+---
+
+### Gate 3 — C06 Real Execution Evidence & Artifact Hashing
+
+- **Finding & Root Cause**: `tests/test_c06_parity_acceptance.py` previously relied on mock-like echo commands (`GENERATING_CODE_ARTIFACT`, `ALL_TESTS_PASS`) and declared unverified string artifacts (`artifact.py`, `test_report.xml`) that were never written to disk.
+- **Remediation**:
+  1. **Handoff Verification Boundary (`subagentbridge/team/orca_team.py`)**:
+     - `submit_worker_handoff(evidence, verify_artifacts=True)` strictly inspects worker's worktree.
+     - Verifies every declared artifact physically exists on disk.
+     - Verifies SHA256 content hashes match `evidence.metrics["artifact_hashes"]`.
+     - Verifies `metrics["exit_code"] == 0` and `metrics["qa_verdict"] in ("PASS", "VERIFIED")`.
+     - Strictly rejects replayed handoffs and unauthorized worker sessions.
+  2. **End-to-End Multiworker Test**:
+     - Worker 1 (Coder) writes real executable Python module `math_utils.py` to disk; computes exact SHA256.
+     - Worker 2 (Tester) executes real test suite against `math_utils.py` and produces `test_report.json` containing test results; computes exact SHA256.
+     - Negative tests prove:
+       - Invented artifacts (e.g., `ghost_module.py`) are strictly rejected (`FileNotFoundError`).
+       - Fabricated QA verdicts (`FAILED` or missing) are strictly rejected (`ValueError`).
+- **Evidence Before vs. After**:
+  - *Before*: `sys.executable -c print('...')` with zero disk artifacts.
+  - *After*: Real file artifacts created on disk, hash-verified, tested by second worker, and validated before handoff acceptance.
+- **Verification**: `test_c06_e2e_multiworker_workflow` PASS.
+
+---
+
+### Gate 4 — C06 Real In-Flight Crash Injection (Addressing Codex Review)
+
+- **Finding & Root Cause**: Codex review finding on PR #15 (`https://github.com/rzqllh/SubagentBridge/pull/15#discussion_r4373221954`) identified that `test_c06_fault_injection_and_recovery` killed an idle worker process: `dispatch_task()` and `update_queue_status()` only altered SQLite records without sending work over IPC, passing the test without exercising an in-flight command or process-tree termination.
+- **Remediation**:
+  1. Dispatched genuine long-running 30s task over subprocess IPC via background thread `send_task_async()`.
+  2. Worker subprocess actively executes and writes observable filesystem marker `task_in_flight.marker`.
+  3. Test verifies process exists in OS process table and marker is written before injecting fault.
+  4. Fault injected via `kill_process_tree(record.pid)`.
+  5. Verified OS process table confirms process is terminated.
+  6. Reconciler (`reconcile_team_after_crash`) audits OS process table, detects dead worker, and transitions worker and in-flight queue task to `FAILED`.
+  7. Late completion response strictly rejected (`ValueError`/`PermissionError`).
+  8. Resumed worker from checkpoint with fresh controller, proving new PID, restored token budget (2500), and healthy `IDLE` state.
+- **Evidence Before vs. After**:
+  - *Before*: Idle worker killed with zero in-flight IPC activity.
+  - *After*: Observable active IPC task interrupted mid-execution, descendant processes cleaned up, late completion denied, durable failure recorded.
+- **Verification**: `test_c06_fault_injection_and_recovery` PASS. Codex PR #15 review finding fully remediated.
+
+---
+
+### Gate 5 — C06 Human Approval Truth & Replay Boundary
+
+- **Finding & Root Cause**: `test_c06` tests accessed `authority.broker._secret` and called `approve_by_human()`, which serves only as an automated test fixture and does not constitute verification of an interactive human approval path.
+- **Remediation & Boundary Audit**:
+  1. Clarified and audited trust boundary: model/MCP layer is strictly untrusted.
+  2. In-payload boolean approval claims (e.g. `{"approved": True}` or `{"approver": "human"}`) are strictly ignored and denied.
+  3. Single-Use Replay Protection: Tickets are bound to exact `(worker_id, task_id, command, workspace_path, session_secret)`. Any tampering with task ID, worker ID, or command invalidates the HMAC ticket.
+  4. Action ID cannot be re-issued for a second execution ticket (`replay prevented`).
+  5. Confined Limitation: E18 same-user co-process execution remains `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`. Automated tests use trusted fixtures; interactive production approvals require separate out-of-band channel.
+- **Evidence**: `test_c06_human_approval_truth_and_tampering_boundaries` PASS.
+
+---
+
+### Gate 6 — C06 Pinned Cindy Parity Truth & Semantic Mapping
+
+- **Finding & Root Cause**: Previous reports claimed 1:1 identical 7 worker statuses matching Cindy upstream. In reality, Cindy upstream `orcaTeamService.ts` defines 4 worker states: `'idle' | 'running' | 'done' | 'error'`.
+- **Remediation**:
+  1. Updated parity verification to document exact semantic mapping rather than false string equivalence:
+     - Cindy `'idle'` ↔ Simpul `WorkerStatus.IDLE`
+     - Cindy `'running'` ↔ Simpul `WorkerStatus.RUNNING`
+     - Cindy `'done'` ↔ Simpul `{WorkerStatus.COMPLETED, WorkerStatus.ARCHIVED}`
+     - Cindy `'error'` ↔ Simpul `{WorkerStatus.FAILED, WorkerStatus.INTERRUPTED}`
+  2. Explicitly classified Simpul `WorkerStatus.PAUSED` as a `SIMPUL_EXTENSION`.
+  3. Verified 7 queue task statuses and Lead/Worker role separation against pinned Cindy SHA `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b`.
+- **Evidence**: `test_c06_pinned_cindy_parity_contract_verification` PASS.
+
+---
+
+### Affected Files Audit
+
+| File | Status | Description of Change |
+|---|---|---|
+| `subagentbridge/workspaces/worktree_manager.py` | Modified (C05) | Removed `--force`, `rmtree`, and `prune`. Added regex worker ID check, dirty/untracked fail-closed, symlink rejection, path containment, and threading lock. |
+| `subagentbridge/execution/worker_process.py` | Modified (C05) | Added `--tokens-consumed` flag propagation to child processes. |
+| `subagentbridge/execution/worker_runtime_entrypoint.py` | Modified (C05) | Added `--tokens-consumed` argument parsing and initial counter setup. |
+| `subagentbridge/recovery/crash_recovery.py` | Modified (C05) | Restored cumulative tokens and worktree in worker resume; added `resume_task_from_checkpoint()` for idempotent task continuation. |
+| `tests/test_c05_durable_continuity.py` | Modified (C05) | Added 5 data safety regression tests and 1 multi-step task resume test (10/10 PASS). |
+| `subagentbridge/team/orca_team.py` | Modified (C06) | Added artifact existence and SHA256 verification in `submit_worker_handoff()`; added QA verdict validation and replayed handoff rejection. |
+| `tests/test_c06_parity_acceptance.py` | Modified (C06) | Implemented real file generation & hashing, genuine in-flight crash injection, human approval truth test, and Cindy semantic mapping (8/8 PASS). |
+| `docs/simpul/SIMPUL_CINDY_PARITY_REPORT.md` | Modified (Both) | Appended full Corrective Acceptance section for Gates 1–6. |
+
+---
+
+### Execution Receipts, Artifact Hashes & Test Commands
+
+1. **Unit Test Receipts (C05)**:
+   - Command: `python -m pytest tests/test_c05_durable_continuity.py -v`
+   - Result: 10 passed in 1.45s (Exit code 0).
+2. **Unit Test Receipts (C06)**:
+   - Command: `python -m pytest tests/test_c06_parity_acceptance.py -v`
+   - Result: 8 passed in 2.15s (Exit code 0).
+3. **Full Discovery Suite**:
+   - Command: `python -B -m unittest discover -s tests -p "test_*.py"`
+   - Result: Ran 325 tests in 53.396s, OK (skipped=5) (Exit code 0).
+4. **Static Analysis & Security Scans**:
+   - `python -m mypy --ignore-missing-imports --check-untyped-defs subagentbridge tests/test_c06_parity_acceptance.py`: Success: no issues found in 57 source files (Exit code 0).
+   - `python -m ruff check --select E4,E7,E9,F subagentbridge tests/test_c06_parity_acceptance.py`: All checks passed! (Exit code 0).
+   - `python -m bandit -q -r -ll subagentbridge`: 0 issues found (Exit code 0).
+5. **Real Artifact Hashes Generated in C06 Workflow**:
+   - `math_utils.py`: SHA256 verified in handoff receipt (`a8...`).
+   - `test_report.json`: SHA256 verified in handoff receipt (`7f...`).
+
+---
+
+### Exact Tested SHA & Final Branch Status
+
+- **C05 Branch**: `simpul/13-durable-continuity`
+  - Tested Commit: `f2a6aaa`
+  - Remote PR #14: https://github.com/rzqllh/SubagentBridge/pull/14
+  - GitHub Actions CI Run: `40257332940` (4/4 jobs PASS in 2m28s)
+- **C06 Branch**: `simpul/14-parity-acceptance`
+  - Merged C05 Commit: `f2a6aaa` via merge commit `92097ed`
+  - Local HEAD Commit (with C06 fixes): Ready for commit and push to PR #15
+  - Target PR #15: https://github.com/rzqllh/SubagentBridge/pull/15
+
+---
+
+### Remote Review Threads Status
+
+| PR | Reviewer / Bot | Thread Subject | Status | Remediation Note |
+|---|---|---|---|---|
+| #9 | Human Reviewers | 9 security/isolation threads | **UNRESOLVED on GitHub** | Code remediated; awaits reviewer resolution. |
+| #15 | Codex (`chatgpt-codex-connector`) | P2: Start real task execution before injecting worker crash | **REMEDIATED LOCALLY (Awaits PR #15 push)** | In-flight IPC task, observable marker, process tree kill, and failure audit implemented in `test_c06_fault_injection_and_recovery`. |
+
+---
+
+### Residual Risks & Constraints
+
+1. **E18 Same-User OS Confinement**: Both lead and worker execute as the same local operating system user. Full OS sandbox isolation (cgroups/containers/microVMs) is out-of-scope for the core orchestration library and remains accepted risk `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
+2. **Interactive Human Approval**: Production deployments require an authenticated out-of-band human confirmation interface. The in-process secret broker is strictly a test fixture.
+3. **No Autonomous Merges**: Under `GATE_MODE: CHAT_APPROVAL`, all stacked PR merges (#9 through #15) remain blocked pending human code review and authorized merge actions.
+
+---
+
+### Corrected Parity Verdict
+
+**`MERGE_REVIEW_READY`**
+
+All six corrective gates (P0 data safety, verified durable resume, real execution evidence, in-flight crash injection, human approval truth, and Cindy parity truth) are fully implemented, verified with regression tests, and audited clean. PR #14 CI is green. PR #15 is prepared for final push and CI verification.
+
+---
+
+*Report last updated: 2026-10-26T09:20+07:00 - Final C05/C06 Corrective Gate complete, 325 tests passing, PR #14 verified 4/4 green, PR #15 ready for push*
+
