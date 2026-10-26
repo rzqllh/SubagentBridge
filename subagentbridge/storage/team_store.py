@@ -259,46 +259,13 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
         except Exception:
             pass
 
-    # 2. Inspect sqlite_master for legacy orca tables
-    cur_tables = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'orca_%'"
-    )
-    legacy_tables = {r["name"] for r in cur_tables.fetchall()}
-
-    # 3. If legacy tables exist and we have a disk database, preserve bytes with verified backup.
-    # Note: We intentionally use SQLite's online backup API (conn.backup) rather than a raw filesystem
-    # copy. In WAL mode, raw file copying of .db alone can miss pages currently in the -wal file or
-    # capture torn/inconsistent frames. conn.backup creates a clean, transactionally consistent logical
-    # snapshot backup, which we verify immediately with PRAGMA integrity_check.
-    if legacy_tables and db_file and db_file.exists():
-        primary_bak = Path(f"{db_file}.pre_migration.bak")
-        if primary_bak.exists():
-            ts = int(time.time())
-            backup_path = Path(f"{db_file}.pre_migration.{ts}.bak")
-            counter = 1
-            while backup_path.exists():
-                backup_path = Path(f"{db_file}.pre_migration.{ts}_{counter}.bak")
-                counter += 1
-        else:
-            backup_path = primary_bak
-
-        backup_conn = sqlite3.connect(str(backup_path))
-        try:
-            conn.backup(backup_conn)
-            chk = backup_conn.execute("PRAGMA integrity_check").fetchone()
-            if not chk or chk[0] != "ok":
-                raise MigrationIntegrityError(f"Pre-migration backup integrity check failed: {chk}")
-        finally:
-            backup_conn.close()
-
-        if not backup_path.exists() or backup_path.stat().st_size == 0:
-            raise MigrationIntegrityError(f"Pre-migration backup failed: {backup_path} is empty or missing")
-
-    # 4. Explicit transaction execution
+    # 2. Explicit transaction execution under migration write lock
     prev_isolation = conn.isolation_level
     conn.isolation_level = None  # Autocommit off for driver, full manual transaction control
+    in_transaction = False
     try:
         conn.execute("BEGIN IMMEDIATE")
+        in_transaction = True
 
         # Create destination simpul_* tables if not existing
         _execute_ddl_statements(conn, SIMPUL_SCHEMA)
@@ -308,14 +275,60 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
         row = cur.fetchone()
         current_version = row["max_v"] if row and row["max_v"] is not None else 0
 
-        if current_version >= 2 and not legacy_tables:
+        # Re-query actual legacy TABLE objects strictly from sqlite_master after acquiring write lock.
+        # This guarantees we never use stale pre-lock metadata to authorize DDL, migration, or deletion.
+        cur_tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'orca_%'"
+        )
+        active_legacy_tables = {r["name"] for r in cur_tables.fetchall()}
+
+        if current_version >= 2 and not active_legacy_tables:
             _execute_ddl_statements(conn, SIMPUL_COMPATIBILITY_VIEWS)
             conn.execute("COMMIT")
+            in_transaction = False
             return
 
-        if legacy_tables:
+        if active_legacy_tables:
+            # 3. If legacy tables exist and we have a disk database, preserve bytes with verified backup.
+            # Executed after acquiring BEGIN IMMEDIATE so no concurrent writer can race or corrupt backups.
+            # Dedicated reader connection captures the committed legacy database snapshot safely.
+            if db_file and db_file.exists():
+                primary_bak = Path(f"{db_file}.pre_migration.bak")
+                if primary_bak.exists():
+                    ts = int(time.time())
+                    backup_path = Path(f"{db_file}.pre_migration.{ts}.bak")
+                    counter = 1
+                    while backup_path.exists():
+                        backup_path = Path(f"{db_file}.pre_migration.{ts}_{counter}.bak")
+                        counter += 1
+                else:
+                    backup_path = primary_bak
+
+                backup_src = sqlite3.connect(str(db_file))
+                backup_src.execute("PRAGMA busy_timeout=5000")
+                backup_dest = sqlite3.connect(str(backup_path))
+                try:
+                    try:
+                        backup_src.backup(backup_dest)
+                        chk = backup_dest.execute("PRAGMA integrity_check").fetchone()
+                        if not chk or chk[0] != "ok":
+                            raise MigrationIntegrityError(f"Pre-migration backup integrity check failed: {chk}")
+                    finally:
+                        backup_dest.close()
+                        backup_src.close()
+                except Exception:
+                    try:
+                        if backup_path.exists():
+                            backup_path.unlink()
+                    except Exception:
+                        pass
+                    raise
+
+                if not backup_path.exists() or backup_path.stat().st_size == 0:
+                    raise MigrationIntegrityError(f"Pre-migration backup failed: {backup_path} is empty or missing")
+
             # 1. Teams (Comparing ALL columns: team_id, lead_session_id, title, created_at)
-            if "orca_teams" in legacy_tables:
+            if "orca_teams" in active_legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.team_id FROM orca_teams o
                     INNER JOIN simpul_teams s ON o.team_id = s.team_id
@@ -338,7 +351,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                         raise MigrationIntegrityError(f"Row equivalence verification failure for team {r['team_id']}")
 
             # 2. Sessions (Comparing ALL columns: session_id, role/orca_role, team_id, status, config_json, created_at, updated_at)
-            if "orca_sessions" in legacy_tables:
+            if "orca_sessions" in active_legacy_tables:
                 cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_sessions)").fetchall()}
                 if "orca_role" in cols:
                     conflicts = conn.execute("""
@@ -400,7 +413,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                             raise MigrationIntegrityError(f"Row equivalence verification failure for session {r['session_id']}")
 
             # 3. Queue (Comparing ALL columns: dispatch_id, team_id, from_session_id, to_session_id, task_id, payload_json, status, dedup_key, priority, steering_json, created_at, updated_at)
-            if "orca_queue" in legacy_tables:
+            if "orca_queue" in active_legacy_tables:
                 cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_queue)").fetchall()}
                 if "dedup_key" in cols and "priority" in cols and "steering_json" in cols:
                     conflicts = conn.execute("""
@@ -489,7 +502,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                         raise MigrationIntegrityError(f"Row equivalence verification failure for dispatch {r['dispatch_id']}")
 
             # 4. Worktrees (Comparing ALL columns: worker_id, team_id, worktree_path, branch_name, created_at)
-            if "orca_worktrees" in legacy_tables:
+            if "orca_worktrees" in active_legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.worker_id FROM orca_worktrees o
                     INNER JOIN simpul_worktrees s ON o.worker_id = s.worker_id
@@ -517,7 +530,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                         raise MigrationIntegrityError(f"Row equivalence verification failure for worktree {r['worker_id']}")
 
             # 5. Handoffs (Comparing ALL columns: dispatch_id, team_id, from_worker_id, to_lead_id, status, summary, artifacts_json, metrics_json, submitted_at)
-            if "orca_handoffs" in legacy_tables:
+            if "orca_handoffs" in active_legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.dispatch_id FROM orca_handoffs o
                     INNER JOIN simpul_handoffs s ON o.dispatch_id = s.dispatch_id
@@ -555,7 +568,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                         raise MigrationIntegrityError(f"Row equivalence verification failure for handoff {r['dispatch_id']}")
 
             # 6. Channel messages (Comparing ALL columns: message_id, team_id, from_session_id, to_session_id, content, role, created_at)
-            if "orca_channel_messages" in legacy_tables:
+            if "orca_channel_messages" in active_legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.message_id FROM orca_channel_messages o
                     INNER JOIN simpul_channel_messages s ON o.message_id = s.message_id
@@ -588,7 +601,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                         raise MigrationIntegrityError(f"Row equivalence verification failure for channel message {r['message_id']}")
 
             # 7. Checkpoints (Comparing ALL columns: checkpoint_id, worker_id, team_id, step_index, state_summary, tokens_consumed, context_json, created_at)
-            if "orca_checkpoints" in legacy_tables:
+            if "orca_checkpoints" in active_legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.checkpoint_id FROM orca_checkpoints o
                     INNER JOIN simpul_checkpoints s ON o.checkpoint_id = s.checkpoint_id
@@ -642,7 +655,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                 "orca_channel_messages": "DROP TABLE IF EXISTS orca_channel_messages",
                 "orca_checkpoints": "DROP TABLE IF EXISTS orca_checkpoints",
             }
-            for tbl in legacy_tables:
+            for tbl in active_legacy_tables:
                 if tbl in LEGACY_DROP_MAP:
                     conn.execute(LEGACY_DROP_MAP[tbl])
 
@@ -658,8 +671,13 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
             (2, time.time(), "Migrated legacy orca_* schema to simpul_* with zero data loss, row validation, and views"),
         )
         conn.execute("COMMIT")
+        in_transaction = False
     except Exception:
-        conn.execute("ROLLBACK")
+        if in_transaction:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
         raise
     finally:
         conn.isolation_level = prev_isolation

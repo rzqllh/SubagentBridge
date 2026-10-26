@@ -575,6 +575,7 @@ Distinguishes:
 | #9 | Human Reviewers | 8 security/isolation threads | **REMEDIATED (Awaits Reviewer Resolution)** | Code remediated across previous gates; awaits human reviewer signoff on GitHub. |
 | #15 | Codex (`chatgpt-codex-connector`) | P2: Start real task execution before injecting worker crash | **REMEDIATED (Commit 5de9771 & C06 HEAD)** | Real in-flight IPC worker subprocess with observable disk marker and process-tree SIGKILL in `test_c06_fault_injection_and_recovery`. |
 | #15 | Codex (`chatgpt-codex-connector`) | P2: Handoff fixture breaks C01/C04 parity contracts | **REMEDIATED (C06 HEAD)** | Updated C01 & C04 fixtures to create physical artifacts with SHA256 hashes in trusted temporary directories, explicit RUNNING state, and validated execution receipts. |
+| #16 | Codex (`chatgpt-codex-connector` 4375020701) | P2: Concurrent migration race on legacy table discovery | **REMEDIATED (PR #16 HEAD)** | Re-query actual legacy table objects strictly after acquiring BEGIN IMMEDIATE write lock; prevents DROP TABLE against compatibility views during simultaneous initialization. |
 
 ---
 
@@ -850,20 +851,83 @@ Upon human-authorized merge of the stacked PRs into `main`, the following cleanu
 
 ---
 
-### Final Quality Classification & Verdict
+### Phase C07: Concurrent Migration Race Closure (Codex Review Comment 4375020701)
 
-- **`CODE_CLEAN`**: Verified — native Simpul naming across domain, storage, team, and execution modules; clean shims retained; zero orphaned orca branding in production logic; no hardcoded personal machine paths.
-- **`MIGRATION_VERIFIED`**: Verified — schema-aware explicit column mapping for all 7 legacy tables, complete omitted column conflict detection (fails closed with `MigrationConflictError`), application-level referential integrity validation, physical online snapshot backup with integrity verification and collision avoidance, rollback on injected failures, busy timeout concurrency, and read-only compatibility views tested and passing.
-- **`ATTRIBUTION_PRESERVED`**: Verified — Cindy Apache-2.0, Copyright 2026 XD Inc., pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b` fully credited in `THIRD_PARTY_NOTICES.md` and research records.
-- **`CI_PASS`**: Local full verification green across 426 pytest items, 325 unittests, Ruff, Mypy, and Bandit.
-- **`GIT_CLEANUP_DEFERRED`**: Verified — all 16 worktrees and branches preserved; cleanup manifest documented pending human merge authorization.
-- **`MERGE_REVIEW_READY`**: Verified — ready for review and human-approved push/merge.
+#### 1. Finding & Root Cause Analysis
+- **Review Finding**: Codex review comment `4375020701` on PR #16 identified that `migrate_schema()` in `subagentbridge/storage/team_store.py` discovered `legacy_tables` prior to acquiring the migration write lock (`BEGIN IMMEDIATE`).
+- **Failure Mode Under Concurrency**: When two connections or processes simultaneously initialized against an unmigrated legacy database:
+  1. Connection 1 and Connection 2 both observed `legacy_tables = {'orca_teams', ...}` from `sqlite_master`.
+  2. Connection 1 acquired `BEGIN IMMEDIATE`, completed migration, dropped legacy `orca_*` tables, created read-only compatibility views with the same names (`CREATE VIEW orca_*`), and committed.
+  3. Connection 2 subsequently acquired `BEGIN IMMEDIATE`. Because Connection 2 retained its pre-lock metadata snapshot `legacy_tables`, it attempted `DROP TABLE orca_teams` against the view created by Connection 1, raising `sqlite3.OperationalError: use DROP VIEW to delete view orca_teams`.
+- **Secondary Masking Defect**: If `BEGIN IMMEDIATE` raised an `OperationalError` (e.g., lock contention or busy timeout failure), the unconditional `conn.execute("ROLLBACK")` in `except Exception:` threw `OperationalError: cannot rollback - no transaction is active`, hiding the actual lock error.
+- **Backup Deadlock Constraint**: Calling `conn.backup()` directly on the writer connection holding an uncommitted `BEGIN IMMEDIATE` lock in SQLite blocks/deadlocks on Windows.
 
-**Final Verdict:** **`PASS (MIGRATION_VERIFIED, MERGE_REVIEW_READY)`**
+#### 2. Architecture & Implementation Remediation
+1. **Post-Lock Legacy Table Discovery**:
+   - Write lock acquisition (`conn.execute("BEGIN IMMEDIATE")`) is executed at the very entry of `migrate_schema()`.
+   - Legacy tables are queried strictly from `sqlite_master` *after* the write lock is granted:
+     ```python
+     cur_tables = conn.execute(
+         "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'orca_%'"
+     )
+     active_legacy_tables = {r["name"] for r in cur_tables.fetchall()}
+     ```
+   - Because `type='table'` filters out views, any racing second connection observes `active_legacy_tables` as empty (`set()`).
+   - If `current_version >= 2 and not active_legacy_tables:`, the second connection idempotently verifies views, commits, and returns cleanly without re-executing migration or attempting `DROP TABLE`.
+2. **Dedicated Reader Connection for Pre-Migration Snapshot**:
+   - Pre-migration logical byte backups (`conn.backup()`) are taken safely inside the write-locked block via a dedicated reader connection:
+     `backup_src = sqlite3.connect(str(db_file))`
+   - Safely captures committed pages in WAL mode without deadlocking against the writer connection.
+   - If backup creation or `PRAGMA integrity_check` fails, the partial backup file is unlinked and closed before re-raising.
+3. **Transaction State Tracking & Unmasked Error Propagation**:
+   - `in_transaction = True` is set only after `BEGIN IMMEDIATE` succeeds.
+   - Rollback is invoked only when `in_transaction` is true, ensuring any lock contention or driver-level error during `BEGIN IMMEDIATE` is raised directly without masking.
+4. **Targeted Legacy Table Deletions**:
+   - `DROP TABLE IF EXISTS` is executed strictly against `active_legacy_tables`.
+
+#### 3. Deterministic Regression & Concurrency Stress Test Suite
+All 5 concurrency requirements are verified in `tests/test_team_store_migration.py`:
+1. `test_deterministic_two_connection_concurrent_migration_race`:
+   - Both connections observe legacy tables in `sqlite_master` before migration completes.
+   - Coordinated via `threading.Event`: Connection 1 acquires `BEGIN IMMEDIATE`; Connection 2 calls `migrate_schema` and blocks on write lock; Connection 1 commits; Connection 2 unblocks, queries post-lock metadata, safely detects views, commits, and exits with 0 errors.
+   - Asserts schema version 2, all original rows intact, views created, and singular valid backup.
+2. `test_deterministic_two_process_concurrent_migration_race`:
+   - 2 independent operating system processes (`subprocess.Popen`) observe legacy tables and compete simultaneously for `TeamStore(db_path)`. Both exit code 0 (`PROC_MIGRATION_OK`).
+3. `test_concurrent_multi_thread_stress_initialization`:
+   - 10 threads barrier-synchronized (`threading.Barrier(10)`) simultaneously initialize `TeamStore(db_path)` against legacy database. 10/10 succeed with 0 lock errors.
+4. `test_concurrency_failure_injection_and_competing_initializer_recovery`:
+   - Thread 1 fails transaction via injected exception and cleanly rolls back. Competing Thread 2 takes over, acquires lock, migrates database, and commits successfully.
+5. `test_failed_begin_immediate_does_not_mask_original_error`:
+   - Verified that a busy timeout failure on `BEGIN IMMEDIATE` raises original `sqlite3.OperationalError: database is locked` directly without `cannot rollback` masking.
+
+#### 4. Complete Verification Matrix
+- **Full Pytest Suite**: **437 items collected: 431 passed, 6 skipped, 135 subtests passed** in 78.94s (0 failures).
+- **Migration Suite (`tests/test_team_store_migration.py`)**: **22 comprehensive tests passed** in 2.98s.
+- **Unittest Discovery (`tests`)**: **325 tests passed, 0 failed, 5 skipped** in 56.40s.
+- **Bootstrap Tests (`artifacts/bootstrap/v3_1/tests`)**: **13 tests passed, 0 failed** in 2.78s.
+- **Ruff Check (`--select E4,E7,E9,F subagentbridge tests/test_team_store_migration.py`)**: Exit code 0 (`All checks passed!`).
+- **Mypy Static Analysis (`subagentbridge`)**: Exit code 0 (`Success: no issues found in 60 source files`).
+- **Bandit Security Analysis (`subagentbridge`)**: Exit code 0 (0 issues found with `-ll`).
+- **FastMCP Server Smoke Test**: `MCP v1 server import PASS`.
 
 ---
 
-*Report last updated: 2026-10-26T14:40+07:00 - C07 SQLite Data Integrity Gap Closed & Verified.*
+### Final Quality Classification & Verdict
+
+- **`CODE_CLEAN`**: Verified — native Simpul naming across domain, storage, team, and execution modules; clean shims retained; zero orphaned orca branding in production logic; no hardcoded personal machine paths.
+- **`MIGRATION_VERIFIED`**: Verified — post-lock table discovery, schema-aware explicit column mapping for all 7 legacy tables, complete omitted column conflict detection, application-level referential integrity validation, physical online snapshot backup with collision avoidance, unmasked rollback, and read-only compatibility views tested and passing.
+- **`CONCURRENCY_CERTIFIED`**: Verified — deterministic two-connection race, two-process OS race, 10-thread simultaneous stress, and failure injection recovery all PASS.
+- **`ATTRIBUTION_PRESERVED`**: Verified — Cindy Apache-2.0, Copyright 2026 XD Inc., pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b` fully credited in `THIRD_PARTY_NOTICES.md` and research records.
+- **`CI_PASS`**: Local full verification green across 437 pytest items, 325 unittests, 13 bootstrap tests, Ruff, Mypy, and Bandit.
+- **`GIT_CLEANUP_DEFERRED`**: Verified — all 16 worktrees and branches preserved; cleanup manifest documented pending human merge authorization.
+- **`MERGE_REVIEW_READY`**: Verified — ready for review and human-approved push/merge.
+
+**Final Verdict:** **`PASS (CONCURRENCY_CERTIFIED, MIGRATION_VERIFIED, MERGE_REVIEW_READY)`**
+
+---
+
+*Report last updated: 2026-10-26T15:35+07:00 - C07 Concurrent Migration Race Closure Verified (Codex 4375020701 Resolved).*
+
 
 
 

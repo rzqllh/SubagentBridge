@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -914,4 +916,337 @@ def test_injected_failure_after_copy_before_drop_restores_state(monkeypatch):
                 assert "simpul_teams" not in simpul_tables
         finally:
             conn.close()
+
+
+def test_deterministic_two_connection_concurrent_migration_race(monkeypatch):
+    """Verify deterministic two-connection concurrency where both initializers observe legacy tables before migration completes.
+
+    Addresses Codex review comment 4375020701:
+    Ensures the second connection re-queries active legacy tables after acquiring BEGIN IMMEDIATE,
+    avoiding stale pre-lock table metadata and avoiding DROP TABLE against compatibility views.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "race_det.db"
+        conn_init = sqlite3.connect(str(db_path), isolation_level=None)
+        conn_init.row_factory = sqlite3.Row
+        conn_init.executescript(LEGACY_ORCA_DDL)
+        now = 123.45
+        conn_init.execute("INSERT INTO orca_teams VALUES ('t-race', 'l-race', 'Race Team', ?)", (now,))
+        conn_init.execute("INSERT INTO orca_sessions VALUES ('s-race', 'worker', 't-race', 'IDLE', '{}', ?, ?)", (now, now))
+        conn_init.close()
+
+        t1_in_lock = threading.Event()
+        t2_competing = threading.Event()
+        errors: list[tuple[str, Exception]] = []
+
+        from subagentbridge.storage import team_store
+        orig_integrity = team_store._verify_application_referential_integrity
+
+        def synchronized_integrity(c):
+            # Signal that connection 1 holds BEGIN IMMEDIATE
+            t1_in_lock.set()
+            # Wait until connection 2 has started competing for the lock
+            t2_competing.wait(timeout=5.0)
+            # Brief pause to ensure connection 2 is actively blocked on BEGIN IMMEDIATE
+            time.sleep(0.08)
+            return orig_integrity(c)
+
+        monkeypatch.setattr(team_store, "_verify_application_referential_integrity", synchronized_integrity)
+
+        def worker1():
+            try:
+                c1 = sqlite3.connect(str(db_path), check_same_thread=False)
+                c1.row_factory = sqlite3.Row
+                c1.execute("PRAGMA journal_mode=WAL")
+                c1.execute("PRAGMA busy_timeout=5000")
+                migrate_schema(c1, db_path=db_path)
+                c1.close()
+            except Exception as e:
+                errors.append(("w1", e))
+
+        def worker2():
+            try:
+                # Wait until connection 1 has acquired BEGIN IMMEDIATE
+                assert t1_in_lock.wait(timeout=5.0)
+                c2 = sqlite3.connect(str(db_path), check_same_thread=False)
+                c2.row_factory = sqlite3.Row
+                c2.execute("PRAGMA journal_mode=WAL")
+                c2.execute("PRAGMA busy_timeout=5000")
+
+                # Connection 2 explicitly observes legacy database before competing for write lock
+                pre_tables = {r[0] for r in c2.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                assert "orca_teams" in pre_tables
+                assert "orca_sessions" in pre_tables
+
+                # Signal connection 1 that connection 2 is now competing for the write lock
+                t2_competing.set()
+
+                # Connection 2 attempts migration: will block until Connection 1 commits
+                migrate_schema(c2, db_path=db_path)
+                c2.close()
+            except Exception as e:
+                errors.append(("w2", e))
+
+        th1 = threading.Thread(target=worker1, name="Init-Thread-1")
+        th2 = threading.Thread(target=worker2, name="Init-Thread-2")
+        th1.start()
+        th2.start()
+        th1.join(timeout=10.0)
+        th2.join(timeout=10.0)
+
+        assert not errors, f"Concurrent initializers encountered errors: {errors}"
+
+        # Verify final database state
+        verify_conn = sqlite3.connect(str(db_path))
+        verify_conn.row_factory = sqlite3.Row
+        try:
+            ver = verify_conn.execute("SELECT MAX(version) FROM simpul_schema_version").fetchone()[0]
+            assert ver == 2
+
+            # All original rows intact in simpul_* tables
+            team_row = verify_conn.execute("SELECT * FROM simpul_teams WHERE team_id='t-race'").fetchone()
+            assert team_row is not None
+            assert team_row["title"] == "Race Team"
+
+            sess_row = verify_conn.execute("SELECT * FROM simpul_sessions WHERE session_id='s-race'").fetchone()
+            assert sess_row is not None
+            assert sess_row["role"] == "worker"
+
+            # Compatibility views valid and return exact rows
+            v_team = verify_conn.execute("SELECT * FROM orca_teams WHERE team_id='t-race'").fetchone()
+            assert v_team is not None
+            assert v_team["title"] == "Race Team"
+
+            v_sess = verify_conn.execute("SELECT * FROM orca_sessions WHERE session_id='s-race'").fetchone()
+            assert v_sess is not None
+            assert v_sess["orca_role"] == "worker"
+
+            # Master table objects must be views, NOT tables
+            master_entry = verify_conn.execute("SELECT type FROM sqlite_master WHERE name='orca_teams'").fetchone()
+            assert master_entry[0] == "view"
+
+            # Pre-migration backup is collision-safe and verified
+            backups = list(Path(tmp_dir).glob("race_det.db.pre_migration*.bak"))
+            assert len(backups) == 1
+        finally:
+            verify_conn.close()
+
+
+def test_deterministic_two_process_concurrent_migration_race():
+    """Verify concurrent initialization across two independent operating system processes."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "race_proc.db"
+        conn_init = sqlite3.connect(str(db_path))
+        conn_init.execute("PRAGMA journal_mode=WAL")
+        conn_init.executescript(LEGACY_ORCA_DDL)
+        conn_init.execute("INSERT INTO orca_teams VALUES ('t-proc', 'l-proc', 'Process Team', 150.0)")
+        conn_init.commit()
+        conn_init.close()
+
+        worker_script = f"""
+import sys
+sys.path.insert(0, r"{Path.cwd()}")
+import sqlite3
+from pathlib import Path
+from subagentbridge.storage.team_store import TeamStore
+
+db_file = Path(r"{db_path}")
+
+# Verify observation of legacy tables before competing
+pre_conn = sqlite3.connect(str(db_file))
+pre_tables = {{r[0] for r in pre_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}}
+pre_conn.close()
+assert "orca_teams" in pre_tables
+
+# Compete for migration write lock and team access
+with TeamStore(db_file) as store:
+    t = store.load_team("t-proc")
+    assert t is not None
+    assert t.title == "Process Team"
+
+print("PROC_MIGRATION_OK")
+"""
+
+        p1 = subprocess.Popen([sys.executable, "-c", worker_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        p2 = subprocess.Popen([sys.executable, "-c", worker_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        out1, err1 = p1.communicate(timeout=20)
+        out2, err2 = p2.communicate(timeout=20)
+
+        assert p1.returncode == 0, f"Process 1 failed with error: {err1}"
+        assert p2.returncode == 0, f"Process 2 failed with error: {err2}"
+        assert "PROC_MIGRATION_OK" in out1
+        assert "PROC_MIGRATION_OK" in out2
+
+        # Verify database
+        c = sqlite3.connect(str(db_path))
+        c.row_factory = sqlite3.Row
+        try:
+            ver = c.execute("SELECT MAX(version) FROM simpul_schema_version").fetchone()[0]
+            assert ver == 2
+            row = c.execute("SELECT * FROM simpul_teams WHERE team_id='t-proc'").fetchone()
+            assert row is not None
+            assert row["title"] == "Process Team"
+            v_type = c.execute("SELECT type FROM sqlite_master WHERE name='orca_teams'").fetchone()[0]
+            assert v_type == "view"
+        finally:
+            c.close()
+
+
+def test_concurrent_multi_thread_stress_initialization():
+    """Verify repeated concurrency stress with 10 threads competing simultaneously for migration."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "stress.db"
+        conn_init = sqlite3.connect(str(db_path))
+        conn_init.execute("PRAGMA journal_mode=WAL")
+        conn_init.executescript(LEGACY_ORCA_DDL)
+        conn_init.execute("INSERT INTO orca_teams VALUES ('t-stress', 'l-stress', 'Stress Team', 200.0)")
+        conn_init.commit()
+        conn_init.close()
+
+        num_threads = 10
+        barrier = threading.Barrier(num_threads)
+        errors: list[tuple[int, Exception]] = []
+
+        def stress_worker(worker_idx: int):
+            try:
+                barrier.wait()
+                with TeamStore(db_path) as store:
+                    team = store.load_team("t-stress")
+                    assert team is not None
+                    assert team.title == "Stress Team"
+            except Exception as e:
+                errors.append((worker_idx, e))
+
+        threads = [threading.Thread(target=stress_worker, args=(i,)) for i in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15.0)
+
+        assert not errors, f"Errors occurred during 10-thread stress: {errors}"
+
+        # Verify only a single valid pre-migration backup is created
+        backups = list(Path(tmp_dir).glob("stress.db.pre_migration*.bak"))
+        assert len(backups) == 1
+        bak_conn = sqlite3.connect(str(backups[0]))
+        chk = bak_conn.execute("PRAGMA integrity_check").fetchone()
+        assert chk[0] == "ok"
+        bak_conn.close()
+
+
+def test_concurrency_failure_injection_and_competing_initializer_recovery(monkeypatch):
+    """Verify when an initializer fails and rolls back, a competing waiting initializer recovers cleanly."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "fail_compete.db"
+        conn_init = sqlite3.connect(str(db_path))
+        conn_init.execute("PRAGMA journal_mode=WAL")
+        conn_init.executescript(LEGACY_ORCA_DDL)
+        conn_init.execute("INSERT INTO orca_teams VALUES ('t-inj-fail', 'l-fail', 'Failure Recovery Team', 300.0)")
+        conn_init.commit()
+        conn_init.close()
+
+        t1_in_lock = threading.Event()
+        t2_competing = threading.Event()
+
+        from subagentbridge.storage import team_store
+        orig_integrity = team_store._verify_application_referential_integrity
+
+        def failing_integrity(c):
+            if threading.current_thread().name == "Failing-Thread-1":
+                t1_in_lock.set()
+                t2_competing.wait(timeout=5.0)
+                time.sleep(0.05)
+                raise RuntimeError("Injected transaction failure in Thread 1")
+            return orig_integrity(c)
+
+        monkeypatch.setattr(team_store, "_verify_application_referential_integrity", failing_integrity)
+
+        thread_errors: dict[str, Exception] = {}
+
+        def worker1():
+            c1 = sqlite3.connect(str(db_path), check_same_thread=False)
+            c1.row_factory = sqlite3.Row
+            c1.execute("PRAGMA journal_mode=WAL")
+            c1.execute("PRAGMA busy_timeout=5000")
+            try:
+                migrate_schema(c1, db_path=db_path)
+            except Exception as e:
+                thread_errors["t1"] = e
+            finally:
+                c1.close()
+
+        def worker2():
+            # Wait for thread 1 to hold the lock
+            assert t1_in_lock.wait(timeout=5.0)
+            c2 = sqlite3.connect(str(db_path), check_same_thread=False)
+            c2.row_factory = sqlite3.Row
+            c2.execute("PRAGMA journal_mode=WAL")
+            c2.execute("PRAGMA busy_timeout=5000")
+            t2_competing.set()
+            try:
+                migrate_schema(c2, db_path=db_path)
+            except Exception as e:
+                thread_errors["t2"] = e
+            finally:
+                c2.close()
+
+        th1 = threading.Thread(target=worker1, name="Failing-Thread-1")
+        th2 = threading.Thread(target=worker2, name="Recovering-Thread-2")
+        th1.start()
+        th2.start()
+        th1.join(timeout=10.0)
+        th2.join(timeout=10.0)
+
+        # Thread 1 must have failed with injected error and rolled back
+        assert "t1" in thread_errors
+        assert "Injected transaction failure in Thread 1" in str(thread_errors["t1"])
+
+        # Thread 2 must have succeeded after acquiring lock
+        assert "t2" not in thread_errors, f"Thread 2 failed unexpectedly: {thread_errors.get('t2')}"
+
+        # Verify database successfully migrated to version 2 by Thread 2
+        c = sqlite3.connect(str(db_path))
+        c.row_factory = sqlite3.Row
+        try:
+            ver = c.execute("SELECT MAX(version) FROM simpul_schema_version").fetchone()[0]
+            assert ver == 2
+            row = c.execute("SELECT * FROM simpul_teams WHERE team_id='t-inj-fail'").fetchone()
+            assert row is not None
+            assert row["title"] == "Failure Recovery Team"
+        finally:
+            c.close()
+
+
+def test_failed_begin_immediate_does_not_mask_original_error():
+    """Verify that a failed BEGIN IMMEDIATE raises the original sqlite3.OperationalError without masking."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "lock_mask.db"
+        conn_holder = sqlite3.connect(str(db_path), isolation_level=None)
+        conn_holder.execute("PRAGMA journal_mode=WAL")
+        conn_holder.execute("CREATE TABLE orca_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT, title TEXT, created_at REAL)")
+        conn_holder.execute("INSERT INTO orca_teams VALUES ('t-mask', 'l-mask', 'Mask Team', 100.0)")
+
+        # Hold exclusive transaction lock
+        conn_holder.execute("BEGIN EXCLUSIVE")
+
+        conn_competing = sqlite3.connect(str(db_path), isolation_level=None)
+        conn_competing.execute("PRAGMA busy_timeout=50")
+
+        raised_exc: Exception | None = None
+        try:
+            migrate_schema(conn_competing, db_path=db_path)
+        except Exception as e:
+            raised_exc = e
+
+        assert raised_exc is not None
+        assert isinstance(raised_exc, sqlite3.OperationalError)
+        msg = str(raised_exc).lower()
+        assert "database is locked" in msg or "busy" in msg
+        assert "cannot rollback" not in msg
+
+        conn_holder.execute("ROLLBACK")
+        conn_holder.close()
+        conn_competing.close()
+
 
