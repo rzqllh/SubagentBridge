@@ -37,7 +37,7 @@
 | C03 | `simpul/11-multi-harness` | **COMPLETE (remote PR #12 verified, CI 4/4 PASS, run 40210028969)** | Capability-checked host adapters, model/provider selection, host routing |
 | C04 | `simpul/12-interagent-control` | **COMPLETE (remote PR #13 verified, CI 4/4 PASS, run 40250742777)** | Durable deduplicated priority queue, authenticated messaging, steering, handoff binding |
 | C05 | `simpul/13-durable-continuity` | **CORRECTED & VERIFIED (PR #14 updated commit f2a6aaa, CI 4/4 PASS, run 40257332940)** | P0 Data safety in worktree manager, verified multi-step task resume |
-| C06 | `simpul/14-parity-acceptance` | **CORRECTED & MERGE_REVIEW_READY (PR #15 corrective gate passed)** | Real execution evidence, in-flight crash injection, human approval truth, Cindy parity mapping |
+| C06 | `simpul/14-parity-acceptance` | **CORRECTED & VERIFIED (PR #15 updated commit 5de9771, CI 4/4 PASS, run 40258895787)** | Real execution evidence, in-flight crash injection, human approval truth, Cindy parity mapping |
 
 ---
 
@@ -562,8 +562,9 @@ Distinguishes:
   - GitHub Actions CI Run: `40257332940` (4/4 jobs PASS in 2m28s)
 - **C06 Branch**: `simpul/14-parity-acceptance`
   - Merged C05 Commit: `f2a6aaa` via merge commit `92097ed`
-  - Local HEAD Commit (with C06 fixes): Ready for commit and push to PR #15
-  - Target PR #15: https://github.com/rzqllh/SubagentBridge/pull/15
+  - Pushed & Tested Commit: `5de9771`
+  - Remote PR #15: https://github.com/rzqllh/SubagentBridge/pull/15
+  - GitHub Actions CI Run: `40258895787` (4/4 jobs PASS in 2m35s)
 
 ---
 
@@ -572,7 +573,7 @@ Distinguishes:
 | PR | Reviewer / Bot | Thread Subject | Status | Remediation Note |
 |---|---|---|---|---|
 | #9 | Human Reviewers | 9 security/isolation threads | **UNRESOLVED on GitHub** | Code remediated; awaits reviewer resolution. |
-| #15 | Codex (`chatgpt-codex-connector`) | P2: Start real task execution before injecting worker crash | **REMEDIATED LOCALLY (Awaits PR #15 push)** | In-flight IPC task, observable marker, process tree kill, and failure audit implemented in `test_c06_fault_injection_and_recovery`. |
+| #15 | Codex (`chatgpt-codex-connector`) | P2: Start real task execution before injecting worker crash | **REMEDIATED (Commit 5de9771, CI Run 40258895787 4/4 PASS)** | In-flight IPC task, observable marker, process tree kill, and failure audit implemented in `test_c06_fault_injection_and_recovery`. |
 
 ---
 
