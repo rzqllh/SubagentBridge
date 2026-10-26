@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,19 @@ from subagentbridge.domain.team_contracts import (
     WorkerStatus,
     WorktreeAssignment,
 )
+
+
+class MigrationError(RuntimeError):
+    """Base exception for database schema migration failures."""
+
+
+class MigrationConflictError(MigrationError):
+    """Raised when destination table contains conflicting records for existing legacy keys."""
+
+
+class MigrationIntegrityError(MigrationError):
+    """Raised when row-by-row equivalence or foreign key verification fails during schema migration."""
+
 
 SIMPUL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS simpul_schema_version (
@@ -121,64 +135,140 @@ CREATE VIEW IF NOT EXISTS orca_checkpoints AS SELECT * FROM simpul_checkpoints;
 """
 
 
-def migrate_schema(conn: sqlite3.Connection) -> None:
-    """Execute idempotent, fail-closed zero-data-loss schema migration."""
-    with conn:
-        conn.executescript(SIMPUL_SCHEMA)
+def _execute_ddl_statements(conn: sqlite3.Connection, script: str) -> None:
+    for stmt in script.strip().split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            conn.execute(stmt)
+
+
+def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) -> None:
+    """Execute idempotent, fail-closed zero-data-loss schema migration.
+
+    Guarantees:
+    1. Physical pre-migration byte backup via conn.backup() if file-based and legacy tables exist.
+    2. Explicit transaction control with manual isolation level (no implicit commits).
+    3. Row-by-row equivalence, row identity, and column-by-column equality validation.
+    4. Primary key conflict detection against destination simpul_* tables.
+    5. Foreign key referential integrity check before dropping legacy tables.
+    6. Complete transaction rollback restoring all tables if any step fails.
+    7. Read-only compatibility views established for orca_* table queries.
+    """
+    # 1. Determine database file path for verified byte backup
+    db_file: Path | None = None
+    if db_path is not None and str(db_path) != ":memory:":
+        db_file = Path(db_path)
+    else:
+        try:
+            for row in conn.execute("PRAGMA database_list").fetchall():
+                if row[1] == "main" and row[2]:
+                    db_file = Path(row[2])
+                    break
+        except Exception:
+            pass
+
+    # 2. Inspect sqlite_master for legacy orca tables
+    cur_tables = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'orca_%'"
+    )
+    legacy_tables = {r["name"] for r in cur_tables.fetchall()}
+
+    # 3. If legacy tables exist and we have a disk database, preserve bytes with verified backup
+    if legacy_tables and db_file and db_file.exists():
+        backup_path = Path(f"{db_file}.pre_migration.bak")
+        backup_conn = sqlite3.connect(str(backup_path))
+        try:
+            conn.backup(backup_conn)
+        finally:
+            backup_conn.close()
+        if not backup_path.exists() or backup_path.stat().st_size == 0:
+            raise MigrationIntegrityError(f"Pre-migration backup failed: {backup_path} is empty or missing")
+
+    # 4. Explicit transaction execution
+    prev_isolation = conn.isolation_level
+    conn.isolation_level = None  # Autocommit off for driver, full manual transaction control
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        # Create destination simpul_* tables if not existing
+        _execute_ddl_statements(conn, SIMPUL_SCHEMA)
 
         # Check existing schema version
         cur = conn.execute("SELECT MAX(version) AS max_v FROM simpul_schema_version")
         row = cur.fetchone()
         current_version = row["max_v"] if row and row["max_v"] is not None else 0
 
-        if current_version >= 2:
-            # Ensure compatibility views exist even if already at latest version
-            conn.executescript(SIMPUL_COMPATIBILITY_VIEWS)
+        if current_version >= 2 and not legacy_tables:
+            _execute_ddl_statements(conn, SIMPUL_COMPATIBILITY_VIEWS)
+            conn.execute("COMMIT")
             return
 
-        # Inspect sqlite_master for legacy orca tables (type='table')
-        cur_tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'orca_%'"
-        )
-        legacy_tables = {r["name"] for r in cur_tables.fetchall()}
-
         if legacy_tables:
-            # 1. Teams migration
+            # 1. Teams
             if "orca_teams" in legacy_tables:
-                old_count = conn.execute("SELECT COUNT(*) FROM orca_teams").fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO simpul_teams (team_id, lead_session_id, title, created_at)
+                conflicts = conn.execute("""
+                    SELECT o.team_id FROM orca_teams o
+                    INNER JOIN simpul_teams s ON o.team_id = s.team_id
+                    WHERE o.lead_session_id != s.lead_session_id
+                       OR o.title != s.title
+                       OR ABS(o.created_at - s.created_at) > 0.001
+                """).fetchall()
+                if conflicts:
+                    raise MigrationConflictError(
+                        f"Conflicting primary keys between legacy orca_teams and simpul_teams: {[c[0] for c in conflicts]}"
+                    )
+                conn.execute("""
+                    INSERT INTO simpul_teams (team_id, lead_session_id, title, created_at)
                     SELECT team_id, lead_session_id, title, created_at FROM orca_teams
-                    """
-                )
-                new_count = conn.execute("SELECT COUNT(*) FROM simpul_teams").fetchone()[0]
-                if new_count < old_count:
-                    raise RuntimeError("Data loss verification failure: simpul_teams row count mismatch")
-                conn.execute("DROP TABLE orca_teams")
+                    WHERE team_id NOT IN (SELECT team_id FROM simpul_teams)
+                """)
+                for r in conn.execute("SELECT team_id, lead_session_id, title, created_at FROM orca_teams").fetchall():
+                    nr = conn.execute("SELECT team_id, lead_session_id, title, created_at FROM simpul_teams WHERE team_id = ?", (r["team_id"],)).fetchone()
+                    if nr is None or (nr["lead_session_id"], nr["title"], nr["created_at"]) != (r["lead_session_id"], r["title"], r["created_at"]):
+                        raise MigrationIntegrityError(f"Row equivalence verification failure for team {r['team_id']}")
 
-            # 2. Sessions migration
+            # 2. Sessions
             if "orca_sessions" in legacy_tables:
-                old_count = conn.execute("SELECT COUNT(*) FROM orca_sessions").fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO simpul_sessions (session_id, role, team_id, status, config_json, created_at, updated_at)
+                conflicts = conn.execute("""
+                    SELECT o.session_id FROM orca_sessions o
+                    INNER JOIN simpul_sessions s ON o.session_id = s.session_id
+                    WHERE o.orca_role != s.role
+                       OR o.team_id != s.team_id
+                       OR o.status != s.status
+                       OR o.config_json != s.config_json
+                       OR ABS(o.created_at - s.created_at) > 0.001
+                """).fetchall()
+                if conflicts:
+                    raise MigrationConflictError(
+                        f"Conflicting primary keys between legacy orca_sessions and simpul_sessions: {[c[0] for c in conflicts]}"
+                    )
+                conn.execute("""
+                    INSERT INTO simpul_sessions (session_id, role, team_id, status, config_json, created_at, updated_at)
                     SELECT session_id, orca_role, team_id, status, config_json, created_at, updated_at FROM orca_sessions
-                    """
-                )
-                new_count = conn.execute("SELECT COUNT(*) FROM simpul_sessions").fetchone()[0]
-                if new_count < old_count:
-                    raise RuntimeError("Data loss verification failure: simpul_sessions row count mismatch")
-                conn.execute("DROP TABLE orca_sessions")
+                    WHERE session_id NOT IN (SELECT session_id FROM simpul_sessions)
+                """)
+                for r in conn.execute("SELECT session_id, orca_role, team_id, status, config_json, created_at, updated_at FROM orca_sessions").fetchall():
+                    nr = conn.execute("SELECT session_id, role, team_id, status, config_json, created_at, updated_at FROM simpul_sessions WHERE session_id = ?", (r["session_id"],)).fetchone()
+                    if nr is None or (nr["role"], nr["team_id"], nr["status"], nr["config_json"], nr["created_at"]) != (r["orca_role"], r["team_id"], r["status"], r["config_json"], r["created_at"]):
+                        raise MigrationIntegrityError(f"Row equivalence verification failure for session {r['session_id']}")
 
-            # 3. Queue migration
+            # 3. Queue
             if "orca_queue" in legacy_tables:
-                old_count = conn.execute("SELECT COUNT(*) FROM orca_queue").fetchone()[0]
+                conflicts = conn.execute("""
+                    SELECT o.dispatch_id FROM orca_queue o
+                    INNER JOIN simpul_queue s ON o.dispatch_id = s.dispatch_id
+                    WHERE o.task_id != s.task_id
+                       OR o.status != s.status
+                       OR o.payload_json != s.payload_json
+                """).fetchall()
+                if conflicts:
+                    raise MigrationConflictError(
+                        f"Conflicting primary keys between legacy orca_queue and simpul_queue: {[c[0] for c in conflicts]}"
+                    )
                 cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_queue)").fetchall()}
                 if "dedup_key" in cols and "priority" in cols and "steering_json" in cols:
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO simpul_queue (
+                    conn.execute("""
+                        INSERT INTO simpul_queue (
                             dispatch_id, team_id, from_session_id, to_session_id,
                             task_id, payload_json, status, dedup_key, priority, steering_json,
                             created_at, updated_at
@@ -188,12 +278,11 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
                             task_id, payload_json, status, dedup_key, priority, steering_json,
                             created_at, updated_at
                         FROM orca_queue
-                        """
-                    )
+                        WHERE dispatch_id NOT IN (SELECT dispatch_id FROM simpul_queue)
+                    """)
                 else:
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO simpul_queue (
+                    conn.execute("""
+                        INSERT INTO simpul_queue (
                             dispatch_id, team_id, from_session_id, to_session_id,
                             task_id, payload_json, status, dedup_key, priority, steering_json,
                             created_at, updated_at
@@ -203,33 +292,47 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
                             task_id, payload_json, status, NULL, 0, '[]',
                             created_at, updated_at
                         FROM orca_queue
-                        """
-                    )
-                new_count = conn.execute("SELECT COUNT(*) FROM simpul_queue").fetchone()[0]
-                if new_count < old_count:
-                    raise RuntimeError("Data loss verification failure: simpul_queue row count mismatch")
-                conn.execute("DROP TABLE orca_queue")
+                        WHERE dispatch_id NOT IN (SELECT dispatch_id FROM simpul_queue)
+                    """)
+                for r in conn.execute("SELECT dispatch_id, team_id, from_session_id, to_session_id, task_id, payload_json, status, created_at FROM orca_queue").fetchall():
+                    nr = conn.execute("SELECT dispatch_id, team_id, from_session_id, to_session_id, task_id, payload_json, status, created_at FROM simpul_queue WHERE dispatch_id = ?", (r["dispatch_id"],)).fetchone()
+                    if nr is None or (nr["team_id"], nr["task_id"], nr["status"], nr["payload_json"]) != (r["team_id"], r["task_id"], r["status"], r["payload_json"]):
+                        raise MigrationIntegrityError(f"Row equivalence verification failure for dispatch {r['dispatch_id']}")
 
-            # 4. Worktrees migration
+            # 4. Worktrees
             if "orca_worktrees" in legacy_tables:
-                old_count = conn.execute("SELECT COUNT(*) FROM orca_worktrees").fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO simpul_worktrees (worker_id, team_id, worktree_path, branch_name, created_at)
+                conflicts = conn.execute("""
+                    SELECT o.worker_id FROM orca_worktrees o
+                    INNER JOIN simpul_worktrees s ON o.worker_id = s.worker_id
+                    WHERE o.worktree_path != s.worktree_path OR o.branch_name != s.branch_name
+                """).fetchall()
+                if conflicts:
+                    raise MigrationConflictError(
+                        f"Conflicting primary keys between legacy orca_worktrees and simpul_worktrees: {[c[0] for c in conflicts]}"
+                    )
+                conn.execute("""
+                    INSERT INTO simpul_worktrees (worker_id, team_id, worktree_path, branch_name, created_at)
                     SELECT worker_id, team_id, worktree_path, branch_name, created_at FROM orca_worktrees
-                    """
-                )
-                new_count = conn.execute("SELECT COUNT(*) FROM simpul_worktrees").fetchone()[0]
-                if new_count < old_count:
-                    raise RuntimeError("Data loss verification failure: simpul_worktrees row count mismatch")
-                conn.execute("DROP TABLE orca_worktrees")
+                    WHERE worker_id NOT IN (SELECT worker_id FROM simpul_worktrees)
+                """)
+                for r in conn.execute("SELECT worker_id, team_id, worktree_path, branch_name, created_at FROM orca_worktrees").fetchall():
+                    nr = conn.execute("SELECT worker_id, team_id, worktree_path, branch_name, created_at FROM simpul_worktrees WHERE worker_id = ?", (r["worker_id"],)).fetchone()
+                    if nr is None or (nr["team_id"], nr["worktree_path"], nr["branch_name"]) != (r["team_id"], r["worktree_path"], r["branch_name"]):
+                        raise MigrationIntegrityError(f"Row equivalence verification failure for worktree {r['worker_id']}")
 
-            # 5. Handoffs migration
+            # 5. Handoffs
             if "orca_handoffs" in legacy_tables:
-                old_count = conn.execute("SELECT COUNT(*) FROM orca_handoffs").fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO simpul_handoffs (
+                conflicts = conn.execute("""
+                    SELECT o.dispatch_id FROM orca_handoffs o
+                    INNER JOIN simpul_handoffs s ON o.dispatch_id = s.dispatch_id
+                    WHERE o.status != s.status OR o.summary != s.summary OR o.artifacts_json != s.artifacts_json
+                """).fetchall()
+                if conflicts:
+                    raise MigrationConflictError(
+                        f"Conflicting primary keys between legacy orca_handoffs and simpul_handoffs: {[c[0] for c in conflicts]}"
+                    )
+                conn.execute("""
+                    INSERT INTO simpul_handoffs (
                         dispatch_id, team_id, from_worker_id, to_lead_id,
                         status, summary, artifacts_json, metrics_json, submitted_at
                     )
@@ -237,36 +340,50 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
                         dispatch_id, team_id, from_worker_id, to_lead_id,
                         status, summary, artifacts_json, metrics_json, submitted_at
                     FROM orca_handoffs
-                    """
-                )
-                new_count = conn.execute("SELECT COUNT(*) FROM simpul_handoffs").fetchone()[0]
-                if new_count < old_count:
-                    raise RuntimeError("Data loss verification failure: simpul_handoffs row count mismatch")
-                conn.execute("DROP TABLE orca_handoffs")
+                    WHERE dispatch_id NOT IN (SELECT dispatch_id FROM simpul_handoffs)
+                """)
+                for r in conn.execute("SELECT dispatch_id, team_id, from_worker_id, to_lead_id, status, summary, artifacts_json, metrics_json FROM orca_handoffs").fetchall():
+                    nr = conn.execute("SELECT dispatch_id, team_id, from_worker_id, to_lead_id, status, summary, artifacts_json, metrics_json FROM simpul_handoffs WHERE dispatch_id = ?", (r["dispatch_id"],)).fetchone()
+                    if nr is None or (nr["team_id"], nr["from_worker_id"], nr["to_lead_id"], nr["status"], nr["summary"], nr["artifacts_json"], nr["metrics_json"]) != (r["team_id"], r["from_worker_id"], r["to_lead_id"], r["status"], r["summary"], r["artifacts_json"], r["metrics_json"]):
+                        raise MigrationIntegrityError(f"Row equivalence verification failure for handoff {r['dispatch_id']}")
 
-            # 6. Channel messages migration
+            # 6. Channel messages
             if "orca_channel_messages" in legacy_tables:
-                old_count = conn.execute("SELECT COUNT(*) FROM orca_channel_messages").fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO simpul_channel_messages (
+                conflicts = conn.execute("""
+                    SELECT o.message_id FROM orca_channel_messages o
+                    INNER JOIN simpul_channel_messages s ON o.message_id = s.message_id
+                    WHERE o.team_id != s.team_id OR o.content != s.content OR o.role != s.role
+                """).fetchall()
+                if conflicts:
+                    raise MigrationConflictError(
+                        f"Conflicting primary keys between legacy orca_channel_messages and simpul_channel_messages: {[c[0] for c in conflicts]}"
+                    )
+                conn.execute("""
+                    INSERT INTO simpul_channel_messages (
                         message_id, team_id, from_session_id, to_session_id, content, role, created_at
                     )
                     SELECT message_id, team_id, from_session_id, to_session_id, content, role, created_at
                     FROM orca_channel_messages
-                    """
-                )
-                new_count = conn.execute("SELECT COUNT(*) FROM simpul_channel_messages").fetchone()[0]
-                if new_count < old_count:
-                    raise RuntimeError("Data loss verification failure: simpul_channel_messages row count mismatch")
-                conn.execute("DROP TABLE orca_channel_messages")
+                    WHERE message_id NOT IN (SELECT message_id FROM simpul_channel_messages)
+                """)
+                for r in conn.execute("SELECT message_id, team_id, from_session_id, to_session_id, content, role, created_at FROM orca_channel_messages").fetchall():
+                    nr = conn.execute("SELECT message_id, team_id, from_session_id, to_session_id, content, role, created_at FROM simpul_channel_messages WHERE message_id = ?", (r["message_id"],)).fetchone()
+                    if nr is None or (nr["team_id"], nr["content"], nr["role"]) != (r["team_id"], r["content"], r["role"]):
+                        raise MigrationIntegrityError(f"Row equivalence verification failure for channel message {r['message_id']}")
 
-            # 7. Checkpoints migration
+            # 7. Checkpoints
             if "orca_checkpoints" in legacy_tables:
-                old_count = conn.execute("SELECT COUNT(*) FROM orca_checkpoints").fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO simpul_checkpoints (
+                conflicts = conn.execute("""
+                    SELECT o.checkpoint_id FROM orca_checkpoints o
+                    INNER JOIN simpul_checkpoints s ON o.checkpoint_id = s.checkpoint_id
+                    WHERE o.worker_id != s.worker_id OR o.step_index != s.step_index OR o.state_summary != s.state_summary
+                """).fetchall()
+                if conflicts:
+                    raise MigrationConflictError(
+                        f"Conflicting primary keys between legacy orca_checkpoints and simpul_checkpoints: {[c[0] for c in conflicts]}"
+                    )
+                conn.execute("""
+                    INSERT INTO simpul_checkpoints (
                         checkpoint_id, worker_id, team_id, step_index,
                         state_summary, tokens_consumed, context_json, created_at
                     )
@@ -274,15 +391,34 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
                         checkpoint_id, worker_id, team_id, step_index,
                         state_summary, tokens_consumed, context_json, created_at
                     FROM orca_checkpoints
-                    """
-                )
-                new_count = conn.execute("SELECT COUNT(*) FROM simpul_checkpoints").fetchone()[0]
-                if new_count < old_count:
-                    raise RuntimeError("Data loss verification failure: simpul_checkpoints row count mismatch")
-                conn.execute("DROP TABLE orca_checkpoints")
+                    WHERE checkpoint_id NOT IN (SELECT checkpoint_id FROM simpul_checkpoints)
+                """)
+                for r in conn.execute("SELECT checkpoint_id, worker_id, team_id, step_index, state_summary, tokens_consumed, context_json, created_at FROM orca_checkpoints").fetchall():
+                    nr = conn.execute("SELECT checkpoint_id, worker_id, team_id, step_index, state_summary, tokens_consumed, context_json, created_at FROM simpul_checkpoints WHERE checkpoint_id = ?", (r["checkpoint_id"],)).fetchone()
+                    if nr is None or (nr["worker_id"], nr["step_index"], nr["state_summary"], nr["tokens_consumed"], nr["context_json"]) != (r["worker_id"], r["step_index"], r["state_summary"], r["tokens_consumed"], r["context_json"]):
+                        raise MigrationIntegrityError(f"Row equivalence verification failure for checkpoint {r['checkpoint_id']}")
+
+            # Validate foreign keys before dropping
+            fk_violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_violations:
+                raise MigrationIntegrityError(f"Foreign key referential integrity violation during migration: {fk_violations}")
+
+            # Drop legacy tables using static SQL statements
+            LEGACY_DROP_MAP = {
+                "orca_teams": "DROP TABLE IF EXISTS orca_teams",
+                "orca_sessions": "DROP TABLE IF EXISTS orca_sessions",
+                "orca_queue": "DROP TABLE IF EXISTS orca_queue",
+                "orca_worktrees": "DROP TABLE IF EXISTS orca_worktrees",
+                "orca_handoffs": "DROP TABLE IF EXISTS orca_handoffs",
+                "orca_channel_messages": "DROP TABLE IF EXISTS orca_channel_messages",
+                "orca_checkpoints": "DROP TABLE IF EXISTS orca_checkpoints",
+            }
+            for tbl in legacy_tables:
+                if tbl in LEGACY_DROP_MAP:
+                    conn.execute(LEGACY_DROP_MAP[tbl])
 
         # Establish compatibility views
-        conn.executescript(SIMPUL_COMPATIBILITY_VIEWS)
+        _execute_ddl_statements(conn, SIMPUL_COMPATIBILITY_VIEWS)
 
         # Record migration completion
         conn.execute(
@@ -290,19 +426,28 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             INSERT OR REPLACE INTO simpul_schema_version (version, applied_at, description)
             VALUES (?, ?, ?)
             """,
-            (2, time.time(), "Migrated legacy orca_* schema to simpul_* with zero data loss and views"),
+            (2, time.time(), "Migrated legacy orca_* schema to simpul_* with zero data loss, row validation, and views"),
         )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.isolation_level = prev_isolation
 
 
 class TeamStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        migrate_schema(self._conn)
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        with self._lock:
+            migrate_schema(self._conn, db_path=self.db_path)
 
     def close(self) -> None:
         self._conn.close()

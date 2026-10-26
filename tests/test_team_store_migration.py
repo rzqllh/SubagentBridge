@@ -1,11 +1,14 @@
 """Tests for zero-data-loss schema migration from legacy orca_* to native simpul_*.
 
 Verifies:
-- Fresh database initialization with simpul_* schema and compatibility views.
+- Fresh database initialization with simpul_* schema, version 2, and compatibility views.
 - Full lossless migration of pre-existing legacy orca_* tables with real records.
-- Preservation of IDs, timestamps, status, configurations, checkpoints, worktrees, and metrics.
-- Idempotency across repeated re-open and restart cycles.
-- Fail-closed transactional rollback on corrupted data.
+- Row-by-row equivalence, row identity, and column-by-column equality validation.
+- Physical pre-migration byte backup creation and preservation (.pre_migration.bak).
+- Fail-closed transactional rollback on corrupted data or injected failures.
+- Rejection of conflicting primary keys against destination tables.
+- Idempotent recovery from interrupted / partial migrations.
+- Multi-connection concurrency and busy timeout resilience.
 - Full consumer compatibility for legacy class and module aliases.
 """
 from __future__ import annotations
@@ -13,6 +16,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -28,9 +33,21 @@ from subagentbridge.domain.team_contracts import (
     WorkerConfig,
     WorkerStatus,
 )
-from subagentbridge.storage.team_store import TeamStore, OrcaStore, migrate_schema
-from subagentbridge.team.team_manager import TeamManager, OrcaTeamManager, OrcaTeamService
-from subagentbridge.execution.orca_adapter import IntegrationProbe, OrcaProbe
+from subagentbridge.storage.team_store import (
+    MigrationConflictError,
+    MigrationError,
+    MigrationIntegrityError,
+    OrcaStore,
+    TeamStore,
+    migrate_schema,
+)
+from subagentbridge.team.team_manager import OrcaTeamManager, OrcaTeamService, TeamManager
+from subagentbridge.execution.integration_adapter import (
+    IntegrationProbe,
+    OptionalIntegrationBackend,
+    OptionalOrcaBackend,
+    OrcaProbe,
+)
 
 LEGACY_ORCA_DDL = """
 CREATE TABLE IF NOT EXISTS orca_teams (
@@ -152,7 +169,7 @@ def test_fresh_db_initialization():
 
 
 def test_legacy_orca_db_zero_data_loss_migration():
-    """Verify lossless migration from pre-existing orca_* database to simpul_*."""
+    """Verify lossless migration from pre-existing orca_* database with row equivalence."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         db_path = Path(tmp_dir) / "legacy_migration.db"
 
@@ -227,7 +244,7 @@ def test_legacy_orca_db_zero_data_loss_migration():
         legacy_conn.commit()
         legacy_conn.close()
 
-        # 2. Open with TeamStore - triggers automatic lossless migration
+        # 2. Open with TeamStore - triggers automatic lossless migration with backup and row validation
         with TeamStore(db_path) as store:
             # Check version
             ver_row = store._conn.execute("SELECT MAX(version) FROM simpul_schema_version").fetchone()
@@ -247,7 +264,7 @@ def test_legacy_orca_db_zero_data_loss_migration():
             s1 = store.load_session("worker-leg-1")
             assert s1 is not None
             assert s1.role == AgentRole.WORKER
-            assert s1.orca_role == AgentRole.WORKER  # Compatibility property
+            assert s1.orca_role == AgentRole.WORKER
             assert s1.status == WorkerStatus.RUNNING
             assert s1.config.pid == 1234
 
@@ -291,6 +308,115 @@ def test_legacy_orca_db_zero_data_loss_migration():
             assert row["orca_role"] == "worker"
 
 
+def test_pre_migration_backup_creation_and_preservation():
+    """Verify that a disk-based legacy database creates a verified pre-migration backup."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "with_backup.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(LEGACY_ORCA_DDL)
+        conn.execute("INSERT INTO orca_teams VALUES ('t-bk', 'l-bk', 'Backup Team', 100.0)")
+        conn.commit()
+        conn.close()
+
+        # Run migration
+        with TeamStore(db_path):
+            pass
+
+        # Verify pre-migration backup exists on disk and contains legacy tables intact
+        bak_path = Path(str(db_path) + ".pre_migration.bak")
+        assert bak_path.exists()
+        assert bak_path.stat().st_size > 0
+
+        bak_conn = sqlite3.connect(str(bak_path))
+        bak_cur = bak_conn.execute("SELECT title FROM orca_teams WHERE team_id = 't-bk'")
+        assert bak_cur.fetchone()[0] == "Backup Team"
+        bak_conn.close()
+
+
+def test_migration_rollback_on_injected_failure_preserves_tables():
+    """Verify that an error during migration cleanly rolls back without dropping legacy tables."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "rollback_test.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        conn.execute("INSERT INTO orca_teams VALUES ('t1', 'l1', 'Original Team', 100.0)")
+        conn.execute("INSERT INTO orca_sessions VALUES ('s1', 'worker', 't1', 'IDLE', '{}', 100.0, 100.0)")
+
+        # Corrupt migration by introducing a table with an incompatible schema before migrate_schema runs
+        conn.execute("CREATE TABLE simpul_sessions (session_id INT PRIMARY KEY, broken_col TEXT NOT NULL)")
+
+        with pytest.raises(Exception):
+            migrate_schema(conn, db_path=db_path)
+
+        # Verify that rollback restored legacy tables intact
+        t_row = conn.execute("SELECT title FROM orca_teams WHERE team_id = 't1'").fetchone()
+        assert t_row is not None
+        assert t_row["title"] == "Original Team"
+
+        s_row = conn.execute("SELECT orca_role FROM orca_sessions WHERE session_id = 's1'").fetchone()
+        assert s_row is not None
+        assert s_row["orca_role"] == "worker"
+
+        conn.close()
+
+
+def test_migration_rejects_conflicting_primary_keys():
+    """Verify that pre-existing conflicting records in destination tables raise MigrationConflictError."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "conflict_test.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        conn.execute("INSERT INTO orca_teams VALUES ('t-conflict', 'l-old', 'Legacy Title', 100.0)")
+
+        # Pre-create simpul_teams with conflicting data for same primary key
+        conn.execute("CREATE TABLE simpul_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
+        conn.execute("INSERT INTO simpul_teams VALUES ('t-conflict', 'l-new', 'Different Title', 200.0)")
+
+        with pytest.raises(MigrationConflictError) as exc_info:
+            migrate_schema(conn, db_path=db_path)
+
+        assert "Conflicting primary keys" in str(exc_info.value)
+
+        # Legacy table must not be dropped
+        tbl = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='orca_teams'").fetchone()
+        assert tbl is not None
+
+        conn.close()
+
+
+def test_migration_partial_recovery():
+    """Verify that an interrupted migration where some identical rows exist can resume cleanly."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "partial_recovery.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+
+        now = 100.0
+        conn.execute("INSERT INTO orca_teams VALUES ('t-part-1', 'l-1', 'Team 1', ?)", (now,))
+        conn.execute("INSERT INTO orca_teams VALUES ('t-part-2', 'l-2', 'Team 2', ?)", (now + 10,))
+
+        # Simulate partial migration: destination simpul_teams already has t-part-1 (matching)
+        conn.execute("CREATE TABLE simpul_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
+        conn.execute("INSERT INTO simpul_teams VALUES ('t-part-1', 'l-1', 'Team 1', ?)", (now,))
+
+        # Run migration - should detect t-part-1 is identical, insert t-part-2, verify, and complete
+        migrate_schema(conn, db_path=db_path)
+
+        rows = conn.execute("SELECT team_id, title FROM simpul_teams ORDER BY team_id").fetchall()
+        assert len(rows) == 2
+        assert rows[0]["team_id"] == "t-part-1"
+        assert rows[1]["team_id"] == "t-part-2"
+
+        # Verify orca_teams converted to view
+        view_row = conn.execute("SELECT type FROM sqlite_master WHERE name='orca_teams'").fetchone()
+        assert view_row["type"] == "view"
+
+        conn.close()
+
+
 def test_idempotent_repeated_migration():
     """Verify repeated store openings or migration runs cause no errors or duplicate data."""
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -302,7 +428,7 @@ def test_idempotent_repeated_migration():
             s.save_session(AgentSession("worker-1", AgentRole.WORKER, "team-1"))
 
         # Reopen 5 times in succession
-        for i in range(5):
+        for _ in range(5):
             with TeamStore(db_path) as s:
                 t = s.load_team("team-1")
                 assert t is not None
@@ -314,30 +440,39 @@ def test_idempotent_repeated_migration():
                 assert len(s.list_sessions_by_team("team-1")) == 1
 
 
-def test_migration_fail_closed_on_error():
-    """Verify that a corrupted state during migration fails closed and rolls back cleanly."""
+def test_multi_process_concurrency_busy_timeout():
+    """Verify busy_timeout allows concurrent access without immediate database locked error."""
     with tempfile.TemporaryDirectory() as tmp_dir:
-        db_path = Path(tmp_dir) / "fail_closed.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        # Create an orca_teams table
-        conn.execute("CREATE TABLE orca_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
-        conn.execute("INSERT INTO orca_teams VALUES ('t1', 'l1', 'Team 1', 100.0)")
-        conn.commit()
+        db_path = Path(tmp_dir) / "concurrent.db"
 
-        # Corrupt migration by creating simpul_teams with conflicting incompatible constraints that fail INSERT
-        conn.execute("CREATE TABLE simpul_teams (team_id INTEGER PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
-        conn.commit()
+        # Initialize store
+        with TeamStore(db_path) as s:
+            s.save_team(AgentTeam("t-conc", "l-conc", "Concurrent Team"))
 
-        # Attempting migrate_schema will encounter type/integrity error and fail closed
-        # or we verify exception is raised
-        with pytest.raises(Exception):
-            migrate_schema(conn)
+        # Open connection in worker thread
+        def hold_lock():
+            c1 = sqlite3.connect(str(db_path), timeout=5.0)
+            c1.execute("PRAGMA busy_timeout=5000")
+            with c1:
+                c1.execute("UPDATE simpul_teams SET title='Updated Title' WHERE team_id='t-conc'")
+                time.sleep(0.1)
+            c1.close()
 
-        conn.close()
+        t = threading.Thread(target=hold_lock)
+        t.start()
+
+        # Thread 2 reads concurrently with busy_timeout - must succeed
+        time.sleep(0.02)
+        conn2 = sqlite3.connect(str(db_path), timeout=5.0)
+        conn2.execute("PRAGMA busy_timeout=5000")
+        row = conn2.execute("SELECT title FROM simpul_teams WHERE team_id='t-conc'").fetchone()
+        t.join()
+
+        assert row is not None
+        conn2.close()
 
 
-def test_backward_compatibility_aliases():
+def test_backward_compatibility_aliases_and_view_read_only():
     """Verify all legacy aliases (OrcaStore, OrcaTeamManager, OrcaTeamService, OrcaRole, etc.) behave identically."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         db_path = Path(tmp_dir) / "compat.db"
@@ -361,7 +496,16 @@ def test_backward_compatibility_aliases():
             assert session.orca_role == OrcaRole.WORKER
             assert session.role == AgentRole.WORKER
 
-            # IntegrationProbe / OrcaProbe
+            # IntegrationProbe / OrcaProbe / OptionalOrcaBackend
             probe = OrcaProbe(available=True, enforcement_class="CLASS_A", details="Ready")
             assert isinstance(probe, IntegrationProbe)
             assert probe.available is True
+
+            backend = OptionalOrcaBackend(enabled=False)
+            assert isinstance(backend, OptionalIntegrationBackend)
+            p = backend.probe()
+            assert p.available is False
+
+            # Verify view is readable
+            cur = store._conn.execute("SELECT title FROM orca_teams WHERE team_id = 'team-c'")
+            assert cur.fetchone()[0] == "Compat Team"

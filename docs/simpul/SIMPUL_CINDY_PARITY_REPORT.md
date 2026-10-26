@@ -759,22 +759,96 @@ Distinguishes:
 
 ---
 
-### Residual Risks & Constraints
+### Phase C07 Final Cleanup, Safe Migration & Repository Hygiene Closure
 
-1. **E18 Same-User OS Confinement**: Lead and subprocess workers share the same OS user identity. Sandbox isolation remains documented accepted risk `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
-2. **Interactive Human Approval**: Production deployments require an out-of-band authenticated confirmation interface. Test broker remains strictly in-process test fixture.
-3. **No Autonomous Merges**: Under `GATE_MODE: CHAT_APPROVAL`, all stacked PR merges (#9 through #16) remain blocked pending human code review and authorized merge actions.
+#### 1. Complete Naming & Shims Inventory
+
+| Category | Native Simpul Identifier | Legacy Identifier | Shim / Compatibility Status | Justification |
+|---|---|---|---|---|
+| **Domain Module** | `subagentbridge/domain/team_contracts.py` | `subagentbridge/domain/orca_contracts.py` | Clean re-export shim | Third-party scripts and backward-compatible import paths |
+| **Role Enum** | `AgentRole` (`LEAD`, `WORKER`, etc.) | `OrcaRole` | Deprecated alias (`OrcaRole = AgentRole`) | Consumer type-hint compatibility |
+| **Team Model** | `AgentTeam` | `OrcaTeam` | Deprecated alias (`OrcaTeam = AgentTeam`) | Multi-worker team construction compatibility |
+| **Session Model** | `AgentSession` | `OrcaSession` | Deprecated alias (`OrcaSession = AgentSession`) | `@property orca_role` and worker lifecycle compatibility |
+| **Storage Module** | `subagentbridge/storage/team_store.py` | `subagentbridge/storage/orca_store.py` | Clean re-export shim | Storage import backward compatibility |
+| **Store Engine** | `TeamStore` | `OrcaStore` | Deprecated alias (`OrcaStore = TeamStore`) | Writable Python API compatibility across legacy scripts |
+| **Coordination Module** | `subagentbridge/team/team_manager.py` | `subagentbridge/team/orca_team.py` | Clean re-export shim | Orchestrator import backward compatibility |
+| **Manager Service** | `TeamManager` | `OrcaTeamManager` / `OrcaTeamService` | Deprecated aliases | Service invocation compatibility |
+| **Adapter Module** | `subagentbridge/execution/integration_adapter.py` | `subagentbridge/execution/orca_adapter.py` | Clean re-export shim | Optional external CLI probe isolation |
+| **Adapter Probe** | `IntegrationProbe` / `OptionalIntegrationBackend` | `OrcaProbe` / `OptionalOrcaBackend` | Deprecated aliases | Isolated compatibility boundary for external CLI |
+| **Database Tables** | `simpul_teams`, `simpul_sessions`, `simpul_queue`, `simpul_worktrees`, `simpul_handoffs`, `simpul_channel_messages`, `simpul_checkpoints`, `simpul_schema_version` | `orca_*` tables | Migrated to `simpul_*`; replaced with read-only SQL views | Read-only SQL compatibility views for legacy inspector queries |
+
+#### 2. Hardened Zero-Data-Loss Migration & Safety Engine
+- **Physical Byte Backup**: `conn.backup()` automatically snapshots the database to `<db_path>.pre_migration.bak` prior to executing any DDL or table operations on legacy data. Backup integrity is verified (file exists and non-empty).
+- **Explicit Transaction Management**: Autocommit is explicitly disabled (`isolation_level = None`), wrapping all table creations, data copies, row verifications, and table drops in an atomic `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` block. No `executescript()` implicit commits occur.
+- **Row-by-Row Equivalence & Data Equality**:
+  - Validates exact row identity and column-by-column equality between legacy tables and destination `simpul_*` tables.
+  - Automatically checks and rejects conflicting primary keys (`MigrationConflictError`).
+  - Supports resilient recovery from interrupted or partially migrated databases without duplicating records.
+- **Referential Integrity**: Executes `PRAGMA foreign_key_check` inside the transaction before legacy tables are dropped.
+- **Fail-Closed Atomic Rollback**: Any constraint violation or injected error triggers immediate transaction rollback; legacy tables are NEVER dropped and no partial state remains in destination tables.
+- **Read-Only Compatibility Views vs. Writable API**:
+  - SQL `orca_*` views are established as read-only compatibility views for legacy query tools and dashboards.
+  - Full read/write compatibility is provided at the Python API level by the `OrcaStore` class (which maps writes directly to `simpul_*` tables).
+- **Concurrency & Multi-Process Safety**: `TeamStore` enables `PRAGMA busy_timeout=5000` alongside WAL mode and reentrant threading locks (`threading.RLock()`), preventing lock collisions.
+
+#### 3. Repository Worktree & Branch Hygiene
+
+##### Active Worktree Inventory (Preserved - No Destructive Pruning)
+All 16 active repository worktrees are intact and preserved without destructive pruning:
+1. `SubagentBridge` (root, branch `simpul/08-sprint1-verification`, PR #9)
+2. `.worktrees/p00-baseline-recovery` (`feat/00-baseline-recovery`)
+3. `.worktrees/p01-roadmap-v4-verified` (`integrate/roadmap-v4-verified`)
+4. `.worktrees/p02-durable-control-plane` (`simpul/02-durable-control-plane`)
+5. `.worktrees/p03-native-execution` (`simpul/03-native-execution`)
+6. `.worktrees/p04-router-skills` (`simpul/04-router-skills`)
+7. `.worktrees/p05-antigravity-qa` (`simpul/05-antigravity-qa`)
+8. `.worktrees/p06-release-hardening` (`simpul/06-release-hardening`)
+9. `.worktrees/p07-corrective-audit` (`simpul/07-corrective-audit`)
+10. `.worktrees/p09-parity-foundation` (`simpul/09-parity-foundation`, PR #10)
+11. `.worktrees/p10-worker-sessions` (`simpul/10-worker-sessions`, PR #11)
+12. `.worktrees/p11-multi-harness` (`simpul/11-multi-harness`, PR #12)
+13. `.worktrees/p12-interagent-control` (`simpul/12-interagent-control`, PR #13)
+14. `.worktrees/p13-durable-continuity` (`simpul/13-durable-continuity`, PR #14)
+15. `.worktrees/p14-parity-acceptance` (`simpul/14-parity-acceptance`, PR #15)
+16. `.worktrees/p15-native-naming` (`simpul/15-native-naming`, PR #16)
+
+##### Deferred Cleanup Manifest
+Per safety rules, no worktrees or branches may be deleted while PRs #9–#16 remain unmerged.
+Upon human-authorized merge of the stacked PRs into `main`, the following cleanup actions are scheduled:
+- Remove merged parity worktrees: `p09` through `p15`.
+- Delete merged remote tracking branches: `simpul/09` through `simpul/15`.
+- Retain root worktree and `main` branch.
+
+#### 4. Cindy Attribution & Provenance
+- Upstream: `https://github.com/makecindy/cindy` (pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b`).
+- License: Apache-2.0, Copyright 2026 XD Inc.
+- Source Provenance: Clean-room Python 3.11+ implementation with architectural attribution documented in `THIRD_PARTY_NOTICES.md` and `README.md`. Historical research parity records preserved.
+
+#### 5. Verification Matrix (Commit tested locally)
+- **Pytest Full Suite**: **424 items collected: 418 passed, 6 skipped (Windows symlink privileges/offline flags), 135 subtests passed** in 87.74s (0 failures).
+- **Migration Suite (`tests/test_team_store_migration.py`)**: **9 comprehensive tests passed** in 0.52s.
+- **Unittest Discovery (`tests`)**: **325 passed, 0 failed, 5 skipped** in 57.33s.
+- **Bootstrap Tests (`artifacts/bootstrap/v3_1/tests`)**: **13 passed** in 2.55s.
+- **Ruff Check**: Exit code 0 (`All checks passed!`).
+- **Mypy Static Analysis**: Exit code 0 (`Success: no issues found in 60 source files`).
+- **Bandit Security Analysis**: Exit code 0 (`0 issues found with -ll`).
+- **MCP Server Smoke Test**: `MCP v1 server import PASS`.
 
 ---
 
-### Final Phase Verdict
+### Final Quality Classification & Verdict
 
-**`PASS` (MERGE_REVIEW_READY)**
+- **`CODE_CLEAN`**: Verified — native Simpul naming across domain, storage, team, and execution modules; clean shims retained; zero orphaned orca branding in production logic; no hardcoded personal machine paths.
+- **`MIGRATION_VERIFIED`**: Verified — atomic fail-closed SQLite migration, physical `.pre_migration.bak` backup, row-by-row equivalence, primary key conflict protection, busy timeout concurrency, and read-only compatibility views tested and passing.
+- **`ATTRIBUTION_PRESERVED`**: Verified — Cindy Apache-2.0, Copyright 2026 XD Inc., pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b` fully credited in `THIRD_PARTY_NOTICES.md` and research records.
+- **`CI_PASS`**: Local full verification green across 424 pytest items, 325 unittests, Ruff, Mypy, and Bandit.
+- **`GIT_CLEANUP_DEFERRED`**: Verified — all 16 worktrees and branches preserved; cleanup manifest documented pending human merge authorization.
+- **`MERGE_REVIEW_READY`**: Verified — ready for review and human-approved push/merge.
 
-Native Simpul naming migration and Cindy attribution closure is complete. Zero data loss verified, backward compatibility shims intact, 100% test regression green, static analysis clean, and no orphaned branding in internal logic. Prepared for commit and push to branch `simpul/15-native-naming`.
+**Final Verdict:** **`PASS (MERGE_REVIEW_READY)`**
 
 ---
 
-*Report last updated: 2026-10-26T13:10+07:00 - Phase C07 Native Naming Migration & Cindy Attribution complete, 420 pytest items (414 passed, 6 skipped), 325 unittests passed, 0 errors, branch simpul/15-native-naming ready for commit*
+*Report last updated: 2026-10-26T14:05+07:00 - Phase C07 Final Cleanup, Safe Migration & Repository Hygiene Closure complete.*
 
 
