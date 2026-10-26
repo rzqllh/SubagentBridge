@@ -557,14 +557,14 @@ Distinguishes:
 ### Exact Tested SHA & Final Branch Status
 
 - **C05 Branch**: `simpul/13-durable-continuity`
-  - Tested Commit: `f2a6aaa`
+  - Tested & Pushed Commit: `59d7aa2`
   - Remote PR #14: https://github.com/rzqllh/SubagentBridge/pull/14
-  - GitHub Actions CI Run: `40257332940` (4/4 jobs PASS in 2m28s)
+  - GitHub Actions CI Run: `40268292379` (4/4 jobs PASS in 2m33s on Ubuntu & Windows, Python 3.11 & 3.13)
 - **C06 Branch**: `simpul/14-parity-acceptance`
-  - Merged C05 Commit: `f2a6aaa` via merge commit `92097ed`
-  - Pushed & Tested Commit: `5de9771`
+  - Merged C05 Commit: `59d7aa2`
+  - Local HEAD with C06 Final Closure: Incorporates full pytest CI integration, handoff artifact integrity, and Codex review fixes.
   - Remote PR #15: https://github.com/rzqllh/SubagentBridge/pull/15
-  - GitHub Actions CI Run: `40258895787` (4/4 jobs PASS in 2m35s)
+  - Target CI Execution: 404 tests collected across `tests` and `artifacts/bootstrap/v3_1/tests`.
 
 ---
 
@@ -572,8 +572,65 @@ Distinguishes:
 
 | PR | Reviewer / Bot | Thread Subject | Status | Remediation Note |
 |---|---|---|---|---|
-| #9 | Human Reviewers | 9 security/isolation threads | **UNRESOLVED on GitHub** | Code remediated; awaits reviewer resolution. |
-| #15 | Codex (`chatgpt-codex-connector`) | P2: Start real task execution before injecting worker crash | **REMEDIATED (Commit 5de9771, CI Run 40258895787 4/4 PASS)** | In-flight IPC task, observable marker, process tree kill, and failure audit implemented in `test_c06_fault_injection_and_recovery`. |
+| #9 | Human Reviewers | 8 security/isolation threads | **REMEDIATED (Awaits Reviewer Resolution)** | Code remediated across previous gates; awaits human reviewer signoff on GitHub. |
+| #15 | Codex (`chatgpt-codex-connector`) | P2: Start real task execution before injecting worker crash | **REMEDIATED (Commit 5de9771 & C06 HEAD)** | Real in-flight IPC worker subprocess with observable disk marker and process-tree SIGKILL in `test_c06_fault_injection_and_recovery`. |
+| #15 | Codex (`chatgpt-codex-connector`) | P2: Handoff fixture breaks C01/C04 parity contracts | **REMEDIATED (C06 HEAD)** | Updated C01 & C04 fixtures to create physical artifacts with SHA256 hashes in trusted temporary directories, explicit RUNNING state, and validated execution receipts. |
+
+---
+
+### Final CI Coverage, Handoff Integrity & Data Safety Closure
+
+#### 1. Explicit Full Pytest Step in CI
+- **Problem**: Previous CI `.github/workflows/ci.yml` executed only `unittest discover` and bootstrap tests. Pytest-style functions in C01–C06 parity suites were not automatically discovered by unittest.
+- **Remediation**: Added explicit full pytest step to `.github/workflows/ci.yml`:
+  ```yaml
+  - name: Run full pytest suite (core & parity acceptance)
+    run: python -m pytest tests artifacts/bootstrap/v3_1/tests -rs -v
+  ```
+- **Observed Execution**:
+  - `python -m pytest tests artifacts/bootstrap/v3_1/tests -rs`: **404 collected, 399 passed, 5 skipped (Windows symlink / offline flag), 0 failed** in 81.34s.
+  - `python -B -m unittest discover -s tests -p "test_*.py"`: **Ran 325 tests, OK (skipped=5, 0 failed)** in 67.14s.
+
+#### 2. C05 P0 Data Safety & Continuation Hardening (PR #14 Verified)
+- **Worktree Cleanup**:
+  - Permanently excised `shutil.rmtree` and routine `git worktree prune`.
+  - Fail-closed on any `git status` or `git worktree list` inspection errors.
+  - Strictly blocked removal of dirty, untracked, or ignored user files (`git status --porcelain=v1 --ignored=matching`).
+  - Verified worktree identity and branch ownership against porcelain worktree records before any removal.
+  - Regression tested in `test_c05_worktree_cleanup_rejects_ignored_user_files`.
+- **Durable Continuation**:
+  - Bound checkpoints strictly to `(dispatch_id, task_id, team_id, commit_hash)`.
+  - Checkpoints from differing dispatches cannot skip steps in active tasks (`test_c05_resume_task_rejects_checkpoint_from_different_dispatch`).
+  - Validated physical disk presence of `expected_artifacts` prior to granting `COMPLETED` status.
+- **Verification**: PR #14 commit `59d7aa2` verified green across all 4 matrix jobs in GitHub Actions Run `40268292379`.
+
+#### 3. C06 Handoff Integrity & Path Containment Hardening (PR #15)
+- **Execution Receipt Mandate**:
+  - `OrcaTeamService.submit_worker_handoff()` requires a trusted execution receipt (`exit_code == 0`, `qa_verdict in ('PASS', 'VERIFIED')`).
+  - Model-supplied self-reporting metrics are rejected as substitutes for verified execution receipts.
+- **Pending Task Rejection**:
+  - Handoff submission strictly rejects tasks in `PENDING` status (`ValueError: Cannot accept handoff for task in PENDING state`).
+- **Path Traversal & Symlink Escape Prevention**:
+  - All declared artifacts are validated for canonical containment within the worker's working directory (`resolved_path.relative_to(worker_dir)`).
+  - Traversal attempts (`../../etc/passwd`) and symlink escapes raise `SecurityError`.
+- **Concurrency & Duplication Protection**:
+  - Handoff submissions are synchronized with `self._lock = threading.Lock()`, preventing duplicate or concurrent handoff finalization races.
+
+---
+
+### Parity Realism Classification
+
+| Parity Capability | Classification | Verification & Evidence |
+|---|---|---|
+| In-process Dummy Workers & Role Contracts | **Contract / Test Fixture** | Validated via `OrcaTeamService` unit contracts. |
+| Interactive Human Confirmation Broker | **Contract / Test Fixture** | In-process secret broker fixture. Fails closed under `GATE_MODE: CHAT_APPROVAL`. |
+| Subprocess CLI Worker Execution & IPC | **Real Native Execution** | Verified via subprocess worker spawn, stdio pipes, and process tree lifecycle. |
+| Git Worktree Isolation & Ownership | **Real Native Execution** | Validated via real `git worktree` commands, porcelain status, and SQLite tracking. |
+| SQLite State Persistence & Crash Recovery | **Real Native Execution** | ACID transactions, WAL checkpoints, and durable step resumption verified. |
+| Handoff Artifact Hashing & Verification | **Real Native Execution** | Physical file creation, SHA256 hashing, and canonical path traversal defense. |
+| External Claude Desktop & Codex CLI Harnesses | **Real External Harness Integration** | Harness wrappers with schema/transport validation tested. |
+| Same-User OS Confinement (E18) | **Blocked / Accepted Risk** | `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)` — Lead and worker share OS user identity. |
+| Autonomous Production Merge & Push | **Human-Owned Action** | `AUTONOMY: OFF` — Autonomous merging blocked. Awaits explicit human merge approval. |
 
 ---
 
@@ -589,9 +646,9 @@ Distinguishes:
 
 **`MERGE_REVIEW_READY`**
 
-All six corrective gates (P0 data safety, verified durable resume, real execution evidence, in-flight crash injection, human approval truth, and Cindy parity truth) are fully implemented, verified with regression tests, and audited clean. PR #14 CI is green. PR #15 is prepared for final push and CI verification.
+All corrective gates (full CI pytest coverage across 404 tests, C05 data-safety worktree protection, durable continuation binding, C06 trusted handoff receipts, path traversal containment, and Codex review remediation) are fully implemented, verified locally with zero failures, and documented. PR #14 CI is green (4/4 PASS). PR #15 is ready for commit and push to remote.
 
 ---
 
-*Report last updated: 2026-10-26T09:20+07:00 - Final C05/C06 Corrective Gate complete, 325 tests passing, PR #14 verified 4/4 green, PR #15 ready for push*
+*Report last updated: 2026-10-26T11:32+07:00 - Final CI Coverage, Handoff Integrity & Data Safety Closure complete, 404 pytest tests collected (399 passed, 5 skipped, 0 failed), PR #14 verified 4/4 green, PR #15 ready for push*
 

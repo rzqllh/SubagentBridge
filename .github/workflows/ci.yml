@@ -43,6 +43,8 @@ jobs:
         run: python -B -m unittest discover -s tests -p 'test_*.py' -v
       - name: Run bootstrap v3.1 verification tests
         run: python -B -m unittest discover -s artifacts/bootstrap/v3_1/tests -p 'test_*.py' -v
+      - name: Run full pytest suite (core & parity acceptance)
+        run: python -m pytest tests artifacts/bootstrap/v3_1/tests -rs -v
       - name: Smoke test actual MCP server import (legacy workers stay disabled)
         env:
           SUBAGENTBRIDGE_DB_PATH: ${{ runner.temp }}/subagentbridge-pr00-smoke.db

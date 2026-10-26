@@ -585,7 +585,7 @@ def test_c06_worktree_isolation_and_path_containment():
                 scoped.require_path(repo_path / ".." / "escaped.txt")
 
             # Cleanup: verify dirty worktree fails closed, then cleanly cleans up
-            with pytest.raises(RuntimeError, match="untracked files present"):
+            with pytest.raises(RuntimeError, match="untracked files"):
                 manager.cleanup_worktree("w-wt-1")
 
             (Path(wt1.worktree_path) / "worker1.txt").unlink()

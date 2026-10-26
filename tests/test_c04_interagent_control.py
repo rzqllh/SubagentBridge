@@ -10,6 +10,8 @@ Validates:
 """
 from __future__ import annotations
 
+from dataclasses import replace
+import hashlib
 import tempfile
 import time
 from pathlib import Path
@@ -19,9 +21,6 @@ import pytest
 from subagentbridge.domain.orca_contracts import (
     ChannelMessage,
     HandoffEvidence,
-    OrcaRole,
-    OrcaSession,
-    QueueItem,
     QueueTaskStatus,
     WorkerConfig,
     WorkerStatus,
@@ -240,35 +239,110 @@ def test_c04_verified_handoff_binding_success(store_and_service):
     _, service = store_and_service
     team, worker1, _ = _setup_lead_and_workers(service)
 
+    with tempfile.TemporaryDirectory() as worker_workspace:
+        worker1 = replace(worker1, config=replace(worker1.config, working_dir=worker_workspace))
+        service.store.save_session(worker1)
+
+        # Create genuine report artifact on disk and compute exact SHA256
+        reports_dir = Path(worker_workspace) / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        report_file = reports_dir / "test_results.xml"
+        report_file.write_text("<testsuite tests='15' failures='0'/>", encoding="utf-8")
+        report_sha = hashlib.sha256(report_file.read_bytes()).hexdigest()
+
+        item = service.dispatch_task(
+            from_session_id=team.lead_session_id,
+            to_session_id=worker1.session_id,
+            task_id="task-handoff-1",
+            payload={"instruction": "run verification tests"},
+        )
+        service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+
+        evidence = HandoffEvidence(
+            dispatch_id=item.dispatch_id,
+            from_worker_id=worker1.session_id,
+            to_lead_id=team.lead_session_id,
+            status="SUCCESS",
+            summary="All 15 verification tests passed cleanly",
+            artifacts=["reports/test_results.xml"],
+            metrics={
+                "duration_s": 4.2,
+                "tests_run": 15,
+                "exit_code": 0,
+                "qa_verdict": "PASS",
+                "artifact_hashes": {"reports/test_results.xml": report_sha},
+            },
+        )
+
+        res = service.submit_worker_handoff(evidence)
+        assert res["status"] == "RECEIVED"
+        assert res["dispatch_id"] == item.dispatch_id
+
+        # Queue item should now be COMPLETED
+        updated_item = service.store.load_queue_item(item.dispatch_id)
+        assert updated_item is not None
+        assert updated_item.status == QueueTaskStatus.COMPLETED
+
+        # Worker should be reset to IDLE
+        loaded_worker = service.store.load_session(worker1.session_id)
+        assert loaded_worker is not None
+        assert loaded_worker.status == WorkerStatus.IDLE
+
+
+def test_c04_reject_handoff_for_pending_task(store_and_service):
+    """Handoff cannot be accepted for a task in PENDING status before execution begins."""
+    _, service = store_and_service
+    team, worker1, _ = _setup_lead_and_workers(service)
+
     item = service.dispatch_task(
         from_session_id=team.lead_session_id,
         to_session_id=worker1.session_id,
-        task_id="task-handoff-1",
-        payload={"instruction": "run verification tests"},
+        task_id="task-pending-handoff",
+        payload={"instruction": "unstarted task"},
     )
-    service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+    # Item is in PENDING status
+    assert item.status == QueueTaskStatus.PENDING
 
     evidence = HandoffEvidence(
         dispatch_id=item.dispatch_id,
         from_worker_id=worker1.session_id,
         to_lead_id=team.lead_session_id,
         status="SUCCESS",
-        summary="All 15 verification tests passed cleanly",
-        artifacts=["reports/test_results.xml"],
-        metrics={"duration_s": 4.2, "tests_run": 15},
+        summary="Premature completion claim",
+        metrics={"exit_code": 0, "qa_verdict": "PASS"},
     )
+    with pytest.raises(ValueError, match="Cannot accept handoff for pending task"):
+        service.submit_worker_handoff(evidence)
 
-    res = service.submit_worker_handoff(evidence)
-    assert res["status"] == "RECEIVED"
-    assert res["dispatch_id"] == item.dispatch_id
 
-    # Queue item should now be COMPLETED
-    updated_item = service.store.load_queue_item(item.dispatch_id)
-    assert updated_item.status == QueueTaskStatus.COMPLETED
+def test_c04_reject_artifact_path_traversal_escape(store_and_service):
+    """Artifact path containing traversal characters escaping workspace must be rejected."""
+    _, service = store_and_service
+    team, worker1, _ = _setup_lead_and_workers(service)
 
-    # Worker should be reset to IDLE
-    loaded_worker = service.store.load_session(worker1.session_id)
-    assert loaded_worker.status == WorkerStatus.IDLE
+    with tempfile.TemporaryDirectory() as worker_workspace:
+        worker1 = replace(worker1, config=replace(worker1.config, working_dir=worker_workspace))
+        service.store.save_session(worker1)
+
+        item = service.dispatch_task(
+            from_session_id=team.lead_session_id,
+            to_session_id=worker1.session_id,
+            task_id="task-traversal-escape",
+            payload={"instruction": "malicious handoff"},
+        )
+        service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+
+        evidence = HandoffEvidence(
+            dispatch_id=item.dispatch_id,
+            from_worker_id=worker1.session_id,
+            to_lead_id=team.lead_session_id,
+            status="SUCCESS",
+            summary="Traversal attempt",
+            artifacts=["../../escaped_secret.txt"],
+            metrics={"exit_code": 0, "qa_verdict": "PASS"},
+        )
+        with pytest.raises(PermissionError, match="Handoff artifact path escape detected"):
+            service.submit_worker_handoff(evidence)
 
 
 def test_c04_reject_spoofed_worker_handoff(store_and_service):

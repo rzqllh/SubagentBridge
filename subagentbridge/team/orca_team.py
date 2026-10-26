@@ -6,6 +6,7 @@ interrupt preemption, worktree isolation, structured handoffs, and default-deny 
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -31,6 +32,7 @@ class OrcaTeamManager:
 
     def __init__(self, store: OrcaStore) -> None:
         self.store = store
+        self._lock = threading.Lock()
 
     # ---- Team & Session Lifecycle ----------------------------------------
 
@@ -308,82 +310,97 @@ class OrcaTeamManager:
         evidence: HandoffEvidence,
         verify_artifacts: bool = True,
     ) -> dict[str, Any]:
-        item = self.store.load_queue_item(evidence.dispatch_id)
-        if not item:
-            raise KeyError(f"dispatch {evidence.dispatch_id!r} not found")
+        with self._lock:
+            item = self.store.load_queue_item(evidence.dispatch_id)
+            if not item:
+                raise KeyError(f"dispatch {evidence.dispatch_id!r} not found")
 
-        # Verified handoff binding checks
-        if evidence.from_worker_id != item.to_session_id:
-            raise PermissionError(
-                f"Worker identity mismatch: dispatch {item.dispatch_id!r} assigned to {item.to_session_id!r}, not {evidence.from_worker_id!r}"
-            )
-        if item.status not in (
-            QueueTaskStatus.PENDING,
-            QueueTaskStatus.DISPATCHED,
-            QueueTaskStatus.RUNNING,
-        ):
-            raise ValueError(
-                f"Cannot accept handoff for item in status {item.status.value}"
-            )
+            # Verified handoff binding checks
+            if evidence.from_worker_id != item.to_session_id:
+                raise PermissionError(
+                    f"Worker identity mismatch: dispatch {item.dispatch_id!r} assigned to {item.to_session_id!r}, not {evidence.from_worker_id!r}"
+                )
+            if item.status == QueueTaskStatus.PENDING:
+                raise ValueError("Cannot accept handoff for pending task: execution has not started")
+            if item.status not in (
+                QueueTaskStatus.DISPATCHED,
+                QueueTaskStatus.RUNNING,
+            ):
+                raise ValueError(
+                    f"Cannot accept handoff for item in status {item.status.value}"
+                )
 
-        worker = self.store.load_session(evidence.from_worker_id)
-        if not worker or worker.status == WorkerStatus.INTERRUPTED:
-            raise ValueError(
-                f"Worker {evidence.from_worker_id!r} is interrupted or unavailable"
-            )
+            worker = self.store.load_session(evidence.from_worker_id)
+            if not worker or worker.status == WorkerStatus.INTERRUPTED:
+                raise ValueError(
+                    f"Worker {evidence.from_worker_id!r} is interrupted or unavailable"
+                )
 
-        team = self.store.load_team(item.team_id)
-        if not team or team.lead_session_id != evidence.to_lead_id:
-            raise PermissionError(
-                f"Lead identity mismatch: team lead is {team.lead_session_id if team else None!r}"
-            )
+            team = self.store.load_team(item.team_id)
+            if not team or team.lead_session_id != evidence.to_lead_id:
+                raise PermissionError(
+                    f"Lead identity mismatch: team lead is {team.lead_session_id if team else None!r}"
+                )
 
-        # Replay protection: cannot submit duplicate handoff for already finalized dispatch
-        existing_handoffs = self.store.list_handoffs_by_team(item.team_id)
-        if any(h.dispatch_id == evidence.dispatch_id for h in existing_handoffs):
-            raise ValueError(f"Handoff already finalized for dispatch {evidence.dispatch_id!r}")
+            # Replay protection: cannot submit duplicate handoff for already finalized dispatch
+            existing_handoffs = self.store.list_handoffs_by_team(item.team_id)
+            if any(h.dispatch_id == evidence.dispatch_id for h in existing_handoffs):
+                raise ValueError(f"Handoff already finalized for dispatch {evidence.dispatch_id!r}")
 
-        # Artifact existence and hash verification
-        if verify_artifacts and evidence.artifacts:
-            wt = self.store.load_worktree(evidence.from_worker_id)
-            base_dir = Path(wt.worktree_path) if wt and Path(wt.worktree_path).exists() else (
-                Path(worker.config.working_dir) if worker.config.working_dir and Path(worker.config.working_dir).exists() else None
-            )
+            # Artifact existence, containment, and hash verification
+            if verify_artifacts and evidence.artifacts:
+                wt = self.store.load_worktree(evidence.from_worker_id)
+                base_dir = Path(wt.worktree_path) if wt and Path(wt.worktree_path).exists() else (
+                    Path(worker.config.working_dir) if worker.config.working_dir and Path(worker.config.working_dir).exists() else None
+                )
+                if not base_dir:
+                    raise ValueError(f"Worker {evidence.from_worker_id!r} has no verified workspace or worktree for artifact verification")
 
-            declared_hashes = evidence.metrics.get("artifact_hashes", {})
-            for art in evidence.artifacts:
-                art_path = (base_dir / art) if base_dir else Path(art)
-                if not art_path.exists() or not art_path.is_file():
-                    raise FileNotFoundError(f"Handoff rejected: declared artifact {art!r} does not exist on disk")
+                base_dir_resolved = base_dir.resolve()
+                declared_hashes = evidence.metrics.get("artifact_hashes", {})
+                for art in evidence.artifacts:
+                    art_path = (base_dir_resolved / art).resolve()
+                    try:
+                        art_path.relative_to(base_dir_resolved)
+                    except ValueError:
+                        raise PermissionError(f"Handoff artifact path escape detected: {art!r} resolves outside workspace")
 
-                # Verify SHA256 if hash was declared
-                if art in declared_hashes:
-                    h = hashlib.sha256(art_path.read_bytes()).hexdigest()
-                    if h.lower() != declared_hashes[art].lower():
-                        raise ValueError(f"Handoff rejected: hash mismatch for artifact {art!r}")
+                    if art_path.is_symlink():
+                        raise PermissionError(f"Handoff artifact {art!r} is a symlink, refusing verification")
 
-        # Execution receipt check: reject SUCCESS if metrics indicate failure or missing execution evidence
-        if evidence.status == "SUCCESS":
-            exit_code = evidence.metrics.get("exit_code")
-            if exit_code is not None and exit_code != 0:
-                raise ValueError(f"Handoff rejected: execution receipt indicates non-zero exit code ({exit_code})")
-            qa_verdict = evidence.metrics.get("qa_verdict")
-            if qa_verdict is not None and qa_verdict not in ("PASS", "VERIFIED"):
-                raise ValueError(f"Handoff rejected: QA verdict is {qa_verdict!r}, not PASS")
+                    if not art_path.exists() or not art_path.is_file():
+                        raise FileNotFoundError(f"Handoff rejected: declared artifact {art!r} does not exist on disk")
 
-        self.store.save_handoff(item.team_id, evidence)
+                    # Verify SHA256 if hash was declared
+                    if art in declared_hashes:
+                        h = hashlib.sha256(art_path.read_bytes()).hexdigest()
+                        if h.lower() != declared_hashes[art].lower():
+                            raise ValueError(f"Handoff rejected: hash mismatch for artifact {art!r}")
 
-        # Advance queue item to COMPLETED
-        item.status = QueueTaskStatus.COMPLETED
-        item.updated_at = time.time()
-        self.store.save_queue_item(item)
+            # Execution receipt check: reject SUCCESS if metrics indicate failure or missing execution evidence
+            if evidence.status in ("SUCCESS", "PASSED"):
+                exit_code = evidence.metrics.get("exit_code")
+                if exit_code is None:
+                    raise ValueError("Handoff rejected: missing required execution receipt ('exit_code') in metrics")
+                if exit_code != 0:
+                    raise ValueError(f"Handoff rejected: execution receipt indicates non-zero exit code ({exit_code})")
+                qa_verdict = evidence.metrics.get("qa_verdict")
+                if qa_verdict is not None and qa_verdict not in ("PASS", "VERIFIED"):
+                    raise ValueError(f"Handoff rejected: QA verdict is {qa_verdict!r}, not PASS")
 
-        # Set worker back to IDLE
-        worker.status = WorkerStatus.IDLE
-        worker.updated_at = time.time()
-        self.store.save_session(worker)
+            self.store.save_handoff(item.team_id, evidence)
 
-        return {"status": "RECEIVED", "dispatch_id": evidence.dispatch_id}
+            # Advance queue item to COMPLETED
+            item.status = QueueTaskStatus.COMPLETED
+            item.updated_at = time.time()
+            self.store.save_queue_item(item)
+
+            # Set worker back to IDLE
+            worker.status = WorkerStatus.IDLE
+            worker.updated_at = time.time()
+            self.store.save_session(worker)
+
+            return {"status": "RECEIVED", "dispatch_id": evidence.dispatch_id}
 
     def list_team_handoffs(self, team_id: str) -> list[HandoffEvidence]:
         return self.store.list_handoffs_by_team(team_id)

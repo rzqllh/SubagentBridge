@@ -12,6 +12,7 @@ Covers the 8 baseline acceptance requirements:
 """
 from __future__ import annotations
 
+import hashlib
 import tempfile
 from pathlib import Path
 
@@ -159,10 +160,22 @@ def test_c01_worker_to_lead_handoff():
         with OrcaStore(Path(tmp_dir) / "orca.db") as store:
             manager = OrcaTeamManager(store=store)
             manager.create_team("team-handoff", "lead-h", "Handoff Team")
-            w_cfg = WorkerConfig(worker_id="worker-h1", team_id="team-handoff", role="qa", harness="native")
+            worker_dir = Path(tmp_dir) / "w_qa"
+            worker_dir.mkdir(parents=True, exist_ok=True)
+            w_cfg = WorkerConfig(worker_id="worker-h1", team_id="team-handoff", role="qa", harness="native", working_dir=str(worker_dir))
             manager.create_worker("team-handoff", w_cfg)
 
             q_item = manager.dispatch_task("lead-h", "worker-h1", "task-verify", {"target": "unit tests"})
+            manager.update_queue_status(q_item.dispatch_id, QueueTaskStatus.RUNNING)
+
+            # Create real artifacts in worker directory with genuine hashes
+            rep_path = worker_dir / "test_report.xml"
+            rep_path.write_text("<testsuite tests='10' failures='0'/>", encoding="utf-8")
+            rep_hash = hashlib.sha256(rep_path.read_bytes()).hexdigest()
+
+            cov_path = worker_dir / "coverage.json"
+            cov_path.write_text('{"coverage": 98.5}', encoding="utf-8")
+            cov_hash = hashlib.sha256(cov_path.read_bytes()).hexdigest()
 
             evidence = HandoffEvidence(
                 dispatch_id=q_item.dispatch_id,
@@ -171,7 +184,17 @@ def test_c01_worker_to_lead_handoff():
                 status="PASSED",
                 summary="All 10 tests passed without errors",
                 artifacts=["test_report.xml", "coverage.json"],
-                metrics={"passed": 10, "failed": 0, "duration_s": 1.25},
+                metrics={
+                    "passed": 10,
+                    "failed": 0,
+                    "duration_s": 1.25,
+                    "exit_code": 0,
+                    "qa_verdict": "PASS",
+                    "artifact_hashes": {
+                        "test_report.xml": rep_hash,
+                        "coverage.json": cov_hash,
+                    },
+                },
             )
 
             receipt = manager.submit_worker_handoff(evidence)
