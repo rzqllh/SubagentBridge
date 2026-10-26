@@ -612,9 +612,53 @@ Distinguishes:
   - Handoff submission strictly rejects tasks in `PENDING` status (`ValueError: Cannot accept handoff for task in PENDING state`).
 - **Path Traversal & Symlink Escape Prevention**:
   - All declared artifacts are validated for canonical containment within the worker's working directory (`resolved_path.relative_to(worker_dir)`).
-  - Traversal attempts (`../../etc/passwd`) and symlink escapes raise `SecurityError`.
+  - Traversal attempts (`../../etc/passwd`) and symlink escapes raise `PermissionError`.
 - **Concurrency & Duplication Protection**:
   - Handoff submissions are synchronized with `self._lock = threading.Lock()`, preventing duplicate or concurrent handoff finalization races.
+
+---
+
+### Final Runtime Integrity Closure on PR #15
+
+#### 1. Verified Handoff Bypass Excised
+- **No Production Bypass**: Explicitly disallow `verify_artifacts=False` for successful completions (`status in ("SUCCESS", "PASSED")`), raising `PermissionError`.
+- **Mandatory SHA256 Hashes**: Every declared artifact requires an explicit 64-hex SHA256 digest in `metrics["artifact_hashes"]`; missing or invalid hashes raise `ValueError`.
+- **Trusted Receipt Enforcement**: For `SUCCESS`/`PASSED`, genuine execution receipts (`receipt_id` or `execution_receipt`) and matching `qa_verdict in ('PASS', 'VERIFIED')` are strictly required; client-supplied `exit_code: 0` without receipt provenance is rejected.
+- **Empty / Fabricated Evidence Rejection**: Empty summaries or empty metrics dictionaries raise `ValueError`.
+- **Pre-Resolution Symlink Defense**: Artifact paths are checked for symlinks before `.resolve()`, blocking internal workspace symlink bypasses (`PermissionError`).
+- **Transactional Finalization & Replay Protection**: `OrcaStore.finalize_handoff_transaction()` atomically verifies non-completed queue status, inserts into `orca_handoffs` (raising `ValueError` on duplicate replay), transitions queue status, and resets worker session to `IDLE` in a single SQLite ACID transaction.
+- **Contract-Only Separation**: Contract-only submissions (`status in ("CONTRACT_FIXTURE", "CONTRACT_ONLY")`) return `CONTRACT_VERIFIED` and do NOT advance queue items to `COMPLETED`.
+
+#### 2. Strict Checkpoint Integrity & Continuation
+- **Strict Commit Identity Binding**: Resuming from a checkpoint requires explicit, non-empty matching `commit_hash` between the checkpoint snapshot and the worktree HEAD (`git rev-parse HEAD`). If either commit is missing or differs, execution skipping is denied (`is_valid_checkpoint = False`).
+- **Task-Specific Evidence Validation**: Completed steps in a checkpoint must have verified physical disk artifacts before skipping. Checkpoints claiming all steps completed without physical evidence are rejected and safely re-executed.
+- **Recovery Ambiguity Classification**: When crashes occur between side effects and checkpoint writes, execution is classified as `RECOVERABLE_AMBIGUITY_AT_LEAST_ONCE` rather than asserting strict exactly-once.
+- **Concurrent & Duplicate Resume Prevention**: `OrcaStore.mark_task_resuming()` atomically verifies queue state, rejecting concurrent resumes (`RUNNING`) and duplicate replays (`COMPLETED`) with `RuntimeError`.
+
+#### 3. Worktree Safety Confirmation
+- **`force=True` Rejection**: Passing `force=True` to `cleanup_worktree()` is strictly forbidden and raises `ValueError`.
+- **Raw Symlink & Junction Defense**: The raw worktree path is checked with `is_symlink()` prior to resolution.
+- **Worktree Branch Identity Verification**: Verified that the porcelain `git worktree list` record contains the exact assigned branch `refs/heads/{branch_name}` before cleanup.
+- **Record Preservation**: SQLite worktree ownership records are deleted only after all Git operations succeed.
+
+#### 4. Verification Evidence & Test Inventory
+- **Full Pytest Suite**: **415 items collected: 409 passed, 6 skipped, 0 failed** in 70.09s.
+- **Unittest Suite**: **Ran 325 tests, OK (skipped=5, 0 failed)** in 50.41s.
+- **Ruff Check**: Exit code 0 (all checks passed).
+- **Mypy Typecheck**: Exit code 0 (no issues found in 56 source files).
+- **Bandit Security**: Exit code 0 (0 issues found).
+
+#### 5. Changed Files Inventory
+- `subagentbridge/domain/orca_contracts.py` (Preserved exact 7 Cindy queue states)
+- `subagentbridge/storage/orca_store.py` (Added `finalize_handoff_transaction` and `mark_task_resuming`)
+- `subagentbridge/team/orca_team.py` (Hardened `submit_worker_handoff` with receipt, hash, symlink, and transaction guarantees)
+- `subagentbridge/workspaces/worktree_manager.py` (Rejected `force=True`, added raw symlink check and branch identity verification)
+- `subagentbridge/recovery/crash_recovery.py` (Strict commit binding, evidence validation, concurrent resume protection, ambiguity classification)
+- `tests/test_c01_parity_foundation.py` (Updated handoff receipt)
+- `tests/test_c04_interagent_control.py` (Added 7 handoff integrity negative tests)
+- `tests/test_c05_durable_continuity.py` (Added 4 checkpoint and worktree negative tests)
+- `tests/test_c06_parity_acceptance.py` (Updated h1 and h2 handoff receipts)
+- `docs/simpul/SIMPUL_CINDY_PARITY_REPORT.md` (Updated authoritative report)
 
 ---
 
@@ -646,9 +690,9 @@ Distinguishes:
 
 **`MERGE_REVIEW_READY`**
 
-All corrective gates (full CI pytest coverage across 404 tests, C05 data-safety worktree protection, durable continuation binding, C06 trusted handoff receipts, path traversal containment, and Codex review remediation) are fully implemented, verified locally with zero failures, and documented. PR #14 CI is green (4/4 PASS). PR #15 is ready for commit and push to remote.
+All mandatory runtime-integrity invariants (verified handoff bypass elimination, strict checkpoint commit binding, evidence-backed step skipping, transactional finalization, worktree force rejection, branch identity check, and full test regression) are genuinely enforced in source code and fully verified with zero test failures across 415 pytest items and 325 unittests. PR #15 is prepared for commit and push.
 
 ---
 
-*Report last updated: 2026-10-26T11:32+07:00 - Final CI Coverage, Handoff Integrity & Data Safety Closure complete, 404 pytest tests collected (399 passed, 5 skipped, 0 failed), PR #14 verified 4/4 green, PR #15 ready for push*
+*Report last updated: 2026-10-26T12:08+07:00 - Final Runtime Integrity Closure on PR #15 complete, 415 pytest tests collected (409 passed, 6 skipped, 0 failed), 325 unittests passed, PR #15 ready for push*
 

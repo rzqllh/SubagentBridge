@@ -135,16 +135,25 @@ class GitWorktreeManager:
         """Removes an active git worktree safely and optionally deletes the branch.
 
         Refuses cleanup if dirty tracked files, untracked files, ignored user files, or locks
-        are detected. Recursive rmtree and routine worktree prune are strictly forbidden.
+        are detected. Recursive rmtree, forceful deletions, and routine worktree prune are strictly forbidden.
         Fails closed on any git status/list inspection error.
         Preserves store ownership records if any cleanup step fails.
         """
+        if force:
+            raise ValueError(
+                "force=True is forbidden: destructive or forceful worktree cleanup is disabled by data safety policy"
+            )
+
         with self._lock:
             assignment = self.store.load_worktree(worker_id)
             if not assignment:
                 return False
 
-            target_path = Path(assignment.worktree_path).resolve()
+            raw_target = Path(assignment.worktree_path)
+            if raw_target.is_symlink():
+                raise ValueError(f"Worktree path {raw_target} is a symlink or junction, refusing cleanup")
+
+            target_path = raw_target.resolve()
             try:
                 target_path.relative_to(self.worktrees_dir)
             except ValueError:
@@ -183,6 +192,18 @@ class GitWorktreeManager:
                     raise RuntimeError(
                         f"Target path {target_path} is not recognized by git as an active worktree; ambiguous cleanup rejected"
                     )
+
+                # Verify worktree branch identity matches assigned branch
+                if assignment.branch_name:
+                    expected_branch_ref = f"refs/heads/{assignment.branch_name}"
+                    branch_matched = any(
+                        line.strip() == f"branch {expected_branch_ref}"
+                        for line in matched_entry.splitlines()
+                    )
+                    if not branch_matched:
+                        raise RuntimeError(
+                            f"Worktree branch mismatch: expected {expected_branch_ref!r} in git worktree list; cleanup rejected"
+                        )
 
                 if "locked" in matched_entry:
                     raise RuntimeError(f"Worktree at {target_path} is locked; cleanup rejected")

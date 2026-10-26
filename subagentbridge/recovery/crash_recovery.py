@@ -124,9 +124,8 @@ def resume_task_from_checkpoint(
     Recovers worktree binding, commit identity, skipped steps from checkpoint context,
     revalidates approvals, executes remaining steps, and updates durable state.
     """
-    item = store.load_queue_item(dispatch_id)
-    if not item:
-        raise KeyError(f"queue item {dispatch_id!r} not found")
+    # Enforce atomic resume transition to prevent concurrent or duplicate resume
+    item = store.mark_task_resuming(dispatch_id)
 
     worker_id = item.to_session_id
     if not controller.is_worker_alive(worker_id):
@@ -152,7 +151,7 @@ def resume_task_from_checkpoint(
             current_commit = rev_res.stdout.strip()
 
     # Strict Checkpoint Binding Audit:
-    # A checkpoint must match the exact team, worker, dispatch, task, and commit.
+    # A checkpoint must match the exact team, worker, dispatch, task, and verified non-empty matching commit.
     latest_cp = store.load_latest_checkpoint(worker_id)
     completed_steps: list[str] = []
     is_valid_checkpoint = False
@@ -163,37 +162,81 @@ def resume_task_from_checkpoint(
         cp_task = cp_snap.get("task_id")
         cp_commit = cp_snap.get("commit_hash")
 
-        # Disallow checkpoints from other tasks or dispatches
-        if cp_disp == item.dispatch_id and cp_task == item.task_id and latest_cp.team_id == session.team_id:
-            # If commit was tracked, verify tree has not diverged
-            if cp_commit is None or current_commit is None or cp_commit == current_commit:
-                is_valid_checkpoint = True
-
-    if is_valid_checkpoint and latest_cp and latest_cp.context_snapshot:
-        completed_steps = list(latest_cp.context_snapshot.get("completed_steps", []))
-    else:
-        latest_cp = None
-        completed_steps = []
+        # Explicit verified commit/worktree binding required for skipping execution
+        if (
+            cp_disp == item.dispatch_id
+            and cp_task == item.task_id
+            and latest_cp.team_id == session.team_id
+            and bool(cp_commit)
+            and bool(current_commit)
+            and cp_commit == current_commit
+        ):
+            is_valid_checkpoint = True
 
     payload = dict(item.payload)
     steps = payload.get("steps")
     expected_artifacts = payload.get("expected_artifacts", [])
 
+    if is_valid_checkpoint and latest_cp and latest_cp.context_snapshot:
+        candidate_completed = list(latest_cp.context_snapshot.get("completed_steps", []))
+        # Validate task-specific evidence for every completed/skipped step
+        verified_completed: list[str] = []
+        if worktree_path and Path(worktree_path).exists():
+            for s_name in candidate_completed:
+                m_step = next((s for s in (steps or []) if s.get("name") == s_name), None)
+                if m_step and (m_step.get("artifact") or m_step.get("expected_artifact")):
+                    art_name = m_step.get("artifact") or m_step.get("expected_artifact")
+                    art_file = Path(worktree_path) / art_name
+                    if art_file.exists() and art_file.stat().st_size > 0:
+                        verified_completed.append(s_name)
+                else:
+                    verified_completed.append(s_name)
+        completed_steps = verified_completed
+    else:
+        latest_cp = None
+        completed_steps = []
+
     if isinstance(steps, list):
-        # Bounded multi-step workflow: skip already completed steps (idempotent continuation)
+        # Bounded multi-step workflow: skip only verified completed steps
         remaining_steps = [s for s in steps if s.get("name") not in completed_steps]
+
+        # Detect potential crash between side effect and checkpoint persistence
+        uncheckpointed_side_effects = []
+        if worktree_path and Path(worktree_path).exists():
+            for rem_s in remaining_steps:
+                s_art = rem_s.get("artifact") or rem_s.get("expected_artifact")
+                if s_art and (Path(worktree_path) / s_art).exists():
+                    uncheckpointed_side_effects.append(rem_s.get("name"))
+
+        classification = (
+            "RECOVERABLE_AMBIGUITY_AT_LEAST_ONCE"
+            if uncheckpointed_side_effects
+            else "AT_LEAST_ONCE_RECOVERABLE"
+        )
 
         # Never mark COMPLETED merely because checkpoint claims steps finished without validating evidence
         if not remaining_steps:
             missing_evidence = False
             if expected_artifacts and worktree_path:
                 for art in expected_artifacts:
-                    if not (Path(worktree_path) / art).exists():
+                    art_file = Path(worktree_path) / art
+                    if not art_file.exists() or art_file.stat().st_size == 0:
                         missing_evidence = True
                         break
+            elif not expected_artifacts and steps:
+                # If no expected_artifacts declared, check that steps actually created evidence
+                any_evidence = False
+                if worktree_path:
+                    for s in steps:
+                        s_art = s.get("artifact") or s.get("expected_artifact")
+                        if s_art and (Path(worktree_path) / s_art).exists():
+                            any_evidence = True
+                            break
+                if not any_evidence:
+                    missing_evidence = True
 
             if missing_evidence:
-                # Evidence missing: reset completed steps and re-execute safely (at-least-once recoverable)
+                # Evidence missing: reset completed steps and re-execute safely under at-least-once recovery
                 remaining_steps = list(steps)
                 completed_steps = []
             else:
@@ -206,7 +249,7 @@ def resume_task_from_checkpoint(
                     "completed_steps": completed_steps,
                     "skipped_steps": completed_steps,
                     "tokens_consumed": session.config.tokens_consumed,
-                    "execution_classification": "IDEMPOTENT_RESUME",
+                    "execution_classification": classification,
                 }
 
         item.status = QueueTaskStatus.RUNNING
@@ -281,19 +324,26 @@ def resume_task_from_checkpoint(
         }
 
     # Single-instruction or atomic command payload
-    if latest_cp and latest_cp.context_snapshot.get("completed"):
-        # Check evidence if declared
+    if is_valid_checkpoint and latest_cp and latest_cp.context_snapshot.get("completed"):
+        # Check evidence: bare completion claim without verified evidence is rejected
         ev_missing = False
         if expected_artifacts and worktree_path:
             for art in expected_artifacts:
-                if not (Path(worktree_path) / art).exists():
+                art_file = Path(worktree_path) / art
+                if not art_file.exists() or art_file.stat().st_size == 0:
                     ev_missing = True
                     break
+        elif not expected_artifacts:
+            # Require at least one verified artifact or execution receipt
+            receipt_id = latest_cp.context_snapshot.get("receipt_id")
+            if not receipt_id:
+                ev_missing = True
+
         if not ev_missing:
             item.status = QueueTaskStatus.COMPLETED
             item.updated_at = time.time()
             store.save_queue_item(item)
-            return {"status": "COMPLETED", "summary": "Task was completed before crash and verified"}
+            return {"status": "COMPLETED", "summary": "Task was completed before crash and verified against evidence"}
 
     item.status = QueueTaskStatus.RUNNING
     item.updated_at = time.time()

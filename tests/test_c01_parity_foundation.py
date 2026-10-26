@@ -185,6 +185,7 @@ def test_c01_worker_to_lead_handoff():
                 summary="All 10 tests passed without errors",
                 artifacts=["test_report.xml", "coverage.json"],
                 metrics={
+                    "receipt_id": f"rcpt-{q_item.dispatch_id}",
                     "passed": 10,
                     "failed": 0,
                     "duration_s": 1.25,

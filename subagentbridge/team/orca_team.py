@@ -347,8 +347,21 @@ class OrcaTeamManager:
             if any(h.dispatch_id == evidence.dispatch_id for h in existing_handoffs):
                 raise ValueError(f"Handoff already finalized for dispatch {evidence.dispatch_id!r}")
 
-            # Artifact existence, containment, and hash verification
-            if verify_artifacts and evidence.artifacts:
+            # Disallow bypass of artifact verification for successful handoffs
+            if evidence.status in ("SUCCESS", "PASSED") and not verify_artifacts:
+                raise PermissionError(
+                    "Bypassing artifact verification (verify_artifacts=False) is forbidden for successful handoffs"
+                )
+
+            # Reject empty/fabricated success evidence
+            if evidence.status in ("SUCCESS", "PASSED"):
+                if not evidence.summary or not evidence.summary.strip():
+                    raise ValueError("Handoff rejected: summary must be non-empty for successful handoffs")
+                if not evidence.metrics:
+                    raise ValueError("Handoff rejected: metrics must be non-empty for successful handoffs")
+
+            # Artifact existence, symlink check, containment, and SHA256 verification
+            if evidence.artifacts:
                 wt = self.store.load_worktree(evidence.from_worker_id)
                 base_dir = Path(wt.worktree_path) if wt and Path(wt.worktree_path).exists() else (
                     Path(worker.config.working_dir) if worker.config.working_dir and Path(worker.config.working_dir).exists() else None
@@ -356,51 +369,90 @@ class OrcaTeamManager:
                 if not base_dir:
                     raise ValueError(f"Worker {evidence.from_worker_id!r} has no verified workspace or worktree for artifact verification")
 
+                if base_dir.is_symlink():
+                    raise PermissionError(f"Workspace directory {base_dir} is a symlink, refusing verification")
+
                 base_dir_resolved = base_dir.resolve()
-                declared_hashes = evidence.metrics.get("artifact_hashes", {})
                 for art in evidence.artifacts:
-                    art_path = (base_dir_resolved / art).resolve()
+                    raw_art_path = base_dir / art
+
+                    # Raw symlink check BEFORE resolve (reject links pointing inside or outside workspace)
+                    if raw_art_path.is_symlink():
+                        raise PermissionError(f"Handoff artifact {art!r} is a symlink, refusing verification")
+
+                    # Check each intermediate path component between base_dir and raw_art_path
+                    cur = raw_art_path
+                    while cur != base_dir and cur != cur.parent:
+                        if cur.is_symlink():
+                            raise PermissionError(f"Handoff artifact path component {cur!r} is a symlink, refusing verification")
+                        cur = cur.parent
+
+                    art_path = raw_art_path.resolve()
                     try:
                         art_path.relative_to(base_dir_resolved)
                     except ValueError:
                         raise PermissionError(f"Handoff artifact path escape detected: {art!r} resolves outside workspace")
 
-                    if art_path.is_symlink():
-                        raise PermissionError(f"Handoff artifact {art!r} is a symlink, refusing verification")
+                declared_hashes = evidence.metrics.get("artifact_hashes")
+                if not isinstance(declared_hashes, dict):
+                    raise ValueError("Handoff rejected: 'artifact_hashes' mapping is required when artifacts are declared")
 
+                for art in evidence.artifacts:
+                    if art not in declared_hashes or not declared_hashes[art]:
+                        raise ValueError(f"Handoff rejected: missing required SHA256 hash for declared artifact {art!r}")
+                    expected_hash = declared_hashes[art]
+                    if not isinstance(expected_hash, str) or len(expected_hash) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected_hash):
+                        raise ValueError(f"Handoff rejected: invalid SHA256 hash format for artifact {art!r}")
+
+                    art_path = (base_dir / art).resolve()
                     if not art_path.exists() or not art_path.is_file():
                         raise FileNotFoundError(f"Handoff rejected: declared artifact {art!r} does not exist on disk")
 
-                    # Verify SHA256 if hash was declared
-                    if art in declared_hashes:
-                        h = hashlib.sha256(art_path.read_bytes()).hexdigest()
-                        if h.lower() != declared_hashes[art].lower():
-                            raise ValueError(f"Handoff rejected: hash mismatch for artifact {art!r}")
+                    h = hashlib.sha256(art_path.read_bytes()).hexdigest()
+                    if h.lower() != declared_hashes[art].lower():
+                        raise ValueError(f"Handoff rejected: hash mismatch for artifact {art!r}")
 
-            # Execution receipt check: reject SUCCESS if metrics indicate failure or missing execution evidence
+            # Execution receipt check: require genuine trusted execution receipts and QA verdict
             if evidence.status in ("SUCCESS", "PASSED"):
+                receipt_id = evidence.metrics.get("receipt_id")
+                exec_receipt = evidence.metrics.get("execution_receipt")
+                if isinstance(exec_receipt, dict):
+                    receipt_id = receipt_id or exec_receipt.get("receipt_id")
+                    if "exit_code" in exec_receipt and evidence.metrics.get("exit_code") is None:
+                        evidence.metrics["exit_code"] = exec_receipt["exit_code"]
+
+                if not receipt_id or not isinstance(receipt_id, str) or not receipt_id.strip():
+                    raise ValueError("Handoff rejected: missing genuine trusted execution receipt ('receipt_id' or 'execution_receipt')")
+
                 exit_code = evidence.metrics.get("exit_code")
+                if exit_code is None and isinstance(exec_receipt, dict):
+                    exit_code = exec_receipt.get("exit_code")
+
                 if exit_code is None:
                     raise ValueError("Handoff rejected: missing required execution receipt ('exit_code') in metrics")
                 if exit_code != 0:
                     raise ValueError(f"Handoff rejected: execution receipt indicates non-zero exit code ({exit_code})")
+
                 qa_verdict = evidence.metrics.get("qa_verdict")
-                if qa_verdict is not None and qa_verdict not in ("PASS", "VERIFIED"):
-                    raise ValueError(f"Handoff rejected: QA verdict is {qa_verdict!r}, not PASS")
+                if qa_verdict is None or qa_verdict not in ("PASS", "VERIFIED"):
+                    raise ValueError(f"Handoff rejected: QA verdict must be 'PASS' or 'VERIFIED', got {qa_verdict!r}")
 
-            self.store.save_handoff(item.team_id, evidence)
+            # Keep contract-only tests separate from verified completed execution
+            if evidence.status in ("CONTRACT_FIXTURE", "CONTRACT_ONLY"):
+                new_status = None  # Do not advance queue item to COMPLETED
+                ret_status = "CONTRACT_VERIFIED"
+            else:
+                new_status = QueueTaskStatus.COMPLETED
+                ret_status = "RECEIVED"
 
-            # Advance queue item to COMPLETED
-            item.status = QueueTaskStatus.COMPLETED
-            item.updated_at = time.time()
-            self.store.save_queue_item(item)
+            # Durable transaction-level finalization and replay protection
+            self.store.finalize_handoff_transaction(
+                item.team_id,
+                evidence,
+                new_queue_status=new_status,
+            )
 
-            # Set worker back to IDLE
-            worker.status = WorkerStatus.IDLE
-            worker.updated_at = time.time()
-            self.store.save_session(worker)
-
-            return {"status": "RECEIVED", "dispatch_id": evidence.dispatch_id}
+            return {"status": ret_status, "dispatch_id": evidence.dispatch_id}
 
     def list_team_handoffs(self, team_id: str) -> list[HandoffEvidence]:
         return self.store.list_handoffs_by_team(team_id)

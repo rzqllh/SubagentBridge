@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+import time
 from typing import Any
 
 from subagentbridge.domain.orca_contracts import (
@@ -338,6 +339,33 @@ class OrcaStore:
         )
         return [self._row_to_queue_item(row) for row in cur.fetchall()]
 
+    def mark_task_resuming(self, dispatch_id: str) -> QueueItem:
+        with self._conn:
+            cur = self._conn.execute(
+                "SELECT * FROM orca_queue WHERE dispatch_id = ?",
+                (dispatch_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise KeyError(f"queue item {dispatch_id!r} not found")
+            status = row["status"]
+            if status == QueueTaskStatus.RUNNING.value:
+                raise RuntimeError(f"Concurrent resume rejected: task {dispatch_id!r} is already RUNNING")
+            if status == QueueTaskStatus.COMPLETED.value:
+                raise RuntimeError(f"Duplicate resume rejected: task {dispatch_id!r} is already COMPLETED")
+            if status == QueueTaskStatus.CANCELLED.value:
+                raise RuntimeError(f"Resume rejected: task {dispatch_id!r} is CANCELLED")
+
+            now = time.time()
+            self._conn.execute(
+                "UPDATE orca_queue SET status = ?, updated_at = ? WHERE dispatch_id = ?",
+                (QueueTaskStatus.RUNNING.value, now, dispatch_id),
+            )
+            item = self._row_to_queue_item(row)
+            item.status = QueueTaskStatus.RUNNING
+            item.updated_at = now
+            return item
+
     # ---- Channel Messages ------------------------------------------------
 
     def save_channel_message(self, msg: ChannelMessage) -> None:
@@ -450,6 +478,74 @@ class OrcaStore:
                     json.dumps(evidence.metrics),
                     evidence.submitted_at,
                 ),
+            )
+
+    def finalize_handoff_transaction(
+        self,
+        team_id: str,
+        evidence: HandoffEvidence,
+        new_queue_status: QueueTaskStatus | None = QueueTaskStatus.COMPLETED,
+    ) -> None:
+        """Atomically persists handoff, updates queue item status, and resets worker to IDLE.
+
+        Guarantees transactional integrity and prevents duplicate finalization or replay across processes.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "SELECT status, to_session_id FROM orca_queue WHERE dispatch_id = ?",
+                (evidence.dispatch_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise KeyError(f"dispatch {evidence.dispatch_id!r} not found in queue")
+            q_status = row["status"]
+            worker_id = row["to_session_id"]
+            if q_status in (QueueTaskStatus.COMPLETED.value, QueueTaskStatus.CANCELLED.value):
+                raise ValueError(
+                    f"Handoff already finalized for dispatch {evidence.dispatch_id!r} (queue status: {q_status})"
+                )
+
+            # Prevent duplicate handoffs in orca_handoffs
+            cur_h = self._conn.execute(
+                "SELECT 1 FROM orca_handoffs WHERE dispatch_id = ?",
+                (evidence.dispatch_id,),
+            )
+            if cur_h.fetchone():
+                raise ValueError(f"Handoff already finalized for dispatch {evidence.dispatch_id!r}")
+
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO orca_handoffs (
+                        dispatch_id, team_id, from_worker_id, to_lead_id,
+                        status, summary, artifacts_json, metrics_json, submitted_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        evidence.dispatch_id,
+                        team_id,
+                        evidence.from_worker_id,
+                        evidence.to_lead_id,
+                        evidence.status,
+                        evidence.summary,
+                        json.dumps(evidence.artifacts),
+                        json.dumps(evidence.metrics),
+                        evidence.submitted_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as e:
+                raise ValueError(f"Handoff already finalized for dispatch {evidence.dispatch_id!r}") from e
+
+            now = time.time()
+            if new_queue_status is not None:
+                self._conn.execute(
+                    "UPDATE orca_queue SET status = ?, updated_at = ? WHERE dispatch_id = ?",
+                    (new_queue_status.value, now, evidence.dispatch_id),
+                )
+            self._conn.execute(
+                "UPDATE orca_sessions SET status = ?, updated_at = ? WHERE session_id = ?",
+                (WorkerStatus.IDLE.value, now, worker_id),
             )
 
     def list_handoffs_by_team(self, team_id: str) -> list[HandoffEvidence]:

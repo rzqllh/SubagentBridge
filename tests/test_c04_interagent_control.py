@@ -266,6 +266,7 @@ def test_c04_verified_handoff_binding_success(store_and_service):
             summary="All 15 verification tests passed cleanly",
             artifacts=["reports/test_results.xml"],
             metrics={
+                "receipt_id": f"rcpt-{item.dispatch_id}",
                 "duration_s": 4.2,
                 "tests_run": 15,
                 "exit_code": 0,
@@ -395,3 +396,237 @@ def test_c04_reject_late_handoff_after_interruption(store_and_service):
 
     with pytest.raises(ValueError, match="Cannot accept handoff for item in status"):
         service.submit_worker_handoff(late_evidence)
+
+
+def test_c04_reject_verify_artifacts_false_bypass(store_and_service):
+    """Bypassing artifact verification (verify_artifacts=False) is forbidden for successful handoffs."""
+    _, service = store_and_service
+    team, worker1, _ = _setup_lead_and_workers(service)
+
+    item = service.dispatch_task(
+        from_session_id=team.lead_session_id,
+        to_session_id=worker1.session_id,
+        task_id="task-bypass-test",
+        payload={"instruction": "test"},
+    )
+    service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+
+    evidence = HandoffEvidence(
+        dispatch_id=item.dispatch_id,
+        from_worker_id=worker1.session_id,
+        to_lead_id=team.lead_session_id,
+        status="SUCCESS",
+        summary="Claimed success with verification bypassed",
+        artifacts=["unverified.txt"],
+        metrics={"exit_code": 0, "receipt_id": "rcpt-1", "qa_verdict": "PASS"},
+    )
+    with pytest.raises(PermissionError, match="Bypassing artifact verification"):
+        service.submit_worker_handoff(evidence, verify_artifacts=False)
+
+
+def test_c04_reject_missing_artifact_sha256(store_and_service):
+    """Declared artifacts must have expected SHA256 hashes in metrics."""
+    _, service = store_and_service
+    team, worker1, _ = _setup_lead_and_workers(service)
+
+    with tempfile.TemporaryDirectory() as worker_workspace:
+        worker1 = replace(worker1, config=replace(worker1.config, working_dir=worker_workspace))
+        service.store.save_session(worker1)
+
+        real_file = Path(worker_workspace) / "report.txt"
+        real_file.write_text("VALID_DATA")
+
+        item = service.dispatch_task(
+            from_session_id=team.lead_session_id,
+            to_session_id=worker1.session_id,
+            task_id="task-no-hash",
+            payload={"instruction": "test"},
+        )
+        service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+
+        evidence = HandoffEvidence(
+            dispatch_id=item.dispatch_id,
+            from_worker_id=worker1.session_id,
+            to_lead_id=team.lead_session_id,
+            status="SUCCESS",
+            summary="Missing artifact SHA256",
+            artifacts=["report.txt"],
+            metrics={"exit_code": 0, "receipt_id": "rcpt-1", "qa_verdict": "PASS"},
+        )
+        with pytest.raises(ValueError, match="artifact_hashes"):
+            service.submit_worker_handoff(evidence)
+
+
+def test_c04_reject_handoff_without_genuine_receipt(store_and_service):
+    """Handoff requires a genuine execution receipt and QA verdict, not only client-supplied exit_code."""
+    _, service = store_and_service
+    team, worker1, _ = _setup_lead_and_workers(service)
+
+    item = service.dispatch_task(
+        from_session_id=team.lead_session_id,
+        to_session_id=worker1.session_id,
+        task_id="task-no-receipt",
+        payload={"instruction": "test"},
+    )
+    service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+
+    # Client supplies only exit_code without receipt_id
+    evidence = HandoffEvidence(
+        dispatch_id=item.dispatch_id,
+        from_worker_id=worker1.session_id,
+        to_lead_id=team.lead_session_id,
+        status="SUCCESS",
+        summary="Bare exit code claim",
+        metrics={"exit_code": 0, "qa_verdict": "PASS"},
+    )
+    with pytest.raises(ValueError, match="missing genuine trusted execution receipt"):
+        service.submit_worker_handoff(evidence)
+
+
+def test_c04_reject_empty_or_fabricated_evidence(store_and_service):
+    """Empty summary or empty metrics is rejected for successful handoffs."""
+    _, service = store_and_service
+    team, worker1, _ = _setup_lead_and_workers(service)
+
+    item = service.dispatch_task(
+        from_session_id=team.lead_session_id,
+        to_session_id=worker1.session_id,
+        task_id="task-empty-ev",
+        payload={"instruction": "test"},
+    )
+    service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+
+    # Empty summary
+    evidence = HandoffEvidence(
+        dispatch_id=item.dispatch_id,
+        from_worker_id=worker1.session_id,
+        to_lead_id=team.lead_session_id,
+        status="SUCCESS",
+        summary="",
+        metrics={"exit_code": 0, "receipt_id": "rcpt-1", "qa_verdict": "PASS"},
+    )
+    with pytest.raises(ValueError, match="summary must be non-empty"):
+        service.submit_worker_handoff(evidence)
+
+
+def test_c04_reject_symlink_artifact_inside_workspace(store_and_service):
+    """Artifacts that are symlinks inside the workspace are rejected before resolution."""
+    _, service = store_and_service
+    team, worker1, _ = _setup_lead_and_workers(service)
+
+    with tempfile.TemporaryDirectory() as worker_workspace:
+        worker1 = replace(worker1, config=replace(worker1.config, working_dir=worker_workspace))
+        service.store.save_session(worker1)
+
+        real_target = Path(worker_workspace) / "target.txt"
+        real_target.write_text("TARGET")
+        sym_link = Path(worker_workspace) / "link_artifact.txt"
+        try:
+            sym_link.symlink_to(real_target)
+        except OSError:
+            pytest.skip("Symlink creation not supported on this host environment")
+
+        target_sha = hashlib.sha256(real_target.read_bytes()).hexdigest()
+
+        item = service.dispatch_task(
+            from_session_id=team.lead_session_id,
+            to_session_id=worker1.session_id,
+            task_id="task-symlink-artifact",
+            payload={"instruction": "test"},
+        )
+        service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+
+        evidence = HandoffEvidence(
+            dispatch_id=item.dispatch_id,
+            from_worker_id=worker1.session_id,
+            to_lead_id=team.lead_session_id,
+            status="SUCCESS",
+            summary="Symlink artifact handoff",
+            artifacts=["link_artifact.txt"],
+            metrics={
+                "exit_code": 0,
+                "receipt_id": "rcpt-sym",
+                "qa_verdict": "PASS",
+                "artifact_hashes": {"link_artifact.txt": target_sha},
+            },
+        )
+        with pytest.raises(PermissionError, match="is a symlink"):
+            service.submit_worker_handoff(evidence)
+
+
+def test_c04_reject_duplicate_handoff_transactional_replay(store_and_service):
+    """Submitting duplicate handoffs for the same dispatch is rejected transactionally."""
+    _, service = store_and_service
+    team, worker1, _ = _setup_lead_and_workers(service)
+
+    with tempfile.TemporaryDirectory() as worker_workspace:
+        worker1 = replace(worker1, config=replace(worker1.config, working_dir=worker_workspace))
+        service.store.save_session(worker1)
+
+        res_file = Path(worker_workspace) / "res.txt"
+        res_file.write_text("RES")
+        res_sha = hashlib.sha256(res_file.read_bytes()).hexdigest()
+
+        item = service.dispatch_task(
+            from_session_id=team.lead_session_id,
+            to_session_id=worker1.session_id,
+            task_id="task-dup-handoff",
+            payload={"instruction": "test"},
+        )
+        service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+
+        evidence = HandoffEvidence(
+            dispatch_id=item.dispatch_id,
+            from_worker_id=worker1.session_id,
+            to_lead_id=team.lead_session_id,
+            status="SUCCESS",
+            summary="First successful submission",
+            artifacts=["res.txt"],
+            metrics={
+                "exit_code": 0,
+                "receipt_id": "rcpt-dup-1",
+                "qa_verdict": "PASS",
+                "artifact_hashes": {"res.txt": res_sha},
+            },
+        )
+        ack = service.submit_worker_handoff(evidence)
+        assert ack["status"] == "RECEIVED"
+
+        # Duplicate replay attempt via service
+        with pytest.raises(ValueError, match="Cannot accept handoff for item in status|Handoff already finalized"):
+            service.submit_worker_handoff(evidence)
+
+        # Direct transactional database replay rejection in store
+        with pytest.raises(ValueError, match="Handoff already finalized"):
+            service.store.finalize_handoff_transaction(team.team_id, evidence)
+
+
+def test_c04_contract_only_handoff_keeps_separate_status(store_and_service):
+    """Contract-only handoffs transition to CONTRACT_VERIFIED, never falsely claiming COMPLETED."""
+    _, service = store_and_service
+    team, worker1, _ = _setup_lead_and_workers(service)
+
+    item = service.dispatch_task(
+        from_session_id=team.lead_session_id,
+        to_session_id=worker1.session_id,
+        task_id="task-contract-only",
+        payload={"instruction": "contract test"},
+    )
+    service.update_queue_status(item.dispatch_id, QueueTaskStatus.RUNNING)
+
+    evidence = HandoffEvidence(
+        dispatch_id=item.dispatch_id,
+        from_worker_id=worker1.session_id,
+        to_lead_id=team.lead_session_id,
+        status="CONTRACT_FIXTURE",
+        summary="Contract binding only without execution",
+    )
+    ack = service.submit_worker_handoff(evidence)
+    assert ack["status"] == "CONTRACT_VERIFIED"
+
+    # Queue status must remain RUNNING and NOT be falsely marked COMPLETED
+    reloaded_item = service.store.load_queue_item(item.dispatch_id)
+    assert reloaded_item is not None
+    assert reloaded_item.status == QueueTaskStatus.RUNNING
+    assert reloaded_item.status != QueueTaskStatus.COMPLETED
+

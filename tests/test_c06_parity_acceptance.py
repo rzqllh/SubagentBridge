@@ -148,7 +148,12 @@ def test_c06_e2e_multiworker_workflow():
                     status="SUCCESS",
                     summary="Real math_utils module generated successfully",
                     artifacts=["math_utils.py"],
-                    metrics={"exit_code": 0, "artifact_hashes": {"math_utils.py": code_sha}, "qa_verdict": "PASS"},
+                    metrics={
+                        "receipt_id": f"rcpt-{item1.dispatch_id}",
+                        "exit_code": 0,
+                        "artifact_hashes": {"math_utils.py": code_sha},
+                        "qa_verdict": "PASS",
+                    },
                 )
                 h1_ack = service.submit_worker_handoff(h1)
                 assert h1_ack.get("status") == "RECEIVED"
@@ -220,7 +225,12 @@ def test_c06_e2e_multiworker_workflow():
                     status="SUCCESS",
                     summary="All genuine unit tests passed cleanly",
                     artifacts=["test_report.json"],
-                    metrics={"exit_code": 0, "artifact_hashes": {"test_report.json": report_sha}, "qa_verdict": "PASS"},
+                    metrics={
+                        "receipt_id": f"rcpt-{item2.dispatch_id}",
+                        "exit_code": 0,
+                        "artifact_hashes": {"test_report.json": report_sha},
+                        "qa_verdict": "PASS",
+                    },
                 )
                 h2_ack = service.submit_worker_handoff(h2)
                 assert h2_ack.get("status") == "RECEIVED"

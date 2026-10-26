@@ -443,8 +443,8 @@ def test_c05_true_durable_task_resume_without_duplicate_execution():
                 task_payload = {
                     "task_type": "multi_step",
                     "steps": [
-                        {"name": "step_a", "instruction": "create_file:module_a.py:def fa(): return 1\n"},
-                        {"name": "step_b", "instruction": "create_file:module_b.py:def fb(): return 2\n"},
+                        {"name": "step_a", "instruction": "create_file:module_a.py:def fa(): return 1\n", "artifact": "module_a.py"},
+                        {"name": "step_b", "instruction": "create_file:module_b.py:def fb(): return 2\n", "artifact": "module_b.py"},
                     ],
                 }
                 item = service.dispatch_task(
@@ -465,7 +465,14 @@ def test_c05_true_durable_task_resume_without_duplicate_execution():
                 assert file_a.exists()
                 assert "def fa():" in file_a.read_text()
 
-                # Record step 1 checkpoint
+                # Get verified git commit hash
+                head_rev = subprocess.run(
+                    ["git", "-C", str(wt_assign.worktree_path), "rev-parse", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+
+                # Record step 1 checkpoint with verified commit binding
                 cp1 = WorkerCheckpoint(
                     checkpoint_id="cp-step-a",
                     worker_id=worker.session_id,
@@ -478,6 +485,7 @@ def test_c05_true_durable_task_resume_without_duplicate_execution():
                         "task_id": item.task_id,
                         "completed_steps": ["step_a"],
                         "worktree_path": wt_assign.worktree_path,
+                        "commit_hash": head_rev,
                     },
                 )
                 store.save_checkpoint(cp1)
@@ -633,5 +641,215 @@ def test_c05_resume_task_rejects_checkpoint_from_different_dispatch():
 
             finally:
                 controller.terminate_all()
+
+
+def test_c05_resume_task_rejects_missing_or_mismatched_commit_identity():
+    """Checkpoints lacking explicit verified commit hash or with mismatched commit cannot skip steps."""
+    with tempfile.TemporaryDirectory() as tmp_git_root, tempfile.TemporaryDirectory() as tmp_db:
+        repo_path = Path(tmp_git_root)
+        subprocess.run(["git", "init", str(repo_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@test.com"], check=True)
+        (repo_path / "README.md").write_text("# Repo")
+        subprocess.run(["git", "-C", str(repo_path), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True)
+
+        with OrcaStore(Path(tmp_db) / "orca_cp.db") as store:
+            service = OrcaTeamService(store=store)
+            manager = GitWorktreeManager(repo_root=repo_path, store=store)
+            team = service.create_team(lead_session_id="lead-commit-test", title="Commit Integrity Team")
+
+            wt_assign = manager.create_worktree(
+                worker_id="w-commit-check",
+                team_id=team.team_id,
+                branch_name="simpul/commit-check",
+            )
+            cfg = WorkerConfig(
+                worker_id="w-commit-check",
+                team_id=team.team_id,
+                role="coder",
+                harness="native",
+                working_dir=wt_assign.worktree_path,
+            )
+            worker = service.register_worker(cfg)
+            controller = WorkerProcessController(store=store)
+            controller.spawn_worker(worker.config, worktree_path=wt_assign.worktree_path)
+
+            item = service.dispatch_task(
+                from_session_id=team.lead_session_id,
+                to_session_id=worker.session_id,
+                task_id="task-commit-check",
+                payload={
+                    "steps": [
+                        {"name": "step_1", "instruction": "create_file:out1.txt:DATA1\n", "artifact": "out1.txt"},
+                        {"name": "step_2", "instruction": "create_file:out2.txt:DATA2\n", "artifact": "out2.txt"},
+                    ]
+                },
+            )
+
+            # Checkpoint with mismatched commit hash
+            bad_cp = WorkerCheckpoint(
+                checkpoint_id="cp-mismatch",
+                worker_id=worker.session_id,
+                team_id=team.team_id,
+                step_index=1,
+                state_summary="Claimed step_1 with wrong commit",
+                tokens_consumed=100,
+                context_snapshot={
+                    "dispatch_id": item.dispatch_id,
+                    "task_id": item.task_id,
+                    "completed_steps": ["step_1"],
+                    "worktree_path": wt_assign.worktree_path,
+                    "commit_hash": "deadbeef" * 5,  # Mismatched!
+                },
+            )
+            store.save_checkpoint(bad_cp)
+
+            try:
+                rep = resume_task_from_checkpoint(
+                    dispatch_id=item.dispatch_id,
+                    store=store,
+                    controller=controller,
+                )
+                assert rep["status"] == "COMPLETED"
+                # step_1 must NOT be skipped because commit was mismatched
+                assert "step_1" not in rep.get("skipped_steps", [])
+                assert "step_1" in rep.get("completed_steps", [])
+            finally:
+                controller.terminate_all()
+
+
+def test_c05_resume_task_rejects_missing_step_artifact_evidence():
+    """Claiming a step completed without validating physical evidence on disk triggers re-execution."""
+    with tempfile.TemporaryDirectory() as tmp_git_root, tempfile.TemporaryDirectory() as tmp_db:
+        repo_path = Path(tmp_git_root)
+        subprocess.run(["git", "init", str(repo_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@test.com"], check=True)
+        (repo_path / "README.md").write_text("# Repo")
+        subprocess.run(["git", "-C", str(repo_path), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True)
+
+        head_sha = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+
+        with OrcaStore(Path(tmp_db) / "orca_ev.db") as store:
+            service = OrcaTeamService(store=store)
+            manager = GitWorktreeManager(repo_root=repo_path, store=store)
+            team = service.create_team(lead_session_id="lead-ev-test", title="Evidence Team")
+
+            wt_assign = manager.create_worktree(
+                worker_id="w-ev-check",
+                team_id=team.team_id,
+                branch_name="simpul/ev-check",
+            )
+            cfg = WorkerConfig(
+                worker_id="w-ev-check",
+                team_id=team.team_id,
+                role="coder",
+                harness="native",
+                working_dir=wt_assign.worktree_path,
+            )
+            worker = service.register_worker(cfg)
+            controller = WorkerProcessController(store=store)
+            controller.spawn_worker(worker.config, worktree_path=wt_assign.worktree_path)
+
+            item = service.dispatch_task(
+                from_session_id=team.lead_session_id,
+                to_session_id=worker.session_id,
+                task_id="task-ev-check",
+                payload={
+                    "steps": [
+                        {"name": "step_ghost", "instruction": "create_file:ghost.txt:REAL\n", "artifact": "ghost.txt"},
+                    ]
+                },
+            )
+
+            # Checkpoint claims step_ghost is completed, but ghost.txt does NOT exist on disk
+            cp = WorkerCheckpoint(
+                checkpoint_id="cp-ghost",
+                worker_id=worker.session_id,
+                team_id=team.team_id,
+                step_index=1,
+                state_summary="Fictitious step_ghost completion",
+                tokens_consumed=100,
+                context_snapshot={
+                    "dispatch_id": item.dispatch_id,
+                    "task_id": item.task_id,
+                    "completed_steps": ["step_ghost"],
+                    "worktree_path": wt_assign.worktree_path,
+                    "commit_hash": head_sha,
+                },
+            )
+            store.save_checkpoint(cp)
+
+            try:
+                rep = resume_task_from_checkpoint(
+                    dispatch_id=item.dispatch_id,
+                    store=store,
+                    controller=controller,
+                )
+                assert rep["status"] == "COMPLETED"
+                # step_ghost must NOT be skipped because ghost.txt did not exist on disk
+                assert "step_ghost" not in rep.get("skipped_steps", [])
+                assert "step_ghost" in rep.get("completed_steps", [])
+                assert (Path(wt_assign.worktree_path) / "ghost.txt").exists()
+            finally:
+                controller.terminate_all()
+
+
+def test_c05_resume_task_rejects_duplicate_and_concurrent_resume():
+    """Duplicate resume of COMPLETED task or concurrent resume of RUNNING task is rejected."""
+    with tempfile.TemporaryDirectory() as tmp_db:
+        with OrcaStore(Path(tmp_db) / "orca_conc.db") as store:
+            service = OrcaTeamService(store=store)
+            team = service.create_team(lead_session_id="lead-conc", title="Conc Team")
+            worker = service.register_worker(
+                WorkerConfig(worker_id="w-conc", team_id=team.team_id, role="coder", harness="native")
+            )
+            controller = WorkerProcessController(store=store)
+
+            # Test 1: Duplicate resume on COMPLETED item
+            item_done = service.dispatch_task(
+                from_session_id=team.lead_session_id,
+                to_session_id=worker.session_id,
+                task_id="task-done",
+                payload={"data": 1},
+            )
+            service.update_queue_status(item_done.dispatch_id, QueueTaskStatus.COMPLETED)
+
+            with pytest.raises(RuntimeError, match="Duplicate resume rejected"):
+                resume_task_from_checkpoint(item_done.dispatch_id, store=store, controller=controller)
+
+            # Test 2: Concurrent resume on already RUNNING item
+            item_running = service.dispatch_task(
+                from_session_id=team.lead_session_id,
+                to_session_id=worker.session_id,
+                task_id="task-running",
+                payload={"data": 2},
+            )
+            service.update_queue_status(item_running.dispatch_id, QueueTaskStatus.RUNNING)
+
+            with pytest.raises(RuntimeError, match="Concurrent resume rejected"):
+                resume_task_from_checkpoint(item_running.dispatch_id, store=store, controller=controller)
+
+
+def test_c05_worktree_cleanup_rejects_force_true():
+    """Cleanup must strictly reject force=True to enforce data safety policy."""
+    with tempfile.TemporaryDirectory() as tmp_git_root, tempfile.TemporaryDirectory() as tmp_db:
+        repo_path = Path(tmp_git_root)
+        subprocess.run(["git", "init", str(repo_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@test.com"], check=True)
+        (repo_path / "README.md").write_text("# Repo")
+        subprocess.run(["git", "-C", str(repo_path), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True)
+
+        with OrcaStore(Path(tmp_db) / "orca_wt.db") as store:
+            manager = GitWorktreeManager(repo_root=repo_path, store=store)
+            with pytest.raises(ValueError, match="force=True is forbidden"):
+                manager.cleanup_worktree(worker_id="nonexistent", force=True)
+
 
 
