@@ -22,9 +22,13 @@ from subagentbridge.domain.orca_contracts import (
     WorkerConfig,
     WorkerStatus,
 )
-from subagentbridge.execution.worker_process import WorkerProcessController
+from subagentbridge.execution.worker_process import (
+    WorkerProcessController,
+    kill_process_tree,
+)
 from subagentbridge.recovery.crash_recovery import (
     reconcile_team_after_crash,
+    resume_task_from_checkpoint,
     resume_worker_from_checkpoint,
 )
 from subagentbridge.storage.orca_store import OrcaStore
@@ -256,3 +260,275 @@ def test_c05_durable_rehydration_across_restart(store_and_service):
         assert loaded_cp is not None
         assert loaded_cp.checkpoint_id == "cp-persist-1"
         assert loaded_cp.tokens_consumed == 100
+
+
+def test_c05_worktree_never_deletes_existing_user_dir():
+    """Gate 1: Verify manager rejects existing directory and preserves user files without deletion."""
+    with tempfile.TemporaryDirectory() as tmp_git_root, tempfile.TemporaryDirectory() as tmp_db:
+        repo_path = Path(tmp_git_root)
+        subprocess.run(["git", "init", str(repo_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@test.com"], check=True)
+        (repo_path / "README.md").write_text("# Repo")
+        subprocess.run(["git", "-C", str(repo_path), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True)
+
+        with OrcaStore(Path(tmp_db) / "orca_wt.db") as store:
+            manager = GitWorktreeManager(repo_root=repo_path, store=store)
+
+            # Pre-create a target directory where the worker would be allocated
+            pre_existing_dir = manager.worktrees_dir / "w-user_worker"
+            pre_existing_dir.mkdir(parents=True)
+            precious_file = pre_existing_dir / "precious_user_data.txt"
+            precious_file.write_text("DO_NOT_DELETE")
+
+            # Must raise FileExistsError and refuse to delete or overwrite
+            with pytest.raises(FileExistsError):
+                manager.create_worktree(
+                    worker_id="user_worker",
+                    team_id="team-wt",
+                    branch_name="simpul/worker-user-1",
+                )
+
+            # Assert file was NOT deleted
+            assert precious_file.exists()
+            assert precious_file.read_text() == "DO_NOT_DELETE"
+
+
+def test_c05_worktree_cleanup_rejects_dirty_tracked_files():
+    """Gate 1: Cleanup must fail closed when uncommitted tracked changes exist in the worktree."""
+    with tempfile.TemporaryDirectory() as tmp_git_root, tempfile.TemporaryDirectory() as tmp_db:
+        repo_path = Path(tmp_git_root)
+        subprocess.run(["git", "init", str(repo_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@test.com"], check=True)
+        (repo_path / "README.md").write_text("# Repo")
+        subprocess.run(["git", "-C", str(repo_path), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True)
+
+        with OrcaStore(Path(tmp_db) / "orca_wt.db") as store:
+            manager = GitWorktreeManager(repo_root=repo_path, store=store)
+            assignment = manager.create_worktree(
+                worker_id="dirty_worker",
+                team_id="team-wt",
+                branch_name="simpul/dirty-1",
+            )
+            wt_path = Path(assignment.worktree_path)
+
+            # Introduce uncommitted change to a tracked file
+            (wt_path / "README.md").write_text("# Uncommitted Changes")
+
+            # Must raise RuntimeError and refuse cleanup
+            with pytest.raises(RuntimeError, match="Cannot cleanup dirty worktree"):
+                manager.cleanup_worktree(worker_id="dirty_worker")
+
+            # Assert directory and uncommitted changes are preserved
+            assert wt_path.exists()
+            assert (wt_path / "README.md").read_text() == "# Uncommitted Changes"
+
+            # Assert ownership record in store was preserved
+            assert store.load_worktree("dirty_worker") is not None
+
+
+def test_c05_worktree_cleanup_rejects_untracked_files():
+    """Gate 1: Cleanup must fail closed when untracked user files exist in the worktree."""
+    with tempfile.TemporaryDirectory() as tmp_git_root, tempfile.TemporaryDirectory() as tmp_db:
+        repo_path = Path(tmp_git_root)
+        subprocess.run(["git", "init", str(repo_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@test.com"], check=True)
+        (repo_path / "README.md").write_text("# Repo")
+        subprocess.run(["git", "-C", str(repo_path), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True)
+
+        with OrcaStore(Path(tmp_db) / "orca_wt.db") as store:
+            manager = GitWorktreeManager(repo_root=repo_path, store=store)
+            assignment = manager.create_worktree(
+                worker_id="untracked_worker",
+                team_id="team-wt",
+                branch_name="simpul/untracked-1",
+            )
+            wt_path = Path(assignment.worktree_path)
+
+            # Introduce untracked file
+            (wt_path / "untracked_new_file.py").write_text("print('user code')")
+
+            with pytest.raises(RuntimeError, match="untracked files present"):
+                manager.cleanup_worktree(worker_id="untracked_worker")
+
+            # Assert untracked file and worktree still exist
+            assert wt_path.exists()
+            assert (wt_path / "untracked_new_file.py").exists()
+            assert store.load_worktree("untracked_worker") is not None
+
+
+def test_c05_worktree_rejects_normalization_collision_and_path_traversal():
+    """Gate 1: Refuse worker ID normalization collisions and path traversal escapes."""
+    with tempfile.TemporaryDirectory() as tmp_git_root, tempfile.TemporaryDirectory() as tmp_db:
+        repo_path = Path(tmp_git_root)
+        subprocess.run(["git", "init", str(repo_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@test.com"], check=True)
+        (repo_path / "README.md").write_text("# Repo")
+        subprocess.run(["git", "-C", str(repo_path), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True)
+
+        with OrcaStore(Path(tmp_db) / "orca_wt.db") as store:
+            manager = GitWorktreeManager(repo_root=repo_path, store=store)
+
+            # Ambiguous normalization attempts must be rejected with ValueError
+            with pytest.raises(ValueError, match="Invalid worker_id"):
+                manager.create_worktree(
+                    worker_id="worker/1",
+                    team_id="team-wt",
+                    branch_name="simpul/branch-1",
+                )
+
+            with pytest.raises(ValueError, match="Invalid worker_id"):
+                manager.create_worktree(
+                    worker_id="worker:1",
+                    team_id="team-wt",
+                    branch_name="simpul/branch-2",
+                )
+
+            with pytest.raises(ValueError, match="Invalid worker_id"):
+                manager.create_worktree(
+                    worker_id="../../escape",
+                    team_id="team-wt",
+                    branch_name="simpul/branch-3",
+                )
+
+
+def test_c05_true_durable_task_resume_without_duplicate_execution():
+    """Gate 2: Start bounded work, checkpoint, kill worker, restart controller, resume logical task."""
+    with tempfile.TemporaryDirectory() as tmp_git_root, tempfile.TemporaryDirectory() as tmp_db:
+        repo_path = Path(tmp_git_root)
+        subprocess.run(["git", "init", str(repo_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@test.com"], check=True)
+        (repo_path / "README.md").write_text("# Init")
+        subprocess.run(["git", "-C", str(repo_path), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True)
+
+        with OrcaStore(Path(tmp_db) / "orca_resume.db") as store:
+            service = OrcaTeamService(store=store)
+            manager = GitWorktreeManager(repo_root=repo_path, store=store)
+
+            team = service.create_team(lead_session_id="lead-resume-gate2", title="Gate 2 Team")
+
+            # 1. Create worker and assign worktree
+            wt_assign = manager.create_worktree(
+                worker_id="w-resume-task",
+                team_id=team.team_id,
+                branch_name="simpul/resume-task-1",
+            )
+            cfg = WorkerConfig(
+                worker_id="w-resume-task",
+                team_id=team.team_id,
+                role="coder",
+                harness="native",
+                working_dir=wt_assign.worktree_path,
+                tokens_consumed=100,
+            )
+            worker = service.register_worker(cfg)
+
+            # Controller spawns initial worker child process
+            ctrl1 = WorkerProcessController(store=store)
+            rec1 = ctrl1.spawn_worker(worker.config, worktree_path=wt_assign.worktree_path)
+
+            try:
+                # 2. Dispatch a 2-step bounded task to the worker
+                # Step 1: create module_a.py
+                # Step 2: create module_b.py
+                task_payload = {
+                    "task_type": "multi_step",
+                    "steps": [
+                        {"name": "step_a", "instruction": "create_file:module_a.py:def fa(): return 1\n"},
+                        {"name": "step_b", "instruction": "create_file:module_b.py:def fb(): return 2\n"},
+                    ],
+                }
+                item = service.dispatch_task(
+                    from_session_id=team.lead_session_id,
+                    to_session_id=worker.session_id,
+                    task_id="task-multi-step",
+                    payload=task_payload,
+                )
+
+                # 3. Simulate execution of step 1 only and record checkpoint
+                res1 = ctrl1.dispatch_task_to_worker(
+                    worker.session_id,
+                    f"{item.task_id}-step_a",
+                    {"instruction": "create_file:module_a.py:def fa(): return 1\n", "workspace_path": wt_assign.worktree_path},
+                )
+                assert res1["status"] == "COMPLETED"
+                file_a = Path(wt_assign.worktree_path) / "module_a.py"
+                assert file_a.exists()
+                assert "def fa():" in file_a.read_text()
+
+                # Record step 1 checkpoint
+                cp1 = WorkerCheckpoint(
+                    checkpoint_id="cp-step-a",
+                    worker_id=worker.session_id,
+                    team_id=team.team_id,
+                    step_index=1,
+                    state_summary="Completed step_a (created module_a.py)",
+                    tokens_consumed=250,
+                    context_snapshot={
+                        "dispatch_id": item.dispatch_id,
+                        "task_id": item.task_id,
+                        "completed_steps": ["step_a"],
+                        "worktree_path": wt_assign.worktree_path,
+                    },
+                )
+                store.save_checkpoint(cp1)
+
+                # 4. KILL executing worker child process (simulate mid-task crash)
+                kill_process_tree(rec1.pid)
+
+                # Verify worker is dead
+                assert not ctrl1.is_worker_alive(worker.session_id)
+
+                # Reconcile team after crash
+                report = reconcile_team_after_crash(team.team_id, store=store)
+                assert report["reconciled_workers"] == 1
+                assert "w-resume-task" in report["dead_workers"]
+
+            finally:
+                ctrl1.terminate_all()
+
+            # 5. RESTART controller and resume logical task from checkpoint
+            ctrl2 = WorkerProcessController(store=store)
+            try:
+                resume_report = resume_task_from_checkpoint(
+                    dispatch_id=item.dispatch_id,
+                    store=store,
+                    controller=ctrl2,
+                )
+
+                # 6. Verify continuation properties
+                assert resume_report["status"] == "COMPLETED"
+                # Step A was skipped without duplicate execution
+                assert "step_a" in resume_report["skipped_steps"]
+                # Step B was executed
+                assert "step_b" in resume_report["completed_steps"]
+
+                # File B exists now
+                file_b = Path(wt_assign.worktree_path) / "module_b.py"
+                assert file_b.exists()
+                assert "def fb():" in file_b.read_text()
+
+                # File A was untouched
+                assert file_a.exists()
+                assert "def fa():" in file_a.read_text()
+
+                # Token budget accounted for both steps without loss
+                assert resume_report["tokens_consumed"] >= 250
+
+                # Queue item transitioned to COMPLETED
+                reloaded_item = store.load_queue_item(item.dispatch_id)
+                assert reloaded_item is not None
+                assert reloaded_item.status == QueueTaskStatus.COMPLETED
+
+            finally:
+                ctrl2.terminate_all()
+

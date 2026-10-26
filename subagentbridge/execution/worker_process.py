@@ -157,6 +157,8 @@ class WorkerProcessController:
         ]
         if config.budget_tokens is not None:
             cmd.extend(["--budget-tokens", str(config.budget_tokens)])
+        if config.tokens_consumed:
+            cmd.extend(["--tokens-consumed", str(config.tokens_consumed)])
         if config.harness:
             cmd.extend(["--harness", config.harness])
         if worktree_path:
@@ -219,7 +221,7 @@ class WorkerProcessController:
             started_at=now,
             last_heartbeat=now,
             create_time=create_time,
-            tokens_consumed=0,
+            tokens_consumed=config.tokens_consumed,
             worktree_path=worktree_path,
             session_secret=session_secret,
         )
@@ -241,7 +243,7 @@ class WorkerProcessController:
             budget_tokens=config.budget_tokens,
             pid=child_pid,
             process_create_time=create_time,
-            tokens_consumed=0,
+            tokens_consumed=config.tokens_consumed,
         )
         session = OrcaSession(
             session_id=config.worker_id,

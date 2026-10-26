@@ -36,6 +36,7 @@ def main() -> int:
     parser.add_argument("--team-id", required=True, help="Team ID")
     parser.add_argument("--role", default="worker", help="Worker role")
     parser.add_argument("--budget-tokens", type=int, default=None, help="Token budget ceiling")
+    parser.add_argument("--tokens-consumed", type=int, default=0, help="Initial tokens consumed")
     parser.add_argument("--session-secret", default=None, help="Session secret for ticket verification")
     parser.add_argument("--worktree-path", default=None, help="Assigned worktree directory path")
     parser.add_argument("--harness", default="native", help="Configured worker harness adapter")
@@ -69,7 +70,7 @@ def main() -> int:
     })
 
     # Internal state tracking
-    total_tokens_consumed: int = 0
+    total_tokens_consumed: int = int(args.tokens_consumed or 0)
     consumed_action_ids: set[str] = set()
 
     # Threading controls for interrupt preemption
