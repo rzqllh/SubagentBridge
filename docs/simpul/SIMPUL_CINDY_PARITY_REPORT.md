@@ -31,13 +31,13 @@
 
 | Phase | Branch | Status | Acceptance Target |
 |---|---|---|---|
-| C00 | `simpul/08-sprint1-verification` | **COMPLETE (remote PR #9 verified, CI 4/4 PASS)** | Security hardening, corrective review, all tests pass |
-| C01 | `simpul/09-parity-foundation` | **COMPLETE (remote PR #10 verified, CI 4/4 PASS)** | Architecture contracts, adapter boundaries, 8 baseline tests pass |
-| C02 | `simpul/10-worker-sessions` | **COMPLETE (Correctness Gate passed, 15/15 tests PASS, PR #11 updated)** | Real independent worker processes with lifecycle, IPC, anti-spoofing & recovery |
-| C03 | `simpul/11-multi-harness` | **READY TO START (Worktree `.worktrees/p11-multi-harness`)** | Capability-checked host adapters |
-| C04 | `simpul/12-interagent-control` | **NOT STARTED** | Durable message queue, targeting, dedup, interrupt/steer |
-| C05 | `simpul/13-durable-continuity` | **NOT STARTED** | Restart/resume, checkpoint/recovery, worktree lifecycle |
-| C06 | `simpul/14-parity-acceptance` | **NOT STARTED** | End-to-end, failure injection, adversarial, cross-platform CI |
+| C00 | `simpul/08-sprint1-verification` | **COMPLETE (remote PR #9 verified, CI 4/4 PASS, run 40202959103)** | Security hardening, corrective review, all tests pass |
+| C01 | `simpul/09-parity-foundation` | **COMPLETE (remote PR #10 verified, CI 4/4 PASS, run 40205275129)** | Architecture contracts, adapter boundaries, 8 baseline tests pass |
+| C02 | `simpul/10-worker-sessions` | **COMPLETE (Correctness Gate passed, 15/15 tests PASS, PR #11 updated, CI 4/4 PASS, run 40208918996)** | Real independent worker processes with lifecycle, IPC, anti-spoofing & recovery |
+| C03 | `simpul/11-multi-harness` | **COMPLETE (remote PR #12 verified, CI 4/4 PASS, run 40210028969)** | Capability-checked host adapters, model/provider selection, host routing |
+| C04 | `simpul/12-interagent-control` | **COMPLETE (remote PR #13 verified, CI 4/4 PASS, run 40250742777)** | Durable deduplicated priority queue, authenticated messaging, steering, handoff binding |
+| C05 | `simpul/13-durable-continuity` | **COMPLETE (remote PR #14 verified, CI 4/4 PASS, run 40251601336)** | Step-indexed checkpoints, git worktree lifecycle, audited crash recovery & resume |
+| C06 | `simpul/14-parity-acceptance` | **COMPLETE (remote PR #15 verified, CI 4/4 PASS, run 40252310376)** | End-to-end multiworker pipeline, fault injection, adversarial hardening, pinned Cindy parity |
 
 ---
 
@@ -286,6 +286,9 @@
 ## Phase C05: Durable Continuity, Checkpoints, Worktrees, and Crash Recovery (COMPLETE)
 
 - **Target Branch**: `simpul/13-durable-continuity` (stacked on `simpul/12-interagent-control`)
+- **Remote PR #14**: https://github.com/rzqllh/SubagentBridge/pull/14
+- **HEAD Commit**: `6d623a5` (pushed to origin)
+- **GitHub Actions Run**: `40251601336` (4/4 jobs PASS in 2m19s)
 - **Key Modules Implemented**:
   - `subagentbridge/domain/orca_contracts.py`:
     - `WorkerCheckpoint`: Typed snapshot contract recording worker ID, team ID, step index, state summary, cumulative tokens consumed, and context snapshot dictionary.
@@ -319,6 +322,9 @@
 ## Phase C06: Multi-Worker Parity Acceptance & Adversarial Hardening (COMPLETE)
 
 - **Target Branch**: `simpul/14-parity-acceptance` (stacked on `simpul/13-durable-continuity`)
+- **Remote PR #15**: https://github.com/rzqllh/SubagentBridge/pull/15
+- **HEAD Commit**: `9e32472` (pushed to origin)
+- **GitHub Actions Run**: `40252310376` (4/4 jobs PASS in 2m33s)
 - **Key Modules & Verification Scenarios**:
   - `tests/test_c06_parity_acceptance.py`:
     1. `test_c06_e2e_multiworker_workflow`: Executes full end-to-end pipeline with Lead and 2 real independent child OS processes (coder and tester) communicating over IPC. Lead dispatches coding task with verified authorization ticket, receives structured handoff, dispatches testing task, receives verification handoff, and cleans up processes.
@@ -329,12 +335,19 @@
        - Cross-team task steering / hijacking (`PermissionError`).
        - Spoofed worker handoffs by unassigned workers (`PermissionError`).
        - Spoofed lead handoffs to incorrect lead sessions (`PermissionError`).
-    4. `test_c06_pinned_cindy_parity_contract_verification`: Validates 1:1 structural contract conformance against upstream Cindy / Orca pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b`:
+    4. `test_c06_queue_controls_dedup_steering_and_interrupt_preemption`: Validates:
+       - Queue deduplication via idempotent keys.
+       - Priority FIFO task fetching.
+       - Lead task steering for in-flight jobs.
+       - Worker atomic interruption preemption strictly preventing late handoff completion.
+    5. `test_c06_worktree_isolation_and_path_containment`: Proves isolated git worktrees per worker and workspace containment denying path escapes.
+    6. `test_c06_host_adapters_truthful_verification`: Validates declared capabilities across all 5 harnesses (`native`, `antigravity`, `codex`, `claude_code`, `pi`), distinguishing executable local tools from capability limits.
+    7. `test_c06_pinned_cindy_parity_contract_verification`: Validates 1:1 structural contract conformance against upstream Cindy / Orca pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b`:
        - 7 worker lifecycle states (`IDLE`, `RUNNING`, `PAUSED`, `INTERRUPTED`, `COMPLETED`, `FAILED`, `ARCHIVED`).
        - 7 queue task states (`PENDING`, `DISPATCHED`, `RUNNING`, `INTERRUPTED`, `COMPLETED`, `CANCELLED`, `FAILED`).
        - Lead and Worker role definitions.
-  - Full Test Suite: 386 passed, 5 skipped (Windows symlink limitations), 135 subtests passed.
-  - Static Analysis: Ruff clean (0 errors), Mypy clean (56 source files checked), Bandit clean (0 findings).
+  - Full Test Suite: 389 passed, 5 skipped (Windows symlink limitations), 135 subtests passed in 70.95s.
+  - Static Analysis: Ruff clean (0 errors), Mypy clean (57 source files checked), Bandit clean (0 findings).
   - MCP Server Import Smoke Test: PASS.
 
 ---

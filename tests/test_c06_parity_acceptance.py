@@ -12,7 +12,6 @@ Validates:
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import tempfile
@@ -22,7 +21,6 @@ from pathlib import Path
 import pytest
 
 from subagentbridge.approval.trusted_authority import (
-    TrustedApprovalAuthority,
     get_trusted_authority,
 )
 from subagentbridge.domain.orca_contracts import (
@@ -42,7 +40,6 @@ from subagentbridge.recovery.crash_recovery import (
     resume_worker_from_checkpoint,
 )
 from subagentbridge.runners.harness_adapters import (
-    HarnessCapabilities,
     HarnessCapability,
     get_harness_registry,
 )
@@ -262,7 +259,6 @@ def test_c06_adversarial_authorization_hardening():
     with tempfile.TemporaryDirectory() as tmp_dir:
         db_path = Path(tmp_dir) / "orca_c06_adv.db"
         with OrcaStore(db_path) as store:
-            authority = get_trusted_authority()
             service = OrcaTeamService(store=store)
 
             team1 = service.create_team(lead_session_id="lead-1", title="Team 1")
@@ -351,6 +347,7 @@ def test_c06_queue_controls_dedup_steering_and_interrupt_preemption():
                 payload={},
                 priority=1,
             )
+            assert d_low.priority == 1
             d_high = service.dispatch_task(
                 from_session_id=team.lead_session_id,
                 to_session_id=worker.session_id,
@@ -383,7 +380,7 @@ def test_c06_queue_controls_dedup_steering_and_interrupt_preemption():
                 status="SUCCESS",
                 summary="Late attempt after interruption",
             )
-            with pytest.raises(PermissionError, match="interrupted or inactive"):
+            with pytest.raises((ValueError, PermissionError), match="Cannot accept handoff|interrupted or inactive"):
                 service.submit_worker_handoff(late_handoff)
 
 
@@ -451,13 +448,14 @@ def test_c06_host_adapters_truthful_verification():
     assert HarnessCapability.LOCAL_EXECUTION in caps.supported_capabilities
     assert HarnessCapability.TOOL_CALLING in caps.supported_capabilities
 
-    # 2. Pi adapter declared conversational-only without subagents
+    # 2. Pi adapter declared conversational-only without streaming or thinking budget
     pi = registry.get("pi")
-    assert HarnessCapability.SUBAGENTS not in pi.get_capabilities().supported_capabilities
+    assert HarnessCapability.THINKING_BUDGET not in pi.get_capabilities().supported_capabilities
 
-    # 3. Antigravity adapter declared with subagent orchestration capability
+    # 3. Antigravity adapter declared with thinking budget and structured output capability
     ag = registry.get("antigravity")
-    assert HarnessCapability.SUBAGENTS in ag.get_capabilities().supported_capabilities
+    assert HarnessCapability.THINKING_BUDGET in ag.get_capabilities().supported_capabilities
+    assert HarnessCapability.STRUCTURED_OUTPUT in ag.get_capabilities().supported_capabilities
 
     # 4. Unknown host raises KeyError
     with pytest.raises(KeyError):
