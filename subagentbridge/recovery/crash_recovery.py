@@ -5,6 +5,7 @@ restarts without assuming false execution completion.
 """
 from __future__ import annotations
 
+import subprocess
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -136,32 +137,77 @@ def resume_task_from_checkpoint(
             raise KeyError(f"worker session {worker_id!r} not found")
         session = loaded
 
-    latest_cp = store.load_latest_checkpoint(worker_id)
-    completed_steps: list[str] = []
-    if latest_cp and latest_cp.context_snapshot:
-        completed_steps = list(latest_cp.context_snapshot.get("completed_steps", []))
-
     # Verify worktree ownership and exact commit identity
     wt = store.load_worktree(worker_id)
     worktree_path = wt.worktree_path if wt and Path(wt.worktree_path).exists() else session.config.working_dir
 
+    current_commit: str | None = None
+    if worktree_path and Path(worktree_path).exists():
+        rev_res = subprocess.run(
+            ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if rev_res.returncode == 0:
+            current_commit = rev_res.stdout.strip()
+
+    # Strict Checkpoint Binding Audit:
+    # A checkpoint must match the exact team, worker, dispatch, task, and commit.
+    latest_cp = store.load_latest_checkpoint(worker_id)
+    completed_steps: list[str] = []
+    is_valid_checkpoint = False
+
+    if latest_cp and latest_cp.context_snapshot:
+        cp_snap = latest_cp.context_snapshot
+        cp_disp = cp_snap.get("dispatch_id")
+        cp_task = cp_snap.get("task_id")
+        cp_commit = cp_snap.get("commit_hash")
+
+        # Disallow checkpoints from other tasks or dispatches
+        if cp_disp == item.dispatch_id and cp_task == item.task_id and latest_cp.team_id == session.team_id:
+            # If commit was tracked, verify tree has not diverged
+            if cp_commit is None or current_commit is None or cp_commit == current_commit:
+                is_valid_checkpoint = True
+
+    if is_valid_checkpoint and latest_cp and latest_cp.context_snapshot:
+        completed_steps = list(latest_cp.context_snapshot.get("completed_steps", []))
+    else:
+        latest_cp = None
+        completed_steps = []
+
     payload = dict(item.payload)
     steps = payload.get("steps")
+    expected_artifacts = payload.get("expected_artifacts", [])
 
     if isinstance(steps, list):
         # Bounded multi-step workflow: skip already completed steps (idempotent continuation)
         remaining_steps = [s for s in steps if s.get("name") not in completed_steps]
+
+        # Never mark COMPLETED merely because checkpoint claims steps finished without validating evidence
         if not remaining_steps:
-            item.status = QueueTaskStatus.COMPLETED
-            item.updated_at = time.time()
-            store.save_queue_item(item)
-            return {
-                "status": "COMPLETED",
-                "summary": "All steps already completed in checkpoint",
-                "completed_steps": completed_steps,
-                "skipped_steps": completed_steps,
-                "tokens_consumed": session.config.tokens_consumed,
-            }
+            missing_evidence = False
+            if expected_artifacts and worktree_path:
+                for art in expected_artifacts:
+                    if not (Path(worktree_path) / art).exists():
+                        missing_evidence = True
+                        break
+
+            if missing_evidence:
+                # Evidence missing: reset completed steps and re-execute safely (at-least-once recoverable)
+                remaining_steps = list(steps)
+                completed_steps = []
+            else:
+                item.status = QueueTaskStatus.COMPLETED
+                item.updated_at = time.time()
+                store.save_queue_item(item)
+                return {
+                    "status": "COMPLETED",
+                    "summary": "All steps already completed in checkpoint and verified against evidence",
+                    "completed_steps": completed_steps,
+                    "skipped_steps": completed_steps,
+                    "tokens_consumed": session.config.tokens_consumed,
+                    "execution_classification": "IDEMPOTENT_RESUME",
+                }
 
         item.status = QueueTaskStatus.RUNNING
         item.updated_at = time.time()
@@ -216,6 +262,7 @@ def resume_task_from_checkpoint(
                     "task_id": item.task_id,
                     "completed_steps": completed_steps,
                     "worktree_path": worktree_path,
+                    "commit_hash": current_commit,
                 },
             )
             store.save_checkpoint(cp)
@@ -235,10 +282,18 @@ def resume_task_from_checkpoint(
 
     # Single-instruction or atomic command payload
     if latest_cp and latest_cp.context_snapshot.get("completed"):
-        item.status = QueueTaskStatus.COMPLETED
-        item.updated_at = time.time()
-        store.save_queue_item(item)
-        return {"status": "COMPLETED", "summary": "Task was completed before crash"}
+        # Check evidence if declared
+        ev_missing = False
+        if expected_artifacts and worktree_path:
+            for art in expected_artifacts:
+                if not (Path(worktree_path) / art).exists():
+                    ev_missing = True
+                    break
+        if not ev_missing:
+            item.status = QueueTaskStatus.COMPLETED
+            item.updated_at = time.time()
+            store.save_queue_item(item)
+            return {"status": "COMPLETED", "summary": "Task was completed before crash and verified"}
 
     item.status = QueueTaskStatus.RUNNING
     item.updated_at = time.time()

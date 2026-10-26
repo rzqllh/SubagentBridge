@@ -353,7 +353,7 @@ def test_c05_worktree_cleanup_rejects_untracked_files():
             # Introduce untracked file
             (wt_path / "untracked_new_file.py").write_text("print('user code')")
 
-            with pytest.raises(RuntimeError, match="untracked files present"):
+            with pytest.raises(RuntimeError, match="untracked files"):
                 manager.cleanup_worktree(worker_id="untracked_worker")
 
             # Assert untracked file and worktree still exist
@@ -531,4 +531,107 @@ def test_c05_true_durable_task_resume_without_duplicate_execution():
 
             finally:
                 ctrl2.terminate_all()
+
+
+def test_c05_worktree_cleanup_rejects_ignored_user_files():
+    """Gate 1: Verify cleanup fails closed when user-created ignored files are present."""
+    with tempfile.TemporaryDirectory() as tmp_git_root, tempfile.TemporaryDirectory() as tmp_db:
+        repo_path = Path(tmp_git_root)
+        subprocess.run(["git", "init", str(repo_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "test@test.com"], check=True)
+        (repo_path / ".gitignore").write_text("*.log\n")
+        (repo_path / "README.md").write_text("# Repo")
+        subprocess.run(["git", "-C", str(repo_path), "add", ".gitignore", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True)
+
+        with OrcaStore(Path(tmp_db) / "orca_wt.db") as store:
+            manager = GitWorktreeManager(repo_root=repo_path, store=store)
+            assignment = manager.create_worktree(
+                worker_id="ignored_worker",
+                team_id="team-wt",
+                branch_name="simpul/ignored-1",
+            )
+            wt_path = Path(assignment.worktree_path)
+
+            # Introduce an ignored file created by user/worker
+            user_log = wt_path / "user_debug.log"
+            user_log.write_text("IMPORTANT_USER_DEBUG_LOG")
+
+            # Must fail closed on ignored user files
+            with pytest.raises(RuntimeError, match="uncommitted changes, untracked files, or user modifications present"):
+                manager.cleanup_worktree(worker_id="ignored_worker")
+
+            # Assert file and assignment survive
+            assert user_log.exists()
+            assert store.load_worktree("ignored_worker") is not None
+
+
+def test_c05_resume_task_rejects_checkpoint_from_different_dispatch():
+    """Gate 2: Checkpoint from another dispatch must never cause steps of a new dispatch to be skipped."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "orca_resume_mismatch.db"
+        with OrcaStore(db_path) as store:
+            service = OrcaTeamService(store=store)
+            controller = WorkerProcessController(store=store)
+
+            team = service.create_team(lead_session_id="lead-res-mismatch", title="Resume Mismatch Team")
+            cfg = WorkerConfig(
+                worker_id="w-mismatch-1",
+                team_id=team.team_id,
+                role="worker",
+                harness="native",
+                working_dir=tmp_dir,
+            )
+            worker = service.register_worker(cfg)
+
+            # Pre-seed a checkpoint belonging to an OLD dispatch (dispatch_id: 'dsp-old-123')
+            store.save_checkpoint(
+                WorkerCheckpoint(
+                    checkpoint_id="cp-old-dispatch",
+                    worker_id=worker.session_id,
+                    team_id=team.team_id,
+                    step_index=1,
+                    state_summary="Completed step_x in old dispatch",
+                    tokens_consumed=100,
+                    context_snapshot={
+                        "dispatch_id": "dsp-old-123",
+                        "task_id": "task-old-1",
+                        "completed_steps": ["step_x"],
+                        "worktree_path": tmp_dir,
+                    },
+                )
+            )
+
+            # Dispatch NEW task with a step named 'step_x' that should NOT be skipped
+            item = service.dispatch_task(
+                from_session_id=team.lead_session_id,
+                to_session_id=worker.session_id,
+                task_id="task-new-1",
+                payload={
+                    "steps": [
+                        {"name": "step_x", "instruction": "create_file:new_target.txt:NEW_DATA\n"},
+                    ]
+                },
+            )
+
+            try:
+                report = resume_task_from_checkpoint(
+                    dispatch_id=item.dispatch_id,
+                    store=store,
+                    controller=controller,
+                )
+
+                assert report["status"] == "COMPLETED"
+                # step_x was NOT skipped because the checkpoint belonged to dsp-old-123
+                assert "step_x" not in report.get("skipped_steps", [])
+                assert "step_x" in report.get("completed_steps", [])
+
+                target_file = Path(tmp_dir) / "new_target.txt"
+                assert target_file.exists()
+                assert target_file.read_text().strip() == "NEW_DATA"
+
+            finally:
+                controller.terminate_all()
+
 
