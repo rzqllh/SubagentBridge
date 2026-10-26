@@ -14,7 +14,7 @@
 - Locally pinned skills registry with path and hash checking.
 - Local-loopback 9Router text-client interface with explicit model discovery and budget bounds.
 - MCP stdio server with run submission, readback, cancellation, and supervised execution tools (`submit_goal`, `execute_run`, `execute_task`).
-- Optional Orca integration seam; native mode does not depend on Orca.
+- Native multi-worker team coordination: Lead/Worker distinct sessions, durable priority dispatch queue, status lifecycles, SQLite transactional persistence, worktree isolation, and crash recovery (architecturally inspired by Cindy research, independently implemented in Python).
 
 **Execution Lifecycle:** `submit_goal(..., execute=True)` or `execute_run(run_id, commands=...)` executes the complete supervised PM → Developer → QA lifecycle. Under SIM-403 strict fail-closed enforcement, tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status.
 
@@ -86,4 +86,4 @@ The legacy session inspection endpoints remain available in this candidate, but 
 
 ## License and attribution
 
-[MIT](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md). Development history retains `SubagentBridge` names where required for traceability.
+[MIT](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) (including Cindy/Orca architectural attribution under Apache-2.0). Technical identity retains `SubagentBridge` identifiers for compatibility.

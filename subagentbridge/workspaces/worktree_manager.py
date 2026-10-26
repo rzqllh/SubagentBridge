@@ -13,8 +13,8 @@ import threading
 import time
 from pathlib import Path
 
-from subagentbridge.domain.orca_contracts import WorktreeAssignment
-from subagentbridge.storage.orca_store import OrcaStore
+from subagentbridge.domain.team_contracts import WorktreeAssignment
+from subagentbridge.storage.team_store import TeamStore
 
 
 class GitWorktreeManager:
@@ -23,7 +23,7 @@ class GitWorktreeManager:
     def __init__(
         self,
         repo_root: str | Path,
-        store: OrcaStore,
+        store: TeamStore,
         worktrees_dir: str | Path | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()

@@ -11,9 +11,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from subagentbridge.domain.orca_contracts import (
-    OrcaRole,
-    OrcaSession,
+from subagentbridge.domain.team_contracts import (
+    AgentRole,
+    AgentSession,
     QueueTaskStatus,
     WorkerCheckpoint,
     WorkerStatus,
@@ -22,10 +22,10 @@ from subagentbridge.execution.worker_process import (
     WorkerProcessController,
     is_process_identically_alive,
 )
-from subagentbridge.storage.orca_store import OrcaStore
+from subagentbridge.storage.team_store import TeamStore
 
 
-def reconcile_team_after_crash(team_id: str, store: OrcaStore) -> dict[str, Any]:
+def reconcile_team_after_crash(team_id: str, store: TeamStore) -> dict[str, Any]:
     """Reconciles worker session and queue states for a team following a crash.
 
     Audits all worker sessions against real OS process tables. Workers whose
@@ -36,7 +36,7 @@ def reconcile_team_after_crash(team_id: str, store: OrcaStore) -> dict[str, Any]
     dead_workers: list[str] = []
 
     for session in sessions:
-        if session.orca_role != OrcaRole.WORKER:
+        if session.role != AgentRole.WORKER:
             continue
 
         pid = session.config.pid
@@ -75,9 +75,9 @@ def reconcile_team_after_crash(team_id: str, store: OrcaStore) -> dict[str, Any]
 
 def resume_worker_from_checkpoint(
     worker_id: str,
-    store: OrcaStore,
+    store: TeamStore,
     controller: WorkerProcessController | None = None,
-) -> OrcaSession:
+) -> AgentSession:
     """Resumes a worker session from its latest checkpoint, restoring cumulative tokens and worktree binding."""
     session = store.load_session(worker_id)
     if not session:
@@ -113,7 +113,7 @@ def resume_worker_from_checkpoint(
 
 def resume_task_from_checkpoint(
     dispatch_id: str,
-    store: OrcaStore,
+    store: TeamStore,
     controller: WorkerProcessController,
     approval_authority: Any | None = None,
 ) -> dict[str, Any]:

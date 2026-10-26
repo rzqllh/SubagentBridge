@@ -18,15 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from subagentbridge.domain.orca_contracts import (
+from subagentbridge.domain.team_contracts import (
     ChannelMessage,
     HandoffEvidence,
     QueueTaskStatus,
     WorkerConfig,
     WorkerStatus,
 )
-from subagentbridge.storage.orca_store import OrcaStore
-from subagentbridge.team.orca_team import OrcaTeamService
+from subagentbridge.storage.team_store import TeamStore, OrcaStore
+from subagentbridge.team.team_manager import TeamManager, OrcaTeamService
 
 
 @pytest.fixture

@@ -16,7 +16,8 @@ import hashlib
 import tempfile
 from pathlib import Path
 
-from subagentbridge.domain.orca_contracts import (
+from subagentbridge.domain.team_contracts import (
+    AgentRole,
     OrcaRole,
     WorkerStatus,
     QueueTaskStatus,
@@ -24,8 +25,8 @@ from subagentbridge.domain.orca_contracts import (
     QueueItem,
     HandoffEvidence,
 )
-from subagentbridge.team.orca_team import OrcaTeamManager
-from subagentbridge.storage.orca_store import OrcaStore
+from subagentbridge.team.team_manager import TeamManager, OrcaTeamManager
+from subagentbridge.storage.team_store import TeamStore, OrcaStore
 
 
 def test_c01_lead_worker_distinct_sessions():
@@ -39,6 +40,7 @@ def test_c01_lead_worker_distinct_sessions():
 
             lead_session = manager.get_session("lead-001")
             assert lead_session is not None
+            assert lead_session.role == AgentRole.LEAD
             assert lead_session.orca_role == OrcaRole.LEAD
             assert lead_session.status == WorkerStatus.IDLE
 
@@ -52,6 +54,7 @@ def test_c01_lead_worker_distinct_sessions():
             w1_session = manager.create_worker("team-alpha", w1_cfg)
 
             assert w1_session.session_id == "worker-dev-1"
+            assert w1_session.role == AgentRole.WORKER
             assert w1_session.orca_role == OrcaRole.WORKER
             assert w1_session.session_id != lead_session.session_id
             assert w1_session.status == WorkerStatus.IDLE

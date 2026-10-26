@@ -21,7 +21,7 @@ from typing import Any
 import psutil
 
 from subagentbridge.approval.trusted_authority import verify_ticket_binding
-from subagentbridge.domain.orca_contracts import WorkerConfig
+from subagentbridge.domain.team_contracts import WorkerConfig
 from subagentbridge.runners.harness_adapters import get_harness_registry
 
 

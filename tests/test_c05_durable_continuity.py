@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from subagentbridge.domain.orca_contracts import (
+from subagentbridge.domain.team_contracts import (
+    AgentRole,
     OrcaRole,
     QueueTaskStatus,
     WorkerCheckpoint,
@@ -31,8 +32,8 @@ from subagentbridge.recovery.crash_recovery import (
     resume_task_from_checkpoint,
     resume_worker_from_checkpoint,
 )
-from subagentbridge.storage.orca_store import OrcaStore
-from subagentbridge.team.orca_team import OrcaTeamService
+from subagentbridge.storage.team_store import TeamStore, OrcaStore
+from subagentbridge.team.team_manager import TeamManager, OrcaTeamService
 from subagentbridge.workspaces.worktree_manager import GitWorktreeManager
 
 
@@ -250,6 +251,7 @@ def test_c05_durable_rehydration_across_restart(store_and_service):
 
         loaded_worker = fresh_service.get_session(worker.session_id)
         assert loaded_worker is not None
+        assert loaded_worker.role == AgentRole.WORKER
         assert loaded_worker.orca_role == OrcaRole.WORKER
 
         loaded_queue = fresh_service.list_team_queue(team.team_id)

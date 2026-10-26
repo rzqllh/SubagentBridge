@@ -1,11 +1,66 @@
-# Third-Party Notices
+# Third-Party Notices & Attribution
 
-SubagentBridge is an independent, from-scratch implementation. No source files
-were copied or forked from any other project. Its architecture (spawning
-headless CLI coding agents as background subprocesses, coordinated over MCP
-with an async session manager) was inspired by:
+SubagentBridge (Simpul) is an independent, clean-room implementation written in Python.
+Its architecture and design incorporate principles and inspiration from open-source
+research references. Proper credit, provenance, and license obligations are recorded below.
 
-## antigravity-mcp
+---
+
+## 1. Cindy (Orca Orchestration Core Reference)
+
+- **Product / Project:** Cindy
+- **Copyright:** Copyright 2026 XD Inc.
+- **Repository:** https://github.com/makecindy/cindy
+- **Pinned Research Commit:** `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b`
+- **License:** Apache License, Version 2.0
+
+### Provenance & Clean-Room Source Audit
+
+1. **Architectural Inspiration:**
+   Cindy's Orca orchestration-core served as an architectural reference and design study
+   for Simpul's multi-worker agent coordination. Specifically, concepts studied include:
+   - Lead Session vs Worker Session role separation.
+   - Structured inter-agent task dispatching and queue state transitions.
+   - Worker lifecycle status states and interruption semantics.
+   - Git worktree workspace isolation.
+   - Structured handoff evidence and crash recovery state rehydration.
+
+2. **Independently Implemented Behavior:**
+   All runtime implementations in Simpul (`subagentbridge/`) were created independently
+   from scratch in Python 3.11+, using Python standard library primitives (`sqlite3`,
+   `subprocess`, `hashlib`, `uuid`, `dataclasses`) and native MCP protocols. No source
+   files were copied, transliterated, vendored, or directly adapted from Cindy's TypeScript
+   codebase.
+
+3. **Relationship:**
+   Simpul is not a fork or derivative distribution of Cindy. Cindy is credited here in
+   full as an architectural provenance and academic/engineering reference.
+
+### Apache-2.0 License Notice
+
+```
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   Copyright 2026 XD Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+```
+
+---
+
+## 2. antigravity-mcp
 
 - **Author:** Inferno-Aditya
 - **Repository:** https://github.com/Inferno-Aditya/antigravity-mcp
@@ -34,9 +89,3 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-
-> Note: this is the standard MIT license text as published by Inferno-Aditya
-> for antigravity-mcp, reproduced here per the license's own attribution
-> requirement. If any future SubagentBridge file is directly adapted from
-> antigravity-mcp source (rather than independently written), that file's
-> header must also carry this notice per the MIT terms.

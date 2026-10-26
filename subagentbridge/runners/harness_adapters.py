@@ -21,7 +21,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from subagentbridge.domain.orca_contracts import WorkerConfig
+from subagentbridge.domain.team_contracts import WorkerConfig
 
 
 class HarnessCapability(str, Enum):

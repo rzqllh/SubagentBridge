@@ -26,7 +26,8 @@ from subagentbridge.approval.trusted_authority import (
     get_trusted_authority,
     verify_ticket_binding,
 )
-from subagentbridge.domain.orca_contracts import (
+from subagentbridge.domain.team_contracts import (
+    AgentRole,
     HandoffEvidence,
     OrcaRole,
     QueueTaskStatus,
@@ -46,8 +47,8 @@ from subagentbridge.runners.harness_adapters import (
     HarnessCapability,
     get_harness_registry,
 )
-from subagentbridge.storage.orca_store import OrcaStore
-from subagentbridge.team.orca_team import OrcaTeamService
+from subagentbridge.storage.team_store import TeamStore, OrcaStore
+from subagentbridge.team.team_manager import TeamManager, OrcaTeamService
 from subagentbridge.workspaces.scope import ScopedWorkspace
 from subagentbridge.workspaces.worktree_manager import GitWorktreeManager
 
@@ -663,7 +664,8 @@ def test_c06_pinned_cindy_parity_contract_verification():
     actual_queue_states = {q.value for q in QueueTaskStatus}
     assert expected_queue_states == actual_queue_states
 
-    # 3. Lead and Worker roles matching sessions.orca_role
+    # 3. Lead and Worker roles matching sessions.role
     expected_roles = {"lead", "worker"}
-    actual_roles = {r.value for r in OrcaRole}
+    actual_roles = {r.value for r in AgentRole}
     assert expected_roles == actual_roles
+    assert {r.value for r in OrcaRole} == actual_roles

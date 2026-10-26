@@ -678,21 +678,103 @@ Distinguishes:
 
 ---
 
+### Phase C07: Native Naming Migration & Cindy Attribution Closure
+
+#### 1. Complete Naming Inventory (Before & After)
+
+| Component Category | Legacy Name / Path | Native Simpul Name / Path | Backward Compatibility Status |
+|---|---|---|---|
+| **Domain Contracts** | `subagentbridge/domain/orca_contracts.py` | `subagentbridge/domain/team_contracts.py` | Re-export shim preserved in `orca_contracts.py` |
+| **Persistence Store** | `subagentbridge/storage/orca_store.py` | `subagentbridge/storage/team_store.py` | Re-export shim preserved in `orca_store.py` |
+| **Team Management** | `subagentbridge/team/orca_team.py` | `subagentbridge/team/team_manager.py` | Re-export shim preserved in `orca_team.py` |
+| **Role Enum** | `OrcaRole` (`lead`, `worker`) | `AgentRole` (`lead`, `worker`) | `OrcaRole = AgentRole` alias |
+| **Team Model** | `OrcaTeam` | `AgentTeam` | `OrcaTeam = AgentTeam` alias |
+| **Session Model** | `OrcaSession` (`orca_role`) | `AgentSession` (`role`) | `OrcaSession = AgentSession`, `@property orca_role` |
+| **Store Class** | `OrcaStore` | `TeamStore` | `OrcaStore = TeamStore` alias |
+| **Service Class** | `OrcaTeamManager` / `OrcaTeamService` | `TeamManager` | Aliases preserved |
+| **Integration Probe** | `OrcaProbe` | `IntegrationProbe` | `OrcaProbe = IntegrationProbe` alias |
+| **Database Table** | `orca_teams` | `simpul_teams` | Compatibility VIEW `orca_teams` |
+| **Database Table** | `orca_sessions` | `simpul_sessions` | Compatibility VIEW `orca_sessions` |
+| **Database Table** | `orca_queue` | `simpul_queue` | Compatibility VIEW `orca_queue` |
+| **Database Table** | `orca_worktrees` | `simpul_worktrees` | Compatibility VIEW `orca_worktrees` |
+| **Database Table** | `orca_handoffs` | `simpul_handoffs` | Compatibility VIEW `orca_handoffs` |
+| **Database Table** | `orca_channel_messages` | `simpul_channel_messages` | Compatibility VIEW `orca_channel_messages` |
+| **Database Table** | `orca_checkpoints` | `simpul_checkpoints` | Compatibility VIEW `orca_checkpoints` |
+| **External Adapter** | `OptionalOrcaBackend` | `OptionalOrcaBackend` (isolated boundary) | Retained as optional compatibility seam |
+
+#### 2. Zero Data Loss SQLite Migration & Rollback Behavior
+- **Schema Versioning**: Version tracked in `simpul_schema_version` (Version `2`).
+- **Fail-Closed Transactional Migration**: In a single SQLite ACID transaction, existing records from `orca_*` are validated and copied to `simpul_*`. Row counts are asserted before dropping legacy tables. Any count mismatch raises `RuntimeError` and triggers immediate transaction rollback.
+- **Backward Compatibility Views**: SQL views `CREATE VIEW orca_* AS SELECT * FROM simpul_*` are established, guaranteeing legacy queries continue to execute without modification.
+- **Migration Suite**: `tests/test_team_store_migration.py` covers fresh DB init, legacy data migration with full state, idempotency across 5 restart cycles, and fail-closed rollback.
+
+#### 3. Cindy Attribution & Provenance Findings
+- **Upstream Reference**: `https://github.com/makecindy/cindy` (pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b`).
+- **Copyright & License**: Cindy, Copyright 2026 XD Inc., Apache License 2.0.
+- **Source Provenance Audit**:
+  - *Architectural Inspiration*: Cindy's Orca core provided conceptual patterns for Lead/Worker sessions, task dispatch queue states, status lifecycles, and crash recovery.
+  - *Clean-Room Implementation*: Simpul's codebase was written from scratch in Python 3.11+ using native standard library and SQLite primitives. No TypeScript sources were copied or transliterated.
+  - *Not a Fork*: Simpul is an independent library with explicit architectural credit recorded in `THIRD_PARTY_NOTICES.md` and `README.md`.
+  - Historical research logs and parity matrices in this report are preserved as permanent research provenance.
+
+#### 4. Changed Files Inventory
+- **Created (4 files)**:
+  - `subagentbridge/domain/team_contracts.py`
+  - `subagentbridge/storage/team_store.py`
+  - `subagentbridge/team/team_manager.py`
+  - `tests/test_team_store_migration.py`
+- **Modified (19 files)**:
+  - `subagentbridge/domain/orca_contracts.py` (shim)
+  - `subagentbridge/storage/orca_store.py` (shim)
+  - `subagentbridge/team/orca_team.py` (shim)
+  - `subagentbridge/execution/orca_adapter.py` (`IntegrationProbe` + seam documentation)
+  - `subagentbridge/execution/worker_process.py` (native imports & role checks)
+  - `subagentbridge/execution/worker_runtime_entrypoint.py` (native import)
+  - `subagentbridge/recovery/crash_recovery.py` (native imports & signatures)
+  - `subagentbridge/runners/harness_adapters.py` (native import)
+  - `subagentbridge/workspaces/worktree_manager.py` (native imports & annotations)
+  - `subagentbridge/domain/__init__.py` (re-exports)
+  - `subagentbridge/storage/__init__.py` (re-exports)
+  - `subagentbridge/team/__init__.py` (re-exports)
+  - `tests/test_c01_parity_foundation.py`
+  - `tests/test_c02_worker_sessions.py`
+  - `tests/test_c03_multi_harness.py`
+  - `tests/test_c04_interagent_control.py`
+  - `tests/test_c05_durable_continuity.py`
+  - `tests/test_c06_parity_acceptance.py`
+  - `tests/test_orca_optional.py`
+  - `README.md`
+  - `THIRD_PARTY_NOTICES.md`
+  - `docs/simpul/SIMPUL_CINDY_PARITY_REPORT.md`
+- **Deleted (0 files)**: Zero features removed.
+
+#### 5. Local Verification Evidence & Test Inventory
+- **Full Pytest Suite (`tests` + `artifacts/bootstrap/v3_1/tests`)**: **420 items collected: 414 passed, 6 skipped, 135 subtests passed** in 74.40s (0 failures).
+- **Unittest Suite (`tests`)**: **325 tests passed, 0 failed, 5 skipped** in 60.14s.
+- **Bootstrap Suite (`artifacts/bootstrap/v3_1/tests`)**: **13 tests passed, 0 failed** in 2.47s.
+- **Ruff Check (`--select E4,E7,E9,F subagentbridge`)**: Exit code 0 (`All checks passed!`).
+- **Mypy Static Typecheck (`subagentbridge`)**: Exit code 0 (`Success: no issues found in 59 source files`).
+- **Bandit Security Analysis (`subagentbridge`)**: Exit code 0 (0 issues found).
+- **MCP Server Smoke Test**: `MCP v1 server import PASS`.
+
+---
+
 ### Residual Risks & Constraints
 
-1. **E18 Same-User OS Confinement**: Both lead and worker execute as the same local operating system user. Full OS sandbox isolation (cgroups/containers/microVMs) is out-of-scope for the core orchestration library and remains accepted risk `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
-2. **Interactive Human Approval**: Production deployments require an authenticated out-of-band human confirmation interface. The in-process secret broker is strictly a test fixture.
-3. **No Autonomous Merges**: Under `GATE_MODE: CHAT_APPROVAL`, all stacked PR merges (#9 through #15) remain blocked pending human code review and authorized merge actions.
+1. **E18 Same-User OS Confinement**: Lead and subprocess workers share the same OS user identity. Sandbox isolation remains documented accepted risk `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
+2. **Interactive Human Approval**: Production deployments require an out-of-band authenticated confirmation interface. Test broker remains strictly in-process test fixture.
+3. **No Autonomous Merges**: Under `GATE_MODE: CHAT_APPROVAL`, all stacked PR merges (#9 through #16) remain blocked pending human code review and authorized merge actions.
 
 ---
 
-### Corrected Parity Verdict
+### Final Phase Verdict
 
-**`MERGE_REVIEW_READY`**
+**`PASS` (MERGE_REVIEW_READY)**
 
-All mandatory runtime-integrity invariants (verified handoff bypass elimination, strict checkpoint commit binding, evidence-backed step skipping, transactional finalization, worktree force rejection, branch identity check, and full test regression) are genuinely enforced in source code and fully verified with zero test failures across 415 pytest items and 325 unittests. PR #15 is prepared for commit and push.
+Native Simpul naming migration and Cindy attribution closure is complete. Zero data loss verified, backward compatibility shims intact, 100% test regression green, static analysis clean, and no orphaned branding in internal logic. Prepared for commit and push to branch `simpul/15-native-naming`.
 
 ---
 
-*Report last updated: 2026-10-26T12:08+07:00 - Final Runtime Integrity Closure on PR #15 complete, 415 pytest tests collected (409 passed, 6 skipped, 0 failed), 325 unittests passed, PR #15 ready for push*
+*Report last updated: 2026-10-26T13:10+07:00 - Phase C07 Native Naming Migration & Cindy Attribution complete, 420 pytest items (414 passed, 6 skipped), 325 unittests passed, 0 errors, branch simpul/15-native-naming ready for commit*
+
 

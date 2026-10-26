@@ -20,13 +20,13 @@ from typing import Any, IO
 
 import psutil
 
-from subagentbridge.domain.orca_contracts import (
-    OrcaRole,
+from subagentbridge.domain.team_contracts import (
+    AgentRole,
     WorkerStatus,
     WorkerConfig,
-    OrcaSession,
+    AgentSession,
 )
-from subagentbridge.storage.orca_store import OrcaStore
+from subagentbridge.storage.team_store import TeamStore
 from subagentbridge.approval.trusted_authority import (
     TrustedApprovalAuthority,
     get_trusted_authority,
@@ -125,7 +125,7 @@ class WorkerProcessController:
 
     def __init__(
         self,
-        store: OrcaStore,
+        store: TeamStore,
         approval_authority: TrustedApprovalAuthority | None = None,
     ) -> None:
         self.store = store
@@ -245,9 +245,9 @@ class WorkerProcessController:
             process_create_time=create_time,
             tokens_consumed=config.tokens_consumed,
         )
-        session = OrcaSession(
+        session = AgentSession(
             session_id=config.worker_id,
-            orca_role=OrcaRole.WORKER,
+            role=AgentRole.WORKER,
             team_id=config.team_id,
             status=WorkerStatus.IDLE,
             config=config_with_pid,
@@ -569,9 +569,9 @@ class WorkerProcessController:
             process_create_time=create_time,
             tokens_consumed=config.tokens_consumed,
         )
-        session = OrcaSession(
+        session = AgentSession(
             session_id=worker_id,
-            orca_role=OrcaRole.WORKER,
+            role=AgentRole.WORKER,
             team_id=config.team_id,
             status=WorkerStatus.RUNNING,
             config=cfg_with_pid,
@@ -600,7 +600,7 @@ class WorkerProcessController:
             w_id = session.session_id
             if w_id in reconciled:
                 continue
-            if session.orca_role == OrcaRole.WORKER and session.status in (WorkerStatus.RUNNING, WorkerStatus.IDLE):
+            if session.role == AgentRole.WORKER and session.status in (WorkerStatus.RUNNING, WorkerStatus.IDLE):
                 pid = session.config.pid
                 c_time = session.config.process_create_time
                 if pid is None or not is_process_identically_alive(pid, c_time):
