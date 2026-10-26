@@ -314,11 +314,32 @@
 
 ---
 
-## C06 - Pending
+---
 
-Section will be appended after C06 parity acceptance completes.
+## Phase C06: Multi-Worker Parity Acceptance & Adversarial Hardening (COMPLETE)
 
-## Feature Parity Matrix (Post-C05 State)
+- **Target Branch**: `simpul/14-parity-acceptance` (stacked on `simpul/13-durable-continuity`)
+- **Key Modules & Verification Scenarios**:
+  - `tests/test_c06_parity_acceptance.py`:
+    1. `test_c06_e2e_multiworker_workflow`: Executes full end-to-end pipeline with Lead and 2 real independent child OS processes (coder and tester) communicating over IPC. Lead dispatches coding task with verified authorization ticket, receives structured handoff, dispatches testing task, receives verification handoff, and cleans up processes.
+    2. `test_c06_fault_injection_and_recovery`: Simulates ungraceful child process termination during active task execution via `kill_process_tree`. Verifies reconciler audits OS process table, detects dead worker without false completion, transitions worker and queue item to `FAILED`, and resumes worker from checkpoint with exact token count restoration.
+    3. `test_c06_adversarial_authorization_hardening`: Validates strict rejection of:
+       - Cross-team task dispatches (`ValueError`).
+       - Cross-team channel messaging leaks (`ValueError`).
+       - Cross-team task steering / hijacking (`PermissionError`).
+       - Spoofed worker handoffs by unassigned workers (`PermissionError`).
+       - Spoofed lead handoffs to incorrect lead sessions (`PermissionError`).
+    4. `test_c06_pinned_cindy_parity_contract_verification`: Validates 1:1 structural contract conformance against upstream Cindy / Orca pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b`:
+       - 7 worker lifecycle states (`IDLE`, `RUNNING`, `PAUSED`, `INTERRUPTED`, `COMPLETED`, `FAILED`, `ARCHIVED`).
+       - 7 queue task states (`PENDING`, `DISPATCHED`, `RUNNING`, `INTERRUPTED`, `COMPLETED`, `CANCELLED`, `FAILED`).
+       - Lead and Worker role definitions.
+  - Full Test Suite: 386 passed, 5 skipped (Windows symlink limitations), 135 subtests passed.
+  - Static Analysis: Ruff clean (0 errors), Mypy clean (56 source files checked), Bandit clean (0 findings).
+  - MCP Server Import Smoke Test: PASS.
+
+---
+
+## Feature Parity Matrix (Post-C06 Final Parity State)
 
 Distinguishes:
 - **SCHEMA**: Data models and contracts defined and type-checked
@@ -367,4 +388,4 @@ Distinguishes:
 
 ---
 
-*Report last updated: 2026-10-25T22:50+07:00 - C02 Correctness Gate passed, verified 15/15 tests, PR #11 updated*
+*Report last updated: 2026-10-26T08:00+07:00 - Phase C06 Parity Acceptance complete, 386 tests passing, PR #15 prepared*
