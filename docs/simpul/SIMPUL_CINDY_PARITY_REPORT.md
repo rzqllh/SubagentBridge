@@ -281,11 +281,44 @@
 
 ---
 
-## C05 and C06 - Pending
+---
 
-Sections will be appended after each phase completes.
+## Phase C05: Durable Continuity, Checkpoints, Worktrees, and Crash Recovery (COMPLETE)
 
-## Feature Parity Matrix (Post-C04 State)
+- **Target Branch**: `simpul/13-durable-continuity` (stacked on `simpul/12-interagent-control`)
+- **Key Modules Implemented**:
+  - `subagentbridge/domain/orca_contracts.py`:
+    - `WorkerCheckpoint`: Typed snapshot contract recording worker ID, team ID, step index, state summary, cumulative tokens consumed, and context snapshot dictionary.
+  - `subagentbridge/storage/orca_store.py`:
+    - `orca_checkpoints` table and indices for durable snapshotting.
+    - `save_checkpoint()`, `load_latest_checkpoint()`, and `list_checkpoints()` with step-index and timestamp ordering.
+    - `delete_worktree()` for worktree lifecycle tracking cleanup.
+  - `subagentbridge/workspaces/worktree_manager.py`:
+    - `GitWorktreeManager`: Automated creation and teardown of isolated Git worktrees and branches bound to worker sessions (`git worktree add -b`, `git worktree remove --force`, `git branch -D`).
+    - Worktree directory isolation under `.worktrees/w-<worker_id>`.
+  - `subagentbridge/recovery/crash_recovery.py`:
+    - `reconcile_team_after_crash()`: Verifies real OS process liveness across all worker sessions using `is_process_identically_alive(pid, create_time)`. Dead worker processes are transitioned to `FAILED`, and assigned in-flight queue items are transitioned to `FAILED` (strictly eliminating false completion claims).
+    - `resume_worker_from_checkpoint()`: Rehydrates worker session from latest checkpoint, restores exact cumulative metered tokens consumed, spawns a fresh worker child process, and resets status to `IDLE`.
+  - `subagentbridge/execution/worker_process.py`:
+    - Added `terminate_all()` for safe batch termination of tracked worker child processes.
+- **Verification Suite**:
+  - `tests/test_c05_durable_continuity.py`:
+    1. `test_c05_checkpoint_save_and_latest_retrieval`: Validates step-indexed checkpoint persistence and latest retrieval.
+    2. `test_c05_git_worktree_lifecycle`: Validates automated git worktree creation, branch checkout, directory isolation, and clean teardown.
+    3. `test_c05_crash_recovery_detects_dead_worker`: Proves dead OS processes are detected and transitioned to `FAILED` without false completion.
+    4. `test_c05_resume_worker_from_checkpoint`: Proves checkpoint restoration, token count continuity, and fresh process spawn.
+    5. `test_c05_durable_rehydration_across_restart`: Proves complete cold-restart rehydration of teams, sessions, queues, and checkpoints.
+  - Full Test Suite: 382 passed, 5 skipped (Windows symlink limitations), 135 subtests passed.
+  - Static Analysis: Ruff clean (0 errors), Mypy clean (56 source files checked), Bandit clean (0 findings).
+  - MCP Server Import Smoke Test: PASS.
+
+---
+
+## C06 - Pending
+
+Section will be appended after C06 parity acceptance completes.
+
+## Feature Parity Matrix (Post-C05 State)
 
 Distinguishes:
 - **SCHEMA**: Data models and contracts defined and type-checked
@@ -309,8 +342,8 @@ Distinguishes:
 | **Inter-Agent Channel**| Structured Worker-to-Lead handoff | `OrcaInterAgentDispatcher` / auto-bridge | `subagentbridge/domain/orca_contracts.py` (`HandoffEvidence`) | **WORKING (Identity & Lifecycle Bound)** | **C04 (Done)** |
 | **Inter-Agent Channel**| Worker reads Lead message history | `orca_worker_bridge.read_lead_history` | `subagentbridge/team/orca_team.py` (`read_lead_history`) | **WORKING (Authenticated History)** | **C04 (Done)** |
 | **Worktree** | Per-worker isolated worktree path & branch | `WorktreeManager` / `create_worker working_dir` | `subagentbridge/domain/orca_contracts.py` (`WorktreeAssignment`) | **WORKING (Mapping & Tracking)** | C01 (Done) |
-| **Worktree** | Automated git worktree creation & tear down | `WorktreeManager.createWorktree` | Scheduled for `subagentbridge/workspaces/worktree_manager.py` | **SCHEDULED** | **C05** |
-| **Crash Recovery** | Rehydrate sessions, teams, and queues across crash | SQLite WAL persistence / session resume | `subagentbridge/storage/orca_store.py` (`OrcaStore`) | **WORKING (SQLite Rehydration)** | C01 (Done) |
+| **Worktree** | Automated git worktree creation & tear down | `WorktreeManager.createWorktree` | `subagentbridge/workspaces/worktree_manager.py` | **WORKING (Git CLI & SQLite Tracking)** | **C05 (Done)** |
+| **Crash Recovery** | Rehydrate sessions, teams, and queues across crash | SQLite WAL persistence / session resume | `subagentbridge/storage/orca_store.py` (`OrcaStore`) | **WORKING (SQLite Rehydration & Audited Liveness)** | **C05 (Done)** |
 | **Multi-Harness** | Host adapters (Antigravity, Codex, Claude Code, Pi) | Host specific adapter IPC | `subagentbridge/runners/harness_adapters.py` | **WORKING (Capability-Checked Host Registry)** | **C03 (Done)** |
 | **Security & Safety** | Default-deny command authorization | N/A (Simpul-specific hardening) | `subagentbridge/team/orca_team.py` (`execute_worker_command`) | **WORKING (Fail-Closed)** | C01 (Done) |
 | **Security & Safety** | E18 Same-user co-process confinement | Accepted risk boundary | Documented as `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)` | **VERIFIED BOUNDARY** | Ongoing |

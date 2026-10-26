@@ -22,6 +22,7 @@ from subagentbridge.domain.orca_contracts import (
     WorktreeAssignment,
     HandoffEvidence,
     ChannelMessage,
+    WorkerCheckpoint,
 )
 
 ORCA_SCHEMA = """
@@ -87,6 +88,18 @@ CREATE TABLE IF NOT EXISTS orca_channel_messages (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_channel_team ON orca_channel_messages(team_id, created_at);
+
+CREATE TABLE IF NOT EXISTS orca_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    worker_id TEXT NOT NULL,
+    team_id TEXT NOT NULL,
+    step_index INTEGER NOT NULL,
+    state_summary TEXT NOT NULL,
+    tokens_consumed INTEGER NOT NULL,
+    context_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoint_worker ON orca_checkpoints(worker_id, created_at);
 """
 
 
@@ -458,3 +471,85 @@ class OrcaStore:
                 )
             )
         return handoffs
+
+    def delete_worktree(self, worker_id: str) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM orca_worktrees WHERE worker_id = ?", (worker_id,))
+
+    # ---- Checkpoints -----------------------------------------------------
+
+    def save_checkpoint(self, checkpoint: WorkerCheckpoint) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO orca_checkpoints (
+                    checkpoint_id, worker_id, team_id, step_index,
+                    state_summary, tokens_consumed, context_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(checkpoint_id) DO UPDATE SET
+                    step_index = excluded.step_index,
+                    state_summary = excluded.state_summary,
+                    tokens_consumed = excluded.tokens_consumed,
+                    context_json = excluded.context_json
+                """,
+                (
+                    checkpoint.checkpoint_id,
+                    checkpoint.worker_id,
+                    checkpoint.team_id,
+                    checkpoint.step_index,
+                    checkpoint.state_summary,
+                    checkpoint.tokens_consumed,
+                    json.dumps(checkpoint.context_snapshot),
+                    checkpoint.created_at,
+                ),
+            )
+
+    def load_latest_checkpoint(self, worker_id: str) -> WorkerCheckpoint | None:
+        cur = self._conn.execute(
+            """
+            SELECT * FROM orca_checkpoints
+            WHERE worker_id = ?
+            ORDER BY step_index DESC, created_at DESC
+            LIMIT 1
+            """,
+            (worker_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return WorkerCheckpoint(
+            checkpoint_id=row["checkpoint_id"],
+            worker_id=row["worker_id"],
+            team_id=row["team_id"],
+            step_index=row["step_index"],
+            state_summary=row["state_summary"],
+            tokens_consumed=row["tokens_consumed"],
+            context_snapshot=json.loads(row["context_json"]),
+            created_at=row["created_at"],
+        )
+
+    def list_checkpoints(self, worker_id: str) -> list[WorkerCheckpoint]:
+        cur = self._conn.execute(
+            """
+            SELECT * FROM orca_checkpoints
+            WHERE worker_id = ?
+            ORDER BY step_index ASC, created_at ASC
+            """,
+            (worker_id,),
+        )
+        cps = []
+        for row in cur.fetchall():
+            cps.append(
+                WorkerCheckpoint(
+                    checkpoint_id=row["checkpoint_id"],
+                    worker_id=row["worker_id"],
+                    team_id=row["team_id"],
+                    step_index=row["step_index"],
+                    state_summary=row["state_summary"],
+                    tokens_consumed=row["tokens_consumed"],
+                    context_snapshot=json.loads(row["context_json"]),
+                    created_at=row["created_at"],
+                )
+            )
+        return cps

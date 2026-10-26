@@ -118,3 +118,15 @@ class ChannelMessage:
     content: str
     role: str
     created_at: float = field(default_factory=time.time)
+
+
+@dataclass
+class WorkerCheckpoint:
+    checkpoint_id: str
+    worker_id: str
+    team_id: str
+    step_index: int
+    state_summary: str
+    tokens_consumed: int
+    context_snapshot: dict[str, Any] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)

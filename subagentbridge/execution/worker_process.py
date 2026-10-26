@@ -508,6 +508,11 @@ class WorkerProcessController:
         self._readers.pop(worker_id, None)
         return True
 
+    def terminate_all(self, timeout: float = 3.0) -> None:
+        """Terminates all tracked worker child processes safely."""
+        for worker_id in list(self._processes.keys()):
+            self.terminate_worker(worker_id, timeout=timeout)
+
     def reap_dead_workers(self) -> list[str]:
         reaped: list[str] = []
         for worker_id, proc in list(self._processes.items()):
