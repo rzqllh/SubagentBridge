@@ -81,6 +81,9 @@ class QueueItem:
     task_id: str
     payload: dict[str, Any]
     status: QueueTaskStatus = QueueTaskStatus.PENDING
+    dedup_key: str | None = None
+    priority: int = 0
+    steering_instructions: list[dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -104,3 +107,14 @@ class HandoffEvidence:
     artifacts: list[str] = field(default_factory=list)
     metrics: dict[str, Any] = field(default_factory=dict)
     submitted_at: float = field(default_factory=time.time)
+
+
+@dataclass
+class ChannelMessage:
+    message_id: str
+    team_id: str
+    from_session_id: str
+    to_session_id: str
+    content: str
+    role: str
+    created_at: float = field(default_factory=time.time)

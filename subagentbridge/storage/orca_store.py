@@ -21,6 +21,7 @@ from subagentbridge.domain.orca_contracts import (
     QueueItem,
     WorktreeAssignment,
     HandoffEvidence,
+    ChannelMessage,
 )
 
 ORCA_SCHEMA = """
@@ -49,6 +50,9 @@ CREATE TABLE IF NOT EXISTS orca_queue (
     task_id TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     status TEXT NOT NULL,
+    dedup_key TEXT,
+    priority INTEGER NOT NULL DEFAULT 0,
+    steering_json TEXT NOT NULL DEFAULT '[]',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -72,6 +76,17 @@ CREATE TABLE IF NOT EXISTS orca_handoffs (
     metrics_json TEXT NOT NULL,
     submitted_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS orca_channel_messages (
+    message_id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    from_session_id TEXT NOT NULL,
+    to_session_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    role TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_channel_team ON orca_channel_messages(team_id, created_at);
 """
 
 
@@ -84,6 +99,15 @@ class OrcaStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(ORCA_SCHEMA)
+        for alter_sql in [
+            "ALTER TABLE orca_queue ADD COLUMN dedup_key TEXT",
+            "ALTER TABLE orca_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE orca_queue ADD COLUMN steering_json TEXT NOT NULL DEFAULT '[]'",
+        ]:
+            try:
+                self._conn.execute(alter_sql)
+            except sqlite3.OperationalError:
+                pass
         self._conn.commit()
 
     def close(self) -> None:
@@ -207,18 +231,45 @@ class OrcaStore:
 
     # ---- Queue -----------------------------------------------------------
 
+    def _row_to_queue_item(self, row: sqlite3.Row) -> QueueItem:
+        keys = row.keys()
+        steering = []
+        if "steering_json" in keys and row["steering_json"]:
+            try:
+                steering = json.loads(row["steering_json"])
+            except Exception:
+                steering = []
+        return QueueItem(
+            dispatch_id=row["dispatch_id"],
+            team_id=row["team_id"],
+            from_session_id=row["from_session_id"],
+            to_session_id=row["to_session_id"],
+            task_id=row["task_id"],
+            payload=json.loads(row["payload_json"]),
+            status=QueueTaskStatus(row["status"]),
+            dedup_key=row["dedup_key"] if "dedup_key" in keys else None,
+            priority=row["priority"] if "priority" in keys else 0,
+            steering_instructions=steering,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
     def save_queue_item(self, item: QueueItem) -> None:
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO orca_queue (
                     dispatch_id, team_id, from_session_id, to_session_id,
-                    task_id, payload_json, status, created_at, updated_at
+                    task_id, payload_json, status, dedup_key, priority, steering_json,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(dispatch_id) DO UPDATE SET
                     status = excluded.status,
                     payload_json = excluded.payload_json,
+                    dedup_key = excluded.dedup_key,
+                    priority = excluded.priority,
+                    steering_json = excluded.steering_json,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -229,6 +280,9 @@ class OrcaStore:
                     item.task_id,
                     json.dumps(item.payload),
                     item.status.value,
+                    item.dedup_key,
+                    item.priority,
+                    json.dumps(item.steering_instructions),
                     item.created_at,
                     item.updated_at,
                 ),
@@ -239,38 +293,86 @@ class OrcaStore:
         row = cur.fetchone()
         if not row:
             return None
-        return QueueItem(
-            dispatch_id=row["dispatch_id"],
-            team_id=row["team_id"],
-            from_session_id=row["from_session_id"],
-            to_session_id=row["to_session_id"],
-            task_id=row["task_id"],
-            payload=json.loads(row["payload_json"]),
-            status=QueueTaskStatus(row["status"]),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
+        return self._row_to_queue_item(row)
+
+    def find_queue_item_by_dedup(self, team_id: str, dedup_key: str) -> QueueItem | None:
+        cur = self._conn.execute(
+            "SELECT * FROM orca_queue WHERE team_id = ? AND dedup_key = ?", (team_id, dedup_key)
         )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return self._row_to_queue_item(row)
+
+    def fetch_next_pending_task(self, team_id: str, worker_id: str) -> QueueItem | None:
+        cur = self._conn.execute(
+            """
+            SELECT * FROM orca_queue
+            WHERE team_id = ? AND to_session_id = ? AND status = ?
+            ORDER BY priority DESC, created_at ASC
+            LIMIT 1
+            """,
+            (team_id, worker_id, QueueTaskStatus.PENDING.value),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return self._row_to_queue_item(row)
 
     def list_queue_by_team(self, team_id: str) -> list[QueueItem]:
         cur = self._conn.execute(
             "SELECT * FROM orca_queue WHERE team_id = ? ORDER BY created_at ASC", (team_id,)
         )
-        items = []
+        return [self._row_to_queue_item(row) for row in cur.fetchall()]
+
+    # ---- Channel Messages ------------------------------------------------
+
+    def save_channel_message(self, msg: ChannelMessage) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO orca_channel_messages (
+                    message_id, team_id, from_session_id, to_session_id, content, role, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    content = excluded.content
+                """,
+                (
+                    msg.message_id,
+                    msg.team_id,
+                    msg.from_session_id,
+                    msg.to_session_id,
+                    msg.content,
+                    msg.role,
+                    msg.created_at,
+                ),
+            )
+
+    def list_channel_messages_by_team(self, team_id: str, limit: int = 100) -> list[ChannelMessage]:
+        cur = self._conn.execute(
+            """
+            SELECT * FROM orca_channel_messages
+            WHERE team_id = ?
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (team_id, limit),
+        )
+        messages = []
         for row in cur.fetchall():
-            items.append(
-                QueueItem(
-                    dispatch_id=row["dispatch_id"],
+            messages.append(
+                ChannelMessage(
+                    message_id=row["message_id"],
                     team_id=row["team_id"],
                     from_session_id=row["from_session_id"],
                     to_session_id=row["to_session_id"],
-                    task_id=row["task_id"],
-                    payload=json.loads(row["payload_json"]),
-                    status=QueueTaskStatus(row["status"]),
+                    content=row["content"],
+                    role=row["role"],
                     created_at=row["created_at"],
-                    updated_at=row["updated_at"],
                 )
             )
-        return items
+        return messages
 
     # ---- Worktrees -------------------------------------------------------
 

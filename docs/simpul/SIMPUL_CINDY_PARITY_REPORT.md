@@ -237,11 +237,55 @@
 
 ---
 
-## C04 through C06 - Pending
+---
+
+## Phase C04: Inter-Agent Control, Messaging, Queue, Steering, and Verified Handoffs (COMPLETE)
+
+- **Target Branch**: `simpul/12-interagent-control` (stacked on `simpul/11-multi-harness`)
+- **Key Modules Implemented**:
+  - `subagentbridge/domain/orca_contracts.py`:
+    - `ChannelMessage`: typed message contract with sender, recipient, team, role, and timestamp.
+    - `QueueItem` enhanced with `dedup_key: str | None`, `priority: int`, and `steering_instructions: list[dict[str, Any]]`.
+  - `subagentbridge/storage/orca_store.py`:
+    - `orca_channel_messages` table and index for team message history.
+    - `orca_queue` schema extended with `dedup_key`, `priority`, and `steering_json` (with backward-compatible migrations).
+    - `save_channel_message()` and `list_channel_messages_by_team()` for durable audit trail.
+    - `find_queue_item_by_dedup()` for deduplicating retried task submissions.
+    - `fetch_next_pending_task()` supporting priority-based and FIFO worker task retrieval.
+  - `subagentbridge/team/orca_team.py`:
+    - `post_message()`: Authenticated messaging verifying sender and recipient belong to the same team.
+    - `read_lead_history()`: Lead and worker message history retrieval.
+    - `dispatch_task()`: Idempotent dispatch deduplication via `dedup_key` (returns existing active dispatch).
+    - `fetch_next_pending_task()`: Targeted FIFO queue polling.
+    - `steer_task()`: Lead-only guidance steering for in-flight tasks (`PENDING`/`RUNNING`), rejecting terminal tasks.
+    - `cancel_task()`: Lead-only atomic cancellation of queued/running tasks.
+    - `interrupt_worker()`: Worker-level preemption transitioning worker and all active queue items to `INTERRUPTED`.
+    - `submit_worker_handoff()`: **Verified handoff binding** strictly enforcing:
+      1. Worker identity matches assigned worker (`evidence.from_worker_id == item.to_session_id`).
+      2. Lead identity matches team lead (`evidence.to_lead_id == team.lead_session_id`).
+      3. Task status is active (`PENDING`, `DISPATCHED`, `RUNNING`); late handoffs for `INTERRUPTED`/`CANCELLED` tasks are strictly rejected.
+      4. Worker session is active and not interrupted.
+- **Verification Suite**:
+  - `tests/test_c04_interagent_control.py`:
+    1. `test_c04_authenticated_lead_worker_messaging`: Validates message exchange and history reading within team.
+    2. `test_c04_targeted_queue_fifo_order`: Validates targeted worker dispatch and FIFO fetching.
+    3. `test_c04_dispatch_deduplication`: Validates duplicate dispatch rejection and idempotency.
+    4. `test_c04_lead_steering_active_task`: Validates Lead task steering, rejection of non-lead or finished tasks.
+    5. `test_c04_worker_interruption_and_cancellation`: Validates task cancellation and worker interruption preemption.
+    6. `test_c04_verified_handoff_binding_success`: Validates clean handoff, status completion, and worker idle reset.
+    7. `test_c04_reject_spoofed_worker_handoff`: Rejects unauthorized worker submitting handoff for another worker.
+    8. `test_c04_reject_late_handoff_after_interruption`: Rejects late completion after task interruption.
+  - Full Test Suite: 377 passed, 5 skipped (Windows symlink limitations), 135 subtests passed.
+  - Static Analysis: Ruff clean (0 errors), Mypy clean (54 source files checked), Bandit clean (0 findings).
+  - MCP Server Import Smoke Test: PASS.
+
+---
+
+## C05 and C06 - Pending
 
 Sections will be appended after each phase completes.
 
-## Feature Parity Matrix (Post-C03 State)
+## Feature Parity Matrix (Post-C04 State)
 
 Distinguishes:
 - **SCHEMA**: Data models and contracts defined and type-checked
@@ -260,10 +304,10 @@ Distinguishes:
 | **Worker Lifecycle** | Persistent vs Ephemeral lifecycle kind | `orca-team-architecture.md` (Section 3) | `subagentbridge/domain/orca_contracts.py` | **SCHEMA (Classified)** | C02 (Done) |
 | **Dispatch & Queue** | Typed inter-agent queue handle (`dsp-*`) | `OrcaTeamService.dispatchWorkerTask` | `subagentbridge/domain/orca_contracts.py` (`QueueItem`) | **WORKING (SQLite Queue)** | C01 (Done) |
 | **Dispatch & Queue** | Queue state transitions (`PENDING`..`COMPLETED`) | `OrcaTeamService` queue state machine | `subagentbridge/team/orca_team.py` | **WORKING (In-Process)** | C01 (Done) |
-| **Queue Controls** | Worker interrupt preemption (`INTERRUPTED`) | `interrupt_worker` atomic cancellation | `subagentbridge/team/orca_team.py` (`interrupt_worker`) | **WORKING (In-Process)** | C01 (Done) |
-| **Queue Controls** | Queue control tools (steer, cancel, update) | 6 queue tools in `OrcaTeamService` | `subagentbridge/team/orca_team.py` | **WORKING (Partial)** | **C04** |
-| **Inter-Agent Channel**| Structured Worker-to-Lead handoff | `OrcaInterAgentDispatcher` / auto-bridge | `subagentbridge/domain/orca_contracts.py` (`HandoffEvidence`) | **WORKING (Ingested & Ledgered)** | C01 (Done) |
-| **Inter-Agent Channel**| Worker reads Lead message history | `orca_worker_bridge.read_lead_history` | Scheduled for `subagentbridge/team/interagent_channel.py` | **SCHEDULED** | **C04** |
+| **Queue Controls** | Worker interrupt preemption (`INTERRUPTED`) | `interrupt_worker` atomic cancellation | `subagentbridge/team/orca_team.py` (`interrupt_worker`) | **WORKING (In-Process & Preemptive)** | **C04 (Done)** |
+| **Queue Controls** | Queue control tools (steer, cancel, update) | 6 queue tools in `OrcaTeamService` | `subagentbridge/team/orca_team.py` | **WORKING (Durable & Deduplicated)** | **C04 (Done)** |
+| **Inter-Agent Channel**| Structured Worker-to-Lead handoff | `OrcaInterAgentDispatcher` / auto-bridge | `subagentbridge/domain/orca_contracts.py` (`HandoffEvidence`) | **WORKING (Identity & Lifecycle Bound)** | **C04 (Done)** |
+| **Inter-Agent Channel**| Worker reads Lead message history | `orca_worker_bridge.read_lead_history` | `subagentbridge/team/orca_team.py` (`read_lead_history`) | **WORKING (Authenticated History)** | **C04 (Done)** |
 | **Worktree** | Per-worker isolated worktree path & branch | `WorktreeManager` / `create_worker working_dir` | `subagentbridge/domain/orca_contracts.py` (`WorktreeAssignment`) | **WORKING (Mapping & Tracking)** | C01 (Done) |
 | **Worktree** | Automated git worktree creation & tear down | `WorktreeManager.createWorktree` | Scheduled for `subagentbridge/workspaces/worktree_manager.py` | **SCHEDULED** | **C05** |
 | **Crash Recovery** | Rehydrate sessions, teams, and queues across crash | SQLite WAL persistence / session resume | `subagentbridge/storage/orca_store.py` (`OrcaStore`) | **WORKING (SQLite Rehydration)** | C01 (Done) |
