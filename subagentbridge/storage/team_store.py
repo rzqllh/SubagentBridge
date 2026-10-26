@@ -142,15 +142,107 @@ def _execute_ddl_statements(conn: sqlite3.Connection, script: str) -> None:
             conn.execute(stmt)
 
 
+
+def _verify_application_referential_integrity(conn: sqlite3.Connection) -> None:
+    """Verify application-level foreign key and referential integrity.
+
+    Ensures no orphaned entities exist across teams, sessions, queue items,
+    worktrees, handoffs, channel messages, and checkpoints.
+    """
+    # 1. Sessions must reference existing teams
+    orphaned_sessions = conn.execute("""
+        SELECT s.session_id, s.team_id FROM simpul_sessions s
+        LEFT JOIN simpul_teams t ON s.team_id = t.team_id
+        WHERE t.team_id IS NULL
+    """).fetchall()
+    if orphaned_sessions:
+        raise MigrationIntegrityError(
+            f"Referential integrity failure: sessions referencing non-existent teams: {[r[0] for r in orphaned_sessions]}"
+        )
+
+    # 2. Queue dispatches must reference existing teams
+    orphaned_queue = conn.execute("""
+        SELECT q.dispatch_id, q.team_id FROM simpul_queue q
+        LEFT JOIN simpul_teams t ON q.team_id = t.team_id
+        WHERE t.team_id IS NULL
+    """).fetchall()
+    if orphaned_queue:
+        raise MigrationIntegrityError(
+            f"Referential integrity failure: queue dispatches referencing non-existent teams: {[r[0] for r in orphaned_queue]}"
+        )
+
+    # 3. Worktrees must reference existing teams and existing worker sessions
+    orphaned_worktree_teams = conn.execute("""
+        SELECT w.worker_id, w.team_id FROM simpul_worktrees w
+        LEFT JOIN simpul_teams t ON w.team_id = t.team_id
+        WHERE t.team_id IS NULL
+    """).fetchall()
+    if orphaned_worktree_teams:
+        raise MigrationIntegrityError(
+            f"Referential integrity failure: worktrees referencing non-existent teams: {[r[0] for r in orphaned_worktree_teams]}"
+        )
+    orphaned_worktree_sessions = conn.execute("""
+        SELECT w.worker_id FROM simpul_worktrees w
+        LEFT JOIN simpul_sessions s ON w.worker_id = s.session_id
+        WHERE s.session_id IS NULL
+    """).fetchall()
+    if orphaned_worktree_sessions:
+        raise MigrationIntegrityError(
+            f"Referential integrity failure: worktrees referencing non-existent worker sessions: {[r[0] for r in orphaned_worktree_sessions]}"
+        )
+
+    # 4. Handoffs must reference existing teams
+    orphaned_handoffs = conn.execute("""
+        SELECT h.dispatch_id, h.team_id FROM simpul_handoffs h
+        LEFT JOIN simpul_teams t ON h.team_id = t.team_id
+        WHERE t.team_id IS NULL
+    """).fetchall()
+    if orphaned_handoffs:
+        raise MigrationIntegrityError(
+            f"Referential integrity failure: handoffs referencing non-existent teams: {[r[0] for r in orphaned_handoffs]}"
+        )
+
+    # 5. Channel messages must reference existing teams
+    orphaned_messages = conn.execute("""
+        SELECT m.message_id, m.team_id FROM simpul_channel_messages m
+        LEFT JOIN simpul_teams t ON m.team_id = t.team_id
+        WHERE t.team_id IS NULL
+    """).fetchall()
+    if orphaned_messages:
+        raise MigrationIntegrityError(
+            f"Referential integrity failure: channel messages referencing non-existent teams: {[r[0] for r in orphaned_messages]}"
+        )
+
+    # 6. Checkpoints must reference existing teams and worker sessions
+    orphaned_checkpoint_teams = conn.execute("""
+        SELECT c.checkpoint_id, c.team_id FROM simpul_checkpoints c
+        LEFT JOIN simpul_teams t ON c.team_id = t.team_id
+        WHERE t.team_id IS NULL
+    """).fetchall()
+    if orphaned_checkpoint_teams:
+        raise MigrationIntegrityError(
+            f"Referential integrity failure: checkpoints referencing non-existent teams: {[r[0] for r in orphaned_checkpoint_teams]}"
+        )
+    orphaned_checkpoint_sessions = conn.execute("""
+        SELECT c.checkpoint_id, c.worker_id FROM simpul_checkpoints c
+        LEFT JOIN simpul_sessions s ON c.worker_id = s.session_id
+        WHERE s.session_id IS NULL
+    """).fetchall()
+    if orphaned_checkpoint_sessions:
+        raise MigrationIntegrityError(
+            f"Referential integrity failure: checkpoints referencing non-existent worker sessions: {[r[0] for r in orphaned_checkpoint_sessions]}"
+        )
+
+
 def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) -> None:
     """Execute idempotent, fail-closed zero-data-loss schema migration.
 
     Guarantees:
     1. Physical pre-migration byte backup via conn.backup() if file-based and legacy tables exist.
     2. Explicit transaction control with manual isolation level (no implicit commits).
-    3. Row-by-row equivalence, row identity, and column-by-column equality validation.
-    4. Primary key conflict detection against destination simpul_* tables.
-    5. Foreign key referential integrity check before dropping legacy tables.
+    3. Complete schema-aware column mapping and full row-by-row equivalence validation.
+    4. Primary key conflict detection across ALL columns against destination simpul_* tables.
+    5. Foreign key and application-level referential integrity verification before dropping legacy tables.
     6. Complete transaction rollback restoring all tables if any step fails.
     7. Read-only compatibility views established for orca_* table queries.
     """
@@ -173,14 +265,32 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
     )
     legacy_tables = {r["name"] for r in cur_tables.fetchall()}
 
-    # 3. If legacy tables exist and we have a disk database, preserve bytes with verified backup
+    # 3. If legacy tables exist and we have a disk database, preserve bytes with verified backup.
+    # Note: We intentionally use SQLite's online backup API (conn.backup) rather than a raw filesystem
+    # copy. In WAL mode, raw file copying of .db alone can miss pages currently in the -wal file or
+    # capture torn/inconsistent frames. conn.backup creates a clean, transactionally consistent logical
+    # snapshot backup, which we verify immediately with PRAGMA integrity_check.
     if legacy_tables and db_file and db_file.exists():
-        backup_path = Path(f"{db_file}.pre_migration.bak")
+        primary_bak = Path(f"{db_file}.pre_migration.bak")
+        if primary_bak.exists():
+            ts = int(time.time())
+            backup_path = Path(f"{db_file}.pre_migration.{ts}.bak")
+            counter = 1
+            while backup_path.exists():
+                backup_path = Path(f"{db_file}.pre_migration.{ts}_{counter}.bak")
+                counter += 1
+        else:
+            backup_path = primary_bak
+
         backup_conn = sqlite3.connect(str(backup_path))
         try:
             conn.backup(backup_conn)
+            chk = backup_conn.execute("PRAGMA integrity_check").fetchone()
+            if not chk or chk[0] != "ok":
+                raise MigrationIntegrityError(f"Pre-migration backup integrity check failed: {chk}")
         finally:
             backup_conn.close()
+
         if not backup_path.exists() or backup_path.stat().st_size == 0:
             raise MigrationIntegrityError(f"Pre-migration backup failed: {backup_path} is empty or missing")
 
@@ -204,7 +314,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
             return
 
         if legacy_tables:
-            # 1. Teams
+            # 1. Teams (Comparing ALL columns: team_id, lead_session_id, title, created_at)
             if "orca_teams" in legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.team_id FROM orca_teams o
@@ -224,48 +334,110 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                 """)
                 for r in conn.execute("SELECT team_id, lead_session_id, title, created_at FROM orca_teams").fetchall():
                     nr = conn.execute("SELECT team_id, lead_session_id, title, created_at FROM simpul_teams WHERE team_id = ?", (r["team_id"],)).fetchone()
-                    if nr is None or (nr["lead_session_id"], nr["title"], nr["created_at"]) != (r["lead_session_id"], r["title"], r["created_at"]):
+                    if nr is None or (nr["lead_session_id"], nr["title"]) != (r["lead_session_id"], r["title"]) or abs(nr["created_at"] - r["created_at"]) > 0.001:
                         raise MigrationIntegrityError(f"Row equivalence verification failure for team {r['team_id']}")
 
-            # 2. Sessions
+            # 2. Sessions (Comparing ALL columns: session_id, role/orca_role, team_id, status, config_json, created_at, updated_at)
             if "orca_sessions" in legacy_tables:
-                conflicts = conn.execute("""
-                    SELECT o.session_id FROM orca_sessions o
-                    INNER JOIN simpul_sessions s ON o.session_id = s.session_id
-                    WHERE o.orca_role != s.role
-                       OR o.team_id != s.team_id
-                       OR o.status != s.status
-                       OR o.config_json != s.config_json
-                       OR ABS(o.created_at - s.created_at) > 0.001
-                """).fetchall()
-                if conflicts:
-                    raise MigrationConflictError(
-                        f"Conflicting primary keys between legacy orca_sessions and simpul_sessions: {[c[0] for c in conflicts]}"
-                    )
-                conn.execute("""
-                    INSERT INTO simpul_sessions (session_id, role, team_id, status, config_json, created_at, updated_at)
-                    SELECT session_id, orca_role, team_id, status, config_json, created_at, updated_at FROM orca_sessions
-                    WHERE session_id NOT IN (SELECT session_id FROM simpul_sessions)
-                """)
-                for r in conn.execute("SELECT session_id, orca_role, team_id, status, config_json, created_at, updated_at FROM orca_sessions").fetchall():
-                    nr = conn.execute("SELECT session_id, role, team_id, status, config_json, created_at, updated_at FROM simpul_sessions WHERE session_id = ?", (r["session_id"],)).fetchone()
-                    if nr is None or (nr["role"], nr["team_id"], nr["status"], nr["config_json"], nr["created_at"]) != (r["orca_role"], r["team_id"], r["status"], r["config_json"], r["created_at"]):
-                        raise MigrationIntegrityError(f"Row equivalence verification failure for session {r['session_id']}")
+                cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_sessions)").fetchall()}
+                if "orca_role" in cols:
+                    conflicts = conn.execute("""
+                        SELECT o.session_id FROM orca_sessions o
+                        INNER JOIN simpul_sessions s ON o.session_id = s.session_id
+                        WHERE o.orca_role != s.role
+                           OR o.team_id != s.team_id
+                           OR o.status != s.status
+                           OR o.config_json != s.config_json
+                           OR ABS(o.created_at - s.created_at) > 0.001
+                           OR ABS(o.updated_at - s.updated_at) > 0.001
+                    """).fetchall()
+                    if conflicts:
+                        raise MigrationConflictError(
+                            f"Conflicting primary keys between legacy orca_sessions and simpul_sessions: {[c[0] for c in conflicts]}"
+                        )
+                    conn.execute("""
+                        INSERT INTO simpul_sessions (session_id, role, team_id, status, config_json, created_at, updated_at)
+                        SELECT session_id, orca_role, team_id, status, config_json, created_at, updated_at FROM orca_sessions
+                        WHERE session_id NOT IN (SELECT session_id FROM simpul_sessions)
+                    """)
+                    for r in conn.execute("SELECT session_id, orca_role, team_id, status, config_json, created_at, updated_at FROM orca_sessions").fetchall():
+                        nr = conn.execute("SELECT session_id, role, team_id, status, config_json, created_at, updated_at FROM simpul_sessions WHERE session_id = ?", (r["session_id"],)).fetchone()
+                        if (
+                            nr is None
+                            or (nr["role"], nr["team_id"], nr["status"], nr["config_json"]) != (r["orca_role"], r["team_id"], r["status"], r["config_json"])
+                            or abs(nr["created_at"] - r["created_at"]) > 0.001
+                            or abs(nr["updated_at"] - r["updated_at"]) > 0.001
+                        ):
+                            raise MigrationIntegrityError(f"Row equivalence verification failure for session {r['session_id']}")
+                else:
+                    conflicts = conn.execute("""
+                        SELECT o.session_id FROM orca_sessions o
+                        INNER JOIN simpul_sessions s ON o.session_id = s.session_id
+                        WHERE o.role != s.role
+                           OR o.team_id != s.team_id
+                           OR o.status != s.status
+                           OR o.config_json != s.config_json
+                           OR ABS(o.created_at - s.created_at) > 0.001
+                           OR ABS(o.updated_at - s.updated_at) > 0.001
+                    """).fetchall()
+                    if conflicts:
+                        raise MigrationConflictError(
+                            f"Conflicting primary keys between legacy orca_sessions and simpul_sessions: {[c[0] for c in conflicts]}"
+                        )
+                    conn.execute("""
+                        INSERT INTO simpul_sessions (session_id, role, team_id, status, config_json, created_at, updated_at)
+                        SELECT session_id, role, team_id, status, config_json, created_at, updated_at FROM orca_sessions
+                        WHERE session_id NOT IN (SELECT session_id FROM simpul_sessions)
+                    """)
+                    for r in conn.execute("SELECT session_id, role, team_id, status, config_json, created_at, updated_at FROM orca_sessions").fetchall():
+                        nr = conn.execute("SELECT session_id, role, team_id, status, config_json, created_at, updated_at FROM simpul_sessions WHERE session_id = ?", (r["session_id"],)).fetchone()
+                        if (
+                            nr is None
+                            or (nr["role"], nr["team_id"], nr["status"], nr["config_json"]) != (r["role"], r["team_id"], r["status"], r["config_json"])
+                            or abs(nr["created_at"] - r["created_at"]) > 0.001
+                            or abs(nr["updated_at"] - r["updated_at"]) > 0.001
+                        ):
+                            raise MigrationIntegrityError(f"Row equivalence verification failure for session {r['session_id']}")
 
-            # 3. Queue
+            # 3. Queue (Comparing ALL columns: dispatch_id, team_id, from_session_id, to_session_id, task_id, payload_json, status, dedup_key, priority, steering_json, created_at, updated_at)
             if "orca_queue" in legacy_tables:
-                conflicts = conn.execute("""
-                    SELECT o.dispatch_id FROM orca_queue o
-                    INNER JOIN simpul_queue s ON o.dispatch_id = s.dispatch_id
-                    WHERE o.task_id != s.task_id
-                       OR o.status != s.status
-                       OR o.payload_json != s.payload_json
-                """).fetchall()
+                cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_queue)").fetchall()}
+                if "dedup_key" in cols and "priority" in cols and "steering_json" in cols:
+                    conflicts = conn.execute("""
+                        SELECT o.dispatch_id FROM orca_queue o
+                        INNER JOIN simpul_queue s ON o.dispatch_id = s.dispatch_id
+                        WHERE o.team_id != s.team_id
+                           OR o.from_session_id != s.from_session_id
+                           OR o.to_session_id != s.to_session_id
+                           OR o.task_id != s.task_id
+                           OR o.payload_json != s.payload_json
+                           OR o.status != s.status
+                           OR ((o.dedup_key IS NULL AND s.dedup_key IS NOT NULL) OR (o.dedup_key IS NOT NULL AND s.dedup_key IS NULL) OR o.dedup_key != s.dedup_key)
+                           OR o.priority != s.priority
+                           OR o.steering_json != s.steering_json
+                           OR ABS(o.created_at - s.created_at) > 0.001
+                           OR ABS(o.updated_at - s.updated_at) > 0.001
+                    """).fetchall()
+                else:
+                    conflicts = conn.execute("""
+                        SELECT o.dispatch_id FROM orca_queue o
+                        INNER JOIN simpul_queue s ON o.dispatch_id = s.dispatch_id
+                        WHERE o.team_id != s.team_id
+                           OR o.from_session_id != s.from_session_id
+                           OR o.to_session_id != s.to_session_id
+                           OR o.task_id != s.task_id
+                           OR o.payload_json != s.payload_json
+                           OR o.status != s.status
+                           OR s.dedup_key IS NOT NULL
+                           OR s.priority != 0
+                           OR s.steering_json != '[]'
+                           OR ABS(o.created_at - s.created_at) > 0.001
+                           OR ABS(o.updated_at - s.updated_at) > 0.001
+                    """).fetchall()
                 if conflicts:
                     raise MigrationConflictError(
                         f"Conflicting primary keys between legacy orca_queue and simpul_queue: {[c[0] for c in conflicts]}"
                     )
-                cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_queue)").fetchall()}
                 if "dedup_key" in cols and "priority" in cols and "steering_json" in cols:
                     conn.execute("""
                         INSERT INTO simpul_queue (
@@ -294,17 +466,37 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                         FROM orca_queue
                         WHERE dispatch_id NOT IN (SELECT dispatch_id FROM simpul_queue)
                     """)
-                for r in conn.execute("SELECT dispatch_id, team_id, from_session_id, to_session_id, task_id, payload_json, status, created_at FROM orca_queue").fetchall():
-                    nr = conn.execute("SELECT dispatch_id, team_id, from_session_id, to_session_id, task_id, payload_json, status, created_at FROM simpul_queue WHERE dispatch_id = ?", (r["dispatch_id"],)).fetchone()
-                    if nr is None or (nr["team_id"], nr["task_id"], nr["status"], nr["payload_json"]) != (r["team_id"], r["task_id"], r["status"], r["payload_json"]):
+                for r in conn.execute("SELECT * FROM orca_queue").fetchall():
+                    nr = conn.execute("SELECT * FROM simpul_queue WHERE dispatch_id = ?", (r["dispatch_id"],)).fetchone()
+                    if nr is None:
+                        raise MigrationIntegrityError(f"Row equivalence verification failure for dispatch {r['dispatch_id']}")
+                    expected_dedup = r["dedup_key"] if "dedup_key" in cols else None
+                    expected_priority = r["priority"] if "priority" in cols else 0
+                    expected_steering = r["steering_json"] if "steering_json" in cols else "[]"
+                    if (
+                        nr["team_id"] != r["team_id"]
+                        or nr["from_session_id"] != r["from_session_id"]
+                        or nr["to_session_id"] != r["to_session_id"]
+                        or nr["task_id"] != r["task_id"]
+                        or nr["payload_json"] != r["payload_json"]
+                        or nr["status"] != r["status"]
+                        or nr["dedup_key"] != expected_dedup
+                        or nr["priority"] != expected_priority
+                        or nr["steering_json"] != expected_steering
+                        or abs(nr["created_at"] - r["created_at"]) > 0.001
+                        or abs(nr["updated_at"] - r["updated_at"]) > 0.001
+                    ):
                         raise MigrationIntegrityError(f"Row equivalence verification failure for dispatch {r['dispatch_id']}")
 
-            # 4. Worktrees
+            # 4. Worktrees (Comparing ALL columns: worker_id, team_id, worktree_path, branch_name, created_at)
             if "orca_worktrees" in legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.worker_id FROM orca_worktrees o
                     INNER JOIN simpul_worktrees s ON o.worker_id = s.worker_id
-                    WHERE o.worktree_path != s.worktree_path OR o.branch_name != s.branch_name
+                    WHERE o.team_id != s.team_id
+                       OR o.worktree_path != s.worktree_path
+                       OR o.branch_name != s.branch_name
+                       OR ABS(o.created_at - s.created_at) > 0.001
                 """).fetchall()
                 if conflicts:
                     raise MigrationConflictError(
@@ -317,15 +509,26 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                 """)
                 for r in conn.execute("SELECT worker_id, team_id, worktree_path, branch_name, created_at FROM orca_worktrees").fetchall():
                     nr = conn.execute("SELECT worker_id, team_id, worktree_path, branch_name, created_at FROM simpul_worktrees WHERE worker_id = ?", (r["worker_id"],)).fetchone()
-                    if nr is None or (nr["team_id"], nr["worktree_path"], nr["branch_name"]) != (r["team_id"], r["worktree_path"], r["branch_name"]):
+                    if (
+                        nr is None
+                        or (nr["team_id"], nr["worktree_path"], nr["branch_name"]) != (r["team_id"], r["worktree_path"], r["branch_name"])
+                        or abs(nr["created_at"] - r["created_at"]) > 0.001
+                    ):
                         raise MigrationIntegrityError(f"Row equivalence verification failure for worktree {r['worker_id']}")
 
-            # 5. Handoffs
+            # 5. Handoffs (Comparing ALL columns: dispatch_id, team_id, from_worker_id, to_lead_id, status, summary, artifacts_json, metrics_json, submitted_at)
             if "orca_handoffs" in legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.dispatch_id FROM orca_handoffs o
                     INNER JOIN simpul_handoffs s ON o.dispatch_id = s.dispatch_id
-                    WHERE o.status != s.status OR o.summary != s.summary OR o.artifacts_json != s.artifacts_json
+                    WHERE o.team_id != s.team_id
+                       OR o.from_worker_id != s.from_worker_id
+                       OR o.to_lead_id != s.to_lead_id
+                       OR o.status != s.status
+                       OR o.summary != s.summary
+                       OR o.artifacts_json != s.artifacts_json
+                       OR o.metrics_json != s.metrics_json
+                       OR ABS(o.submitted_at - s.submitted_at) > 0.001
                 """).fetchall()
                 if conflicts:
                     raise MigrationConflictError(
@@ -342,17 +545,26 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                     FROM orca_handoffs
                     WHERE dispatch_id NOT IN (SELECT dispatch_id FROM simpul_handoffs)
                 """)
-                for r in conn.execute("SELECT dispatch_id, team_id, from_worker_id, to_lead_id, status, summary, artifacts_json, metrics_json FROM orca_handoffs").fetchall():
-                    nr = conn.execute("SELECT dispatch_id, team_id, from_worker_id, to_lead_id, status, summary, artifacts_json, metrics_json FROM simpul_handoffs WHERE dispatch_id = ?", (r["dispatch_id"],)).fetchone()
-                    if nr is None or (nr["team_id"], nr["from_worker_id"], nr["to_lead_id"], nr["status"], nr["summary"], nr["artifacts_json"], nr["metrics_json"]) != (r["team_id"], r["from_worker_id"], r["to_lead_id"], r["status"], r["summary"], r["artifacts_json"], r["metrics_json"]):
+                for r in conn.execute("SELECT dispatch_id, team_id, from_worker_id, to_lead_id, status, summary, artifacts_json, metrics_json, submitted_at FROM orca_handoffs").fetchall():
+                    nr = conn.execute("SELECT dispatch_id, team_id, from_worker_id, to_lead_id, status, summary, artifacts_json, metrics_json, submitted_at FROM simpul_handoffs WHERE dispatch_id = ?", (r["dispatch_id"],)).fetchone()
+                    if (
+                        nr is None
+                        or (nr["team_id"], nr["from_worker_id"], nr["to_lead_id"], nr["status"], nr["summary"], nr["artifacts_json"], nr["metrics_json"]) != (r["team_id"], r["from_worker_id"], r["to_lead_id"], r["status"], r["summary"], r["artifacts_json"], r["metrics_json"])
+                        or abs(nr["submitted_at"] - r["submitted_at"]) > 0.001
+                    ):
                         raise MigrationIntegrityError(f"Row equivalence verification failure for handoff {r['dispatch_id']}")
 
-            # 6. Channel messages
+            # 6. Channel messages (Comparing ALL columns: message_id, team_id, from_session_id, to_session_id, content, role, created_at)
             if "orca_channel_messages" in legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.message_id FROM orca_channel_messages o
                     INNER JOIN simpul_channel_messages s ON o.message_id = s.message_id
-                    WHERE o.team_id != s.team_id OR o.content != s.content OR o.role != s.role
+                    WHERE o.team_id != s.team_id
+                       OR o.from_session_id != s.from_session_id
+                       OR o.to_session_id != s.to_session_id
+                       OR o.content != s.content
+                       OR o.role != s.role
+                       OR ABS(o.created_at - s.created_at) > 0.001
                 """).fetchall()
                 if conflicts:
                     raise MigrationConflictError(
@@ -368,15 +580,25 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                 """)
                 for r in conn.execute("SELECT message_id, team_id, from_session_id, to_session_id, content, role, created_at FROM orca_channel_messages").fetchall():
                     nr = conn.execute("SELECT message_id, team_id, from_session_id, to_session_id, content, role, created_at FROM simpul_channel_messages WHERE message_id = ?", (r["message_id"],)).fetchone()
-                    if nr is None or (nr["team_id"], nr["content"], nr["role"]) != (r["team_id"], r["content"], r["role"]):
+                    if (
+                        nr is None
+                        or (nr["team_id"], nr["from_session_id"], nr["to_session_id"], nr["content"], nr["role"]) != (r["team_id"], r["from_session_id"], r["to_session_id"], r["content"], r["role"])
+                        or abs(nr["created_at"] - r["created_at"]) > 0.001
+                    ):
                         raise MigrationIntegrityError(f"Row equivalence verification failure for channel message {r['message_id']}")
 
-            # 7. Checkpoints
+            # 7. Checkpoints (Comparing ALL columns: checkpoint_id, worker_id, team_id, step_index, state_summary, tokens_consumed, context_json, created_at)
             if "orca_checkpoints" in legacy_tables:
                 conflicts = conn.execute("""
                     SELECT o.checkpoint_id FROM orca_checkpoints o
                     INNER JOIN simpul_checkpoints s ON o.checkpoint_id = s.checkpoint_id
-                    WHERE o.worker_id != s.worker_id OR o.step_index != s.step_index OR o.state_summary != s.state_summary
+                    WHERE o.worker_id != s.worker_id
+                       OR o.team_id != s.team_id
+                       OR o.step_index != s.step_index
+                       OR o.state_summary != s.state_summary
+                       OR o.tokens_consumed != s.tokens_consumed
+                       OR o.context_json != s.context_json
+                       OR ABS(o.created_at - s.created_at) > 0.001
                 """).fetchall()
                 if conflicts:
                     raise MigrationConflictError(
@@ -395,13 +617,20 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                 """)
                 for r in conn.execute("SELECT checkpoint_id, worker_id, team_id, step_index, state_summary, tokens_consumed, context_json, created_at FROM orca_checkpoints").fetchall():
                     nr = conn.execute("SELECT checkpoint_id, worker_id, team_id, step_index, state_summary, tokens_consumed, context_json, created_at FROM simpul_checkpoints WHERE checkpoint_id = ?", (r["checkpoint_id"],)).fetchone()
-                    if nr is None or (nr["worker_id"], nr["step_index"], nr["state_summary"], nr["tokens_consumed"], nr["context_json"]) != (r["worker_id"], r["step_index"], r["state_summary"], r["tokens_consumed"], r["context_json"]):
+                    if (
+                        nr is None
+                        or (nr["worker_id"], nr["team_id"], nr["step_index"], nr["state_summary"], nr["tokens_consumed"], nr["context_json"]) != (r["worker_id"], r["team_id"], r["step_index"], r["state_summary"], r["tokens_consumed"], r["context_json"])
+                        or abs(nr["created_at"] - r["created_at"]) > 0.001
+                    ):
                         raise MigrationIntegrityError(f"Row equivalence verification failure for checkpoint {r['checkpoint_id']}")
 
-            # Validate foreign keys before dropping
+            # Validate SQLite foreign keys
             fk_violations = conn.execute("PRAGMA foreign_key_check").fetchall()
             if fk_violations:
                 raise MigrationIntegrityError(f"Foreign key referential integrity violation during migration: {fk_violations}")
+
+            # Validate application-level referential integrity across all entities
+            _verify_application_referential_integrity(conn)
 
             # Drop legacy tables using static SQL statements
             LEGACY_DROP_MAP = {

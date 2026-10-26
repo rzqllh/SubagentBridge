@@ -35,7 +35,6 @@ from subagentbridge.domain.team_contracts import (
 )
 from subagentbridge.storage.team_store import (
     MigrationConflictError,
-    MigrationError,
     MigrationIntegrityError,
     OrcaStore,
     TeamStore,
@@ -509,3 +508,410 @@ def test_backward_compatibility_aliases_and_view_read_only():
             # Verify view is readable
             cur = store._conn.execute("SELECT title FROM orca_teams WHERE team_id = 'team-c'")
             assert cur.fetchone()[0] == "Compat Team"
+
+
+def test_omitted_column_conflicts_sessions_updated_at():
+    """Verify conflict in sessions.updated_at alone fails closed with MigrationConflictError."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "sess_conflict.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        now = 1000.0
+        conn.execute("INSERT INTO orca_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+        conn.execute(
+            "INSERT INTO orca_sessions VALUES ('s1', 'worker', 't1', 'IDLE', '{}', ?, ?)",
+            (now, now),
+        )
+
+        # Pre-populate destination simpul_teams and simpul_sessions with differing updated_at
+        conn.execute("CREATE TABLE simpul_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
+        conn.execute("INSERT INTO simpul_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+        conn.execute("CREATE TABLE simpul_sessions (session_id TEXT PRIMARY KEY, role TEXT NOT NULL, team_id TEXT NOT NULL, status TEXT NOT NULL, config_json TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+        conn.execute(
+            "INSERT INTO simpul_sessions VALUES ('s1', 'worker', 't1', 'IDLE', '{}', ?, ?)",
+            (now, now + 999.0),  # Differing updated_at ONLY
+        )
+
+        with pytest.raises(MigrationConflictError) as exc_info:
+            migrate_schema(conn, db_path=db_path)
+
+        assert "simpul_sessions" in str(exc_info.value)
+        assert "s1" in str(exc_info.value)
+        # Legacy table must remain intact
+        tbl = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='orca_sessions'").fetchone()
+        assert tbl is not None
+        conn.close()
+
+
+def test_omitted_column_conflicts_queue_columns():
+    """Verify conflicts exclusively in queue columns (from/to_session_id, dedup_key, priority, steering_json, timestamps)."""
+    cases = [
+        ("from_session_id", "from-diff", "to1", "dedup1", 1, "[]", 100.0, 100.0),
+        ("to_session_id", "from1", "to-diff", "dedup1", 1, "[]", 100.0, 100.0),
+        ("dedup_key", "from1", "to1", "dedup-diff", 1, "[]", 100.0, 100.0),
+        ("priority", "from1", "to1", "dedup1", 99, "[]", 100.0, 100.0),
+        ("steering_json", "from1", "to1", "dedup1", 1, '["diff"]', 100.0, 100.0),
+        ("updated_at", "from1", "to1", "dedup1", 1, "[]", 100.0, 200.0),
+        ("created_at", "from1", "to1", "dedup1", 1, "[]", 200.0, 100.0),
+    ]
+
+    for label, from_id, to_id, dedup, prio, steer, cr_at, up_at in cases:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / f"q_conflict_{label}.db"
+            conn = sqlite3.connect(str(db_path), isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(LEGACY_ORCA_DDL)
+            now = 100.0
+            conn.execute("INSERT INTO orca_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+            conn.execute(
+                "INSERT INTO orca_queue VALUES ('dsp-1', 't1', 'from1', 'to1', 'task1', '{}', 'PENDING', 'dedup1', 1, '[]', ?, ?)",
+                (now, now),
+            )
+
+            # Pre-populate matching team in destination
+            conn.execute("CREATE TABLE simpul_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
+            conn.execute("INSERT INTO simpul_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+
+            # Destination queue with conflict ONLY in the test column
+            conn.execute("""
+                CREATE TABLE simpul_queue (
+                    dispatch_id TEXT PRIMARY KEY, team_id TEXT NOT NULL, from_session_id TEXT NOT NULL,
+                    to_session_id TEXT NOT NULL, task_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL, dedup_key TEXT, priority INTEGER NOT NULL DEFAULT 0,
+                    steering_json TEXT NOT NULL DEFAULT '[]', created_at REAL NOT NULL, updated_at REAL NOT NULL
+                )
+            """)
+            conn.execute(
+                "INSERT INTO simpul_queue VALUES ('dsp-1', 't1', ?, ?, 'task1', '{}', 'PENDING', ?, ?, ?, ?, ?)",
+                (from_id, to_id, dedup, prio, steer, cr_at, up_at),
+            )
+
+            with pytest.raises(MigrationConflictError) as exc_info:
+                migrate_schema(conn, db_path=db_path)
+
+            assert "simpul_queue" in str(exc_info.value), f"Failed for column {label}"
+            assert "dsp-1" in str(exc_info.value), f"Failed for column {label}"
+            conn.close()
+
+
+def test_omitted_column_conflicts_checkpoints_columns():
+    """Verify conflicts exclusively in checkpoints columns (team_id, tokens_consumed, context_json, created_at)."""
+    cases = [
+        ("team_id", "t-diff", 1, "summary", 10, "{}", 100.0),
+        ("tokens_consumed", "t1", 1, "summary", 9999, "{}", 100.0),
+        ("context_json", "t1", 1, "summary", 10, '{"diff": true}', 100.0),
+        ("created_at", "t1", 1, "summary", 10, "{}", 200.0),
+    ]
+
+    for label, team_id, step, summary, tokens, ctx, cr_at in cases:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / f"cp_conflict_{label}.db"
+            conn = sqlite3.connect(str(db_path), isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(LEGACY_ORCA_DDL)
+            now = 100.0
+            conn.execute("INSERT INTO orca_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+            conn.execute("INSERT INTO orca_sessions VALUES ('w1', 'worker', 't1', 'RUNNING', '{}', ?, ?)", (now, now))
+            conn.execute(
+                "INSERT INTO orca_checkpoints VALUES ('cp-1', 'w1', 't1', 1, 'summary', 10, '{}', ?)",
+                (now,),
+            )
+
+            # Destination matching teams and sessions
+            conn.execute("CREATE TABLE simpul_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
+            conn.execute("INSERT INTO simpul_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+            conn.execute("CREATE TABLE simpul_sessions (session_id TEXT PRIMARY KEY, role TEXT NOT NULL, team_id TEXT NOT NULL, status TEXT NOT NULL, config_json TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+            conn.execute("INSERT INTO simpul_sessions VALUES ('w1', 'worker', 't1', 'RUNNING', '{}', ?, ?)", (now, now))
+
+            # Destination checkpoints with conflict ONLY in the tested column
+            conn.execute("""
+                CREATE TABLE simpul_checkpoints (
+                    checkpoint_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, team_id TEXT NOT NULL,
+                    step_index INTEGER NOT NULL, state_summary TEXT NOT NULL, tokens_consumed INTEGER NOT NULL,
+                    context_json TEXT NOT NULL, created_at REAL NOT NULL
+                )
+            """)
+            conn.execute(
+                "INSERT INTO simpul_checkpoints VALUES ('cp-1', 'w1', ?, ?, ?, ?, ?, ?)",
+                (team_id, step, summary, tokens, ctx, cr_at),
+            )
+
+            with pytest.raises(MigrationConflictError) as exc_info:
+                migrate_schema(conn, db_path=db_path)
+
+            assert "simpul_checkpoints" in str(exc_info.value), f"Failed for checkpoint column {label}"
+            assert "cp-1" in str(exc_info.value), f"Failed for checkpoint column {label}"
+            conn.close()
+
+
+def test_omitted_column_conflicts_channel_messages_and_handoffs():
+    """Verify conflicts exclusively in channel messages and handoffs columns."""
+    # Channel message conflict in created_at
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "msg_conflict.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        now = 100.0
+        conn.execute("INSERT INTO orca_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+        conn.execute(
+            "INSERT INTO orca_channel_messages VALUES ('m1', 't1', 's1', 's2', 'hello', 'lead', ?)",
+            (now,),
+        )
+        conn.execute("CREATE TABLE simpul_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
+        conn.execute("INSERT INTO simpul_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+        conn.execute("""
+            CREATE TABLE simpul_channel_messages (
+                message_id TEXT PRIMARY KEY, team_id TEXT NOT NULL, from_session_id TEXT NOT NULL,
+                to_session_id TEXT NOT NULL, content TEXT NOT NULL, role TEXT NOT NULL, created_at REAL NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO simpul_channel_messages VALUES ('m1', 't1', 's1', 's2', 'hello', 'lead', ?)",
+            (now + 50.0,),
+        )
+        with pytest.raises(MigrationConflictError) as exc_info:
+            migrate_schema(conn, db_path=db_path)
+        assert "simpul_channel_messages" in str(exc_info.value)
+        conn.close()
+
+    # Handoff conflict in metrics_json
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "handoff_conflict.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        now = 100.0
+        conn.execute("INSERT INTO orca_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+        conn.execute(
+            "INSERT INTO orca_handoffs VALUES ('d1', 't1', 'w1', 'l1', 'SUCCESS', 'Done', '[]', '{\"code\": 0}', ?)",
+            (now,),
+        )
+        conn.execute("CREATE TABLE simpul_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
+        conn.execute("INSERT INTO simpul_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+        conn.execute("""
+            CREATE TABLE simpul_handoffs (
+                dispatch_id TEXT PRIMARY KEY, team_id TEXT NOT NULL, from_worker_id TEXT NOT NULL,
+                to_lead_id TEXT NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL,
+                artifacts_json TEXT NOT NULL, metrics_json TEXT NOT NULL, submitted_at REAL NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO simpul_handoffs VALUES ('d1', 't1', 'w1', 'l1', 'SUCCESS', 'Done', '[]', '{\"code\": 1}', ?)",
+            (now,),
+        )
+        with pytest.raises(MigrationConflictError) as exc_info:
+            migrate_schema(conn, db_path=db_path)
+        assert "simpul_handoffs" in str(exc_info.value)
+        conn.close()
+
+
+def test_simultaneous_partial_migration_with_matching_and_conflicting_rows():
+    """Verify simultaneous partial migration handles matching rows and rejects omitted-column conflicts."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "partial_multi.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        now = 100.0
+
+        # Legacy data: 2 teams, 2 sessions, 2 queue dispatches
+        conn.execute("INSERT INTO orca_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+        conn.execute("INSERT INTO orca_teams VALUES ('t2', 'l2', 'Team 2', ?)", (now + 5,))
+        conn.execute("INSERT INTO orca_sessions VALUES ('s1', 'lead', 't1', 'IDLE', '{}', ?, ?)", (now, now))
+        conn.execute("INSERT INTO orca_sessions VALUES ('s2', 'worker', 't2', 'RUNNING', '{}', ?, ?)", (now, now))
+        conn.execute("INSERT INTO orca_queue VALUES ('q1', 't1', 'l1', 's1', 'task-1', '{}', 'COMPLETED', 'k1', 1, '[]', ?, ?)", (now, now))
+        conn.execute("INSERT INTO orca_queue VALUES ('q2', 't2', 'l2', 's2', 'task-2', '{}', 'PENDING', 'k2', 5, '[\"steer-orig\"]', ?, ?)", (now, now))
+
+        # Destination has partial data:
+        # t1 matches
+        # s1 matches
+        # q1 matches
+        # q2 has conflict EXCLUSIVELY in steering_json
+        conn.execute("CREATE TABLE simpul_teams (team_id TEXT PRIMARY KEY, lead_session_id TEXT NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL)")
+        conn.execute("INSERT INTO simpul_teams VALUES ('t1', 'l1', 'Team 1', ?)", (now,))
+        conn.execute("CREATE TABLE simpul_sessions (session_id TEXT PRIMARY KEY, role TEXT NOT NULL, team_id TEXT NOT NULL, status TEXT NOT NULL, config_json TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+        conn.execute("INSERT INTO simpul_sessions VALUES ('s1', 'lead', 't1', 'IDLE', '{}', ?, ?)", (now, now))
+        conn.execute("""
+            CREATE TABLE simpul_queue (
+                dispatch_id TEXT PRIMARY KEY, team_id TEXT NOT NULL, from_session_id TEXT NOT NULL,
+                to_session_id TEXT NOT NULL, task_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+                status TEXT NOT NULL, dedup_key TEXT, priority INTEGER NOT NULL DEFAULT 0,
+                steering_json TEXT NOT NULL DEFAULT '[]', created_at REAL NOT NULL, updated_at REAL NOT NULL
+            )
+        """)
+        conn.execute("INSERT INTO simpul_queue VALUES ('q1', 't1', 'l1', 's1', 'task-1', '{}', 'COMPLETED', 'k1', 1, '[]', ?, ?)", (now, now))
+        conn.execute("INSERT INTO simpul_queue VALUES ('q2', 't2', 'l2', 's2', 'task-2', '{}', 'PENDING', 'k2', 5, '[\"steer-conflicting\"]', ?, ?)", (now, now))
+
+        # Attempt migration -> must fail closed on q2 conflict
+        with pytest.raises(MigrationConflictError) as exc_info:
+            migrate_schema(conn, db_path=db_path)
+        assert "simpul_queue" in str(exc_info.value)
+        assert "q2" in str(exc_info.value)
+
+        # Verify rollback: destination t2 and s2 were NOT committed
+        t_row = conn.execute("SELECT team_id FROM simpul_teams WHERE team_id = 't2'").fetchone()
+        assert t_row is None
+        s_row = conn.execute("SELECT session_id FROM simpul_sessions WHERE session_id = 's2'").fetchone()
+        assert s_row is None
+
+        # Fix q2 conflict in destination to match legacy exactly
+        conn.execute("UPDATE simpul_queue SET steering_json = '[\"steer-orig\"]' WHERE dispatch_id = 'q2'")
+
+        # Re-run migration -> should cleanly succeed
+        migrate_schema(conn, db_path=db_path)
+
+        # Verify all records present and legacy tables converted to views
+        assert len(conn.execute("SELECT * FROM simpul_teams").fetchall()) == 2
+        assert len(conn.execute("SELECT * FROM simpul_sessions").fetchall()) == 2
+        assert len(conn.execute("SELECT * FROM simpul_queue").fetchall()) == 2
+        view_check = conn.execute("SELECT type FROM sqlite_master WHERE name = 'orca_queue'").fetchone()
+        assert view_check["type"] == "view"
+        conn.close()
+
+
+def test_backup_readability_integrity_check_and_no_silent_overwrite():
+    """Verify backup readability, PRAGMA integrity_check, and that prior backups are never overwritten."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "backup_safety.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        conn.execute("INSERT INTO orca_teams VALUES ('t-bk-1', 'l1', 'Backup Team 1', 100.0)")
+        conn.close()
+
+        # Run migration 1 -> creates primary .pre_migration.bak
+        with TeamStore(db_path):
+            pass
+
+        primary_bak = Path(f"{db_path}.pre_migration.bak")
+        assert primary_bak.exists()
+        bak_size = primary_bak.stat().st_size
+        assert bak_size > 0
+
+        # Verify readability and PRAGMA integrity_check on the logical snapshot backup
+        b_conn = sqlite3.connect(str(primary_bak))
+        chk = b_conn.execute("PRAGMA integrity_check").fetchone()
+        assert chk[0] == "ok"
+        t_row = b_conn.execute("SELECT title FROM orca_teams WHERE team_id = 't-bk-1'").fetchone()
+        assert t_row[0] == "Backup Team 1"
+        b_conn.close()
+
+        # Record primary backup bytes to ensure it is never overwritten
+        with open(primary_bak, "rb") as f:
+            primary_bytes = f.read()
+
+        # Create another legacy database with the same base name to test backup non-overwriting
+        Path(db_path).unlink()
+        conn2 = sqlite3.connect(str(db_path), isolation_level=None)
+        conn2.row_factory = sqlite3.Row
+        conn2.executescript(LEGACY_ORCA_DDL)
+        conn2.execute("INSERT INTO orca_teams VALUES ('t-bk-2', 'l2', 'Backup Team 2', 200.0)")
+        conn2.close()
+
+        # Run migration 2 -> primary .pre_migration.bak already exists!
+        with TeamStore(db_path):
+            pass
+
+        # Primary backup bytes must remain completely unchanged
+        with open(primary_bak, "rb") as f:
+            assert f.read() == primary_bytes
+
+        # A new timestamped backup must have been created
+        new_backups = list(Path(tmp_dir).glob("backup_safety.db.pre_migration.*.bak"))
+        assert len(new_backups) == 1
+        new_bak = new_backups[0]
+        assert new_bak.exists()
+
+        # Verify readability and integrity of the second backup
+        b2_conn = sqlite3.connect(str(new_bak))
+        chk2 = b2_conn.execute("PRAGMA integrity_check").fetchone()
+        assert chk2[0] == "ok"
+        t2_row = b2_conn.execute("SELECT title FROM orca_teams WHERE team_id = 't-bk-2'").fetchone()
+        assert t2_row[0] == "Backup Team 2"
+        b2_conn.close()
+
+
+def test_application_level_referential_integrity():
+    """Verify application-level referential integrity rejects orphaned entities without FK DDL."""
+    # 1. Orphaned session (referencing non-existent team)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "orphan_sess.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        conn.execute("INSERT INTO orca_sessions VALUES ('s-orphan', 'worker', 'non-existent-team', 'IDLE', '{}', 100.0, 100.0)")
+        with pytest.raises(MigrationIntegrityError) as exc_info:
+            migrate_schema(conn, db_path=db_path)
+        assert "referencing non-existent teams" in str(exc_info.value)
+        conn.close()
+
+    # 2. Orphaned queue item (referencing non-existent team)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "orphan_queue.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        conn.execute("INSERT INTO orca_queue VALUES ('q-orphan', 'non-existent-team', 'l1', 'w1', 't1', '{}', 'PENDING', NULL, 0, '[]', 100.0, 100.0)")
+        with pytest.raises(MigrationIntegrityError) as exc_info:
+            migrate_schema(conn, db_path=db_path)
+        assert "referencing non-existent teams" in str(exc_info.value)
+        conn.close()
+
+    # 3. Orphaned checkpoint (referencing non-existent worker session)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "orphan_cp.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(LEGACY_ORCA_DDL)
+        conn.execute("INSERT INTO orca_teams VALUES ('t1', 'l1', 'Team 1', 100.0)")
+        conn.execute("INSERT INTO orca_checkpoints VALUES ('cp-orphan', 'non-existent-worker', 't1', 1, 'summary', 0, '{}', 100.0)")
+        with pytest.raises(MigrationIntegrityError) as exc_info:
+            migrate_schema(conn, db_path=db_path)
+        assert "referencing non-existent worker sessions" in str(exc_info.value)
+        conn.close()
+
+
+def test_injected_failure_after_copy_before_drop_restores_state(monkeypatch):
+    """Verify an injected failure after data copying but before legacy DROP cleanly rolls back and restores state."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "injected_fail.db"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.executescript(LEGACY_ORCA_DDL)
+            now = 100.0
+            conn.execute("INSERT INTO orca_teams VALUES ('t-inj', 'l-inj', 'Team Injected', ?)", (now,))
+            conn.execute("INSERT INTO orca_sessions VALUES ('s-inj', 'worker', 't-inj', 'IDLE', '{}', ?, ?)", (now, now))
+
+            from subagentbridge.storage import team_store
+
+            def fake_integrity(c):
+                raise RuntimeError("Injected failure after copying all tables, immediately before legacy table DROP")
+
+            monkeypatch.setattr(team_store, "_verify_application_referential_integrity", fake_integrity)
+
+            with pytest.raises(RuntimeError) as exc_info:
+                migrate_schema(conn, db_path=db_path)
+            assert "Injected failure after copying" in str(exc_info.value)
+
+            # Legacy tables MUST remain intact as regular tables with all rows
+            t_row = conn.execute("SELECT title FROM orca_teams WHERE team_id = 't-inj'").fetchone()
+            assert t_row is not None
+            assert t_row["title"] == "Team Injected"
+
+            s_row = conn.execute("SELECT orca_role FROM orca_sessions WHERE session_id = 's-inj'").fetchone()
+            assert s_row is not None
+            assert s_row["orca_role"] == "worker"
+
+            # Simpul tables must have rolled back completely (DDL/data rolled back)
+            simpul_tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "simpul_teams" in simpul_tables:
+                simpul_t = conn.execute("SELECT * FROM simpul_teams WHERE team_id = 't-inj'").fetchone()
+                assert simpul_t is None
+            else:
+                assert "simpul_teams" not in simpul_tables
+        finally:
+            conn.close()
+

@@ -777,18 +777,32 @@ Distinguishes:
 | **Adapter Probe** | `IntegrationProbe` / `OptionalIntegrationBackend` | `OrcaProbe` / `OptionalOrcaBackend` | Deprecated aliases | Isolated compatibility boundary for external CLI |
 | **Database Tables** | `simpul_teams`, `simpul_sessions`, `simpul_queue`, `simpul_worktrees`, `simpul_handoffs`, `simpul_channel_messages`, `simpul_checkpoints`, `simpul_schema_version` | `orca_*` tables | Migrated to `simpul_*`; replaced with read-only SQL views | Read-only SQL compatibility views for legacy inspector queries |
 
-#### 2. Hardened Zero-Data-Loss Migration & Safety Engine
-- **Physical Byte Backup**: `conn.backup()` automatically snapshots the database to `<db_path>.pre_migration.bak` prior to executing any DDL or table operations on legacy data. Backup integrity is verified (file exists and non-empty).
-- **Explicit Transaction Management**: Autocommit is explicitly disabled (`isolation_level = None`), wrapping all table creations, data copies, row verifications, and table drops in an atomic `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` block. No `executescript()` implicit commits occur.
-- **Row-by-Row Equivalence & Data Equality**:
-  - Validates exact row identity and column-by-column equality between legacy tables and destination `simpul_*` tables.
-  - Automatically checks and rejects conflicting primary keys (`MigrationConflictError`).
-  - Supports resilient recovery from interrupted or partially migrated databases without duplicating records.
-- **Referential Integrity**: Executes `PRAGMA foreign_key_check` inside the transaction before legacy tables are dropped.
-- **Fail-Closed Atomic Rollback**: Any constraint violation or injected error triggers immediate transaction rollback; legacy tables are NEVER dropped and no partial state remains in destination tables.
+#### 2. Hardened Zero-Data-Loss Migration & Complete Column Mapping Engine
+- **Logical Snapshot Pre-Migration Backup**: `conn.backup()` automatically snapshots the active database to `<db_path>.pre_migration.bak` prior to executing any DDL or data mutations.
+  - *Distinction*: Distinguishes SQLite online backup API (`conn.backup()`) from raw filesystem file copies (`shutil.copyfile`). In WAL mode, raw file copying can miss pages in the `-wal` file or capture torn/inconsistent frames. `conn.backup()` captures all active pages in a transactionally consistent logical snapshot.
+  - *Readability & Verification*: Immediately verified via `PRAGMA integrity_check == 'ok'`.
+  - *Silent Overwrite Prevention*: If `<db_path>.pre_migration.bak` already exists from a prior run, a non-colliding timestamped backup `<db_path>.pre_migration.<timestamp>.bak` is created, ensuring existing backup points are never silently overwritten.
+- **Explicit Transaction Management**: Autocommit is explicitly disabled (`isolation_level = None`), wrapping all DDL creation, conflict checks, data copies, row verifications, referential integrity checks, and table drops in a single atomic `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` block.
+- **Schema-Aware Complete Column Mapping Across All 7 Legacy Tables**:
+  Every single column across all 7 legacy tables is explicitly mapped and verified:
+  1. `orca_teams` -> `simpul_teams`: `team_id`, `lead_session_id`, `title`, `created_at`.
+  2. `orca_sessions` -> `simpul_sessions`: `session_id`, `role` (mapped from `orca_role` or `role`), `team_id`, `status`, `config_json`, `created_at`, `updated_at`.
+  3. `orca_queue` -> `simpul_queue`: `dispatch_id`, `team_id`, `from_session_id`, `to_session_id`, `task_id`, `payload_json`, `status`, `dedup_key`, `priority`, `steering_json`, `created_at`, `updated_at`. Preserves documented defaults (`dedup_key = NULL`, `priority = 0`, `steering_json = '[]'`) when genuinely absent in older legacy schema.
+  4. `orca_worktrees` -> `simpul_worktrees`: `worker_id`, `team_id`, `worktree_path`, `branch_name`, `created_at`.
+  5. `orca_handoffs` -> `simpul_handoffs`: `dispatch_id`, `team_id`, `from_worker_id`, `to_lead_id`, `status`, `summary`, `artifacts_json`, `metrics_json`, `submitted_at`.
+  6. `orca_channel_messages` -> `simpul_channel_messages`: `message_id`, `team_id`, `from_session_id`, `to_session_id`, `content`, `role`, `created_at`.
+  7. `orca_checkpoints` -> `simpul_checkpoints`: `checkpoint_id`, `worker_id`, `team_id`, `step_index`, `state_summary`, `tokens_consumed`, `context_json`, `created_at`.
+- **Exhaustive Primary Key & Omitted Column Conflict Detection**:
+  - Compares every mapped data column for existing primary keys before copying.
+  - Any mismatch in previously omitted columns (`sessions.updated_at`, `queue.from_session_id`, `queue.to_session_id`, `queue.dedup_key`, `queue.priority`, `queue.steering_json`, timestamps, `checkpoints.team_id`, `checkpoints.created_at`, `checkpoints.tokens_consumed`, `checkpoints.context_json`, `channel_messages.from_session_id`, `channel_messages.to_session_id`, `channel_messages.created_at`, `handoffs.metrics_json`, `handoffs.submitted_at`) fails closed with `MigrationConflictError` and rolls back all mutations.
+- **Application-Level Referential Integrity Verification**:
+  - `PRAGMA foreign_key_check` alone is insufficient when SQLite tables lack explicit `FOREIGN KEY (...) REFERENCES ...` DDL clauses.
+  - Implemented `_verify_application_referential_integrity(conn)` which explicitly asserts that no orphaned records exist across teams, sessions, queue items, worktrees, handoffs, channel messages, and checkpoints prior to dropping legacy tables.
+- **Injected Failure State Restoration**:
+  - Verified that an injected failure after data copying but before legacy table deletion rolls back the transaction completely, restoring the database to its exact initial state with zero data loss.
 - **Read-Only Compatibility Views vs. Writable API**:
-  - SQL `orca_*` views are established as read-only compatibility views for legacy query tools and dashboards.
-  - Full read/write compatibility is provided at the Python API level by the `OrcaStore` class (which maps writes directly to `simpul_*` tables).
+  - SQL `orca_*` views are established as read-only compatibility views for legacy inspection tools.
+  - Full read/write compatibility is provided at the Python API level by the `OrcaStore` class (mapping writes directly to `simpul_*` tables).
 - **Concurrency & Multi-Process Safety**: `TeamStore` enables `PRAGMA busy_timeout=5000` alongside WAL mode and reentrant threading locks (`threading.RLock()`), preventing lock collisions.
 
 #### 3. Repository Worktree & Branch Hygiene
@@ -824,11 +838,11 @@ Upon human-authorized merge of the stacked PRs into `main`, the following cleanu
 - License: Apache-2.0, Copyright 2026 XD Inc.
 - Source Provenance: Clean-room Python 3.11+ implementation with architectural attribution documented in `THIRD_PARTY_NOTICES.md` and `README.md`. Historical research parity records preserved.
 
-#### 5. Verification Matrix (Commit tested locally)
-- **Pytest Full Suite**: **424 items collected: 418 passed, 6 skipped (Windows symlink privileges/offline flags), 135 subtests passed** in 87.74s (0 failures).
-- **Migration Suite (`tests/test_team_store_migration.py`)**: **9 comprehensive tests passed** in 0.52s.
-- **Unittest Discovery (`tests`)**: **325 passed, 0 failed, 5 skipped** in 57.33s.
-- **Bootstrap Tests (`artifacts/bootstrap/v3_1/tests`)**: **13 passed** in 2.55s.
+#### 5. Verification Matrix (Tested on `simpul/15-native-naming` HEAD)
+- **Pytest Full Suite**: **432 items collected: 426 passed, 6 skipped (Windows symlink privileges/offline flags), 135 subtests passed** in 77.69s (0 failures).
+- **Migration Suite (`tests/test_team_store_migration.py`)**: **17 comprehensive tests passed** in 1.63s (including all omitted-column conflict tests, application referential integrity, and injected failure rollback).
+- **Unittest Discovery (`tests`)**: **325 passed, 0 failed, 5 skipped** in 55.11s.
+- **Bootstrap Tests (`artifacts/bootstrap/v3_1/tests`)**: **13 passed** in 3.11s.
 - **Ruff Check**: Exit code 0 (`All checks passed!`).
 - **Mypy Static Analysis**: Exit code 0 (`Success: no issues found in 60 source files`).
 - **Bandit Security Analysis**: Exit code 0 (`0 issues found with -ll`).
@@ -839,16 +853,17 @@ Upon human-authorized merge of the stacked PRs into `main`, the following cleanu
 ### Final Quality Classification & Verdict
 
 - **`CODE_CLEAN`**: Verified — native Simpul naming across domain, storage, team, and execution modules; clean shims retained; zero orphaned orca branding in production logic; no hardcoded personal machine paths.
-- **`MIGRATION_VERIFIED`**: Verified — atomic fail-closed SQLite migration, physical `.pre_migration.bak` backup, row-by-row equivalence, primary key conflict protection, busy timeout concurrency, and read-only compatibility views tested and passing.
+- **`MIGRATION_VERIFIED`**: Verified — schema-aware explicit column mapping for all 7 legacy tables, complete omitted column conflict detection (fails closed with `MigrationConflictError`), application-level referential integrity validation, physical online snapshot backup with integrity verification and collision avoidance, rollback on injected failures, busy timeout concurrency, and read-only compatibility views tested and passing.
 - **`ATTRIBUTION_PRESERVED`**: Verified — Cindy Apache-2.0, Copyright 2026 XD Inc., pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b` fully credited in `THIRD_PARTY_NOTICES.md` and research records.
-- **`CI_PASS`**: Local full verification green across 424 pytest items, 325 unittests, Ruff, Mypy, and Bandit.
+- **`CI_PASS`**: Local full verification green across 426 pytest items, 325 unittests, Ruff, Mypy, and Bandit.
 - **`GIT_CLEANUP_DEFERRED`**: Verified — all 16 worktrees and branches preserved; cleanup manifest documented pending human merge authorization.
 - **`MERGE_REVIEW_READY`**: Verified — ready for review and human-approved push/merge.
 
-**Final Verdict:** **`PASS (MERGE_REVIEW_READY)`**
+**Final Verdict:** **`PASS (MIGRATION_VERIFIED, MERGE_REVIEW_READY)`**
 
 ---
 
-*Report last updated: 2026-10-26T14:05+07:00 - Phase C07 Final Cleanup, Safe Migration & Repository Hygiene Closure complete.*
+*Report last updated: 2026-10-26T14:40+07:00 - C07 SQLite Data Integrity Gap Closed & Verified.*
+
 
 
