@@ -8,7 +8,6 @@ checks, ownership provenance, concurrency locking, and fail-closed safety.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -135,9 +134,10 @@ class GitWorktreeManager:
     ) -> bool:
         """Removes an active git worktree safely and optionally deletes the branch.
 
-        Refuses cleanup if dirty tracked files, untracked files, or locks are detected,
-        unless explicitly authorized with force=True.
-        Preserves store records if any cleanup step fails.
+        Refuses cleanup if dirty tracked files, untracked files, ignored user files, or locks
+        are detected. Recursive rmtree and routine worktree prune are strictly forbidden.
+        Fails closed on any git status/list inspection error.
+        Preserves store ownership records if any cleanup step fails.
         """
         with self._lock:
             assignment = self.store.load_worktree(worker_id)
@@ -156,64 +156,72 @@ class GitWorktreeManager:
                 raise ValueError(f"Worktree path {target_path} is a symlink, refusing cleanup")
 
             if target_path.exists():
-                # Check for dirty tracked or untracked files before touching worktree
-                status_res = subprocess.run(
-                    ["git", "-C", str(target_path), "status", "--porcelain"],
-                    capture_output=True,
-                    text=True,
-                )
-                if status_res.returncode == 0 and status_res.stdout.strip():
-                    if not force:
-                        raise RuntimeError(
-                            f"Cannot cleanup dirty worktree at {target_path}: uncommitted changes or untracked files present: {status_res.stdout.strip()[:200]}"
-                        )
-
-                # Check if locked
+                # Fail-closed check: verify actual git worktree identity from git metadata
                 wt_list = subprocess.run(
                     ["git", "-C", str(self.repo_root), "worktree", "list", "--porcelain"],
                     capture_output=True,
                     text=True,
                 )
-                if wt_list.returncode == 0:
-                    entries = wt_list.stdout.split("\n\n")
-                    for entry in entries:
-                        if str(target_path).replace("\\", "/").lower() in entry.replace("\\", "/").lower():
-                            if "locked" in entry and not force:
-                                raise RuntimeError(f"Worktree at {target_path} is locked; cleanup rejected")
+                if wt_list.returncode != 0:
+                    raise RuntimeError(
+                        f"git worktree list failed: {wt_list.stderr.strip()}; fail-closed"
+                    )
 
-                # Remove worktree via git worktree remove
-                cmd = ["git", "-C", str(self.repo_root), "worktree", "remove"]
-                if force:
-                    cmd.append("--force")
-                cmd.append(str(target_path))
+                norm_target = str(target_path).replace("\\", "/").lower()
+                entries = wt_list.stdout.strip().split("\n\n")
+                matched_entry = None
+                for entry in entries:
+                    lines = entry.splitlines()
+                    for line in lines:
+                        if line.startswith("worktree ") and line.split(" ", 1)[1].strip().replace("\\", "/").lower() == norm_target:
+                            matched_entry = entry
+                            break
+                    if matched_entry:
+                        break
+
+                if not matched_entry:
+                    raise RuntimeError(
+                        f"Target path {target_path} is not recognized by git as an active worktree; ambiguous cleanup rejected"
+                    )
+
+                if "locked" in matched_entry:
+                    raise RuntimeError(f"Worktree at {target_path} is locked; cleanup rejected")
+
+                # Check for uncommitted, untracked, and ignored files (fail-closed)
+                status_res = subprocess.run(
+                    ["git", "-C", str(target_path), "status", "--porcelain", "-uall", "--ignored=matching"],
+                    capture_output=True,
+                    text=True,
+                )
+                if status_res.returncode != 0:
+                    raise RuntimeError(
+                        f"git status inspection failed on {target_path}: {status_res.stderr.strip()}; fail-closed"
+                    )
+
+                if status_res.stdout.strip():
+                    raise RuntimeError(
+                        f"Cannot cleanup dirty worktree at {target_path}: uncommitted changes, untracked files, or user modifications present: {status_res.stdout.strip()[:200]}"
+                    )
+
+                # Remove worktree safely via git worktree remove (no rmtree fallback)
+                cmd = ["git", "-C", str(self.repo_root), "worktree", "remove", str(target_path)]
                 res = subprocess.run(cmd, capture_output=True, text=True)
                 if res.returncode != 0:
                     raise RuntimeError(f"git worktree remove failed: {res.stderr.strip()}")
 
                 if target_path.exists():
-                    if force:
-                        shutil.rmtree(target_path)
-                    else:
-                        raise RuntimeError(f"Worktree path {target_path} still exists after git worktree remove")
-
-                subprocess.run(
-                    ["git", "-C", str(self.repo_root), "worktree", "prune"],
-                    check=False,
-                    capture_output=True,
-                )
+                    raise RuntimeError(
+                        f"Worktree path {target_path} still exists after git worktree remove; destructive rmtree forbidden"
+                    )
 
             if delete_branch and assignment.branch_name:
-                cmd_b = ["git", "-C", str(self.repo_root), "branch"]
-                if force:
-                    cmd_b.append("-D")
-                else:
-                    cmd_b.append("-d")
-                cmd_b.append(assignment.branch_name)
+                # Safe branch deletion only (-d, never forceful -D)
+                cmd_b = ["git", "-C", str(self.repo_root), "branch", "-d", assignment.branch_name]
                 res_b = subprocess.run(cmd_b, capture_output=True, text=True)
-                if res_b.returncode != 0 and not force:
-                    raise RuntimeError(f"git branch delete failed (unmerged?): {res_b.stderr.strip()}")
+                if res_b.returncode != 0:
+                    raise RuntimeError(f"Safe git branch delete failed (unmerged?): {res_b.stderr.strip()}")
 
-            # Delete ownership record ONLY after git operations succeed
+            # Delete ownership record ONLY after all git operations succeed
             self.store.delete_worktree(worker_id)
             return True
 
