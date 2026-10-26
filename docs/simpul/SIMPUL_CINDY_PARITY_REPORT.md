@@ -38,6 +38,7 @@
 | C04 | `simpul/12-interagent-control` | **COMPLETE (remote PR #13 verified, CI 4/4 PASS, run 40250742777)** | Durable deduplicated priority queue, authenticated messaging, steering, handoff binding |
 | C05 | `simpul/13-durable-continuity` | **CORRECTED & VERIFIED (PR #14 updated commit f2a6aaa, CI 4/4 PASS, run 40257332940)** | P0 Data safety in worktree manager, verified multi-step task resume |
 | C06 | `simpul/14-parity-acceptance` | **CORRECTED & VERIFIED (PR #15 updated commit 5de9771, CI 4/4 PASS, run 40258895787)** | Real execution evidence, in-flight crash injection, human approval truth, Cindy parity mapping |
+| C07 | `simpul/15-native-naming` | **COMPLETE & VERIFIED (PR #16 updated commit d11878f, CI 4/4 PASS, run 40293982843)** | Native Simpul naming, zero-data-loss schema migration, concurrent race closure, Cindy attribution |
 
 ---
 
@@ -900,8 +901,20 @@ All 5 concurrency requirements are verified in `tests/test_team_store_migration.
 5. `test_failed_begin_immediate_does_not_mask_original_error`:
    - Verified that a busy timeout failure on `BEGIN IMMEDIATE` raises original `sqlite3.OperationalError: database is locked` directly without `cannot rollback` masking.
 
-#### 4. Complete Verification Matrix
-- **Full Pytest Suite**: **437 items collected: 431 passed, 6 skipped, 135 subtests passed** in 78.94s (0 failures).
+#### 4. Complete Verification Matrix & CI Receipts
+- **Exact Tested HEAD SHA**: `d11878fa16b8a669e2ec9e3fe5b7c63b5bb0b4e9`
+- **GitHub Actions CI Run**: `40293982843` (PR #16 `simpul/15-native-naming`) — **4/4 PASS** in 4m15s:
+  | Runner | Python | Status | Duration | Job ID |
+  |---|---|---|---|---|
+  | `ubuntu-latest` | 3.13 | **SUCCESS** | 1m43s | `121475456557` |
+  | `ubuntu-latest` | 3.11 | **SUCCESS** | 1m29s | `121475456883` |
+  | `windows-latest` | 3.13 | **SUCCESS** | 4m01s | `121475456907` |
+  | `windows-latest` | 3.11 | **SUCCESS** | 4m12s | `121475457004` |
+- **Review Thread Disposition**: Codex review comment `4375020701` on PR #16 — **RESOLVED & VERIFIED**.
+  - Root cause resolved: post-lock table discovery via `sqlite_master` under `BEGIN IMMEDIATE`.
+  - Stale metadata race completely closed; two initializers succeed deterministically.
+  - Zero masked rollbacks on busy timeout failure.
+- **Local Full Pytest Suite**: **437 items collected: 431 passed, 6 skipped, 135 subtests passed** in 78.94s (0 failures).
 - **Migration Suite (`tests/test_team_store_migration.py`)**: **22 comprehensive tests passed** in 2.98s.
 - **Unittest Discovery (`tests`)**: **325 tests passed, 0 failed, 5 skipped** in 56.40s.
 - **Bootstrap Tests (`artifacts/bootstrap/v3_1/tests`)**: **13 tests passed, 0 failed** in 2.78s.
@@ -918,7 +931,7 @@ All 5 concurrency requirements are verified in `tests/test_team_store_migration.
 - **`MIGRATION_VERIFIED`**: Verified — post-lock table discovery, schema-aware explicit column mapping for all 7 legacy tables, complete omitted column conflict detection, application-level referential integrity validation, physical online snapshot backup with collision avoidance, unmasked rollback, and read-only compatibility views tested and passing.
 - **`CONCURRENCY_CERTIFIED`**: Verified — deterministic two-connection race, two-process OS race, 10-thread simultaneous stress, and failure injection recovery all PASS.
 - **`ATTRIBUTION_PRESERVED`**: Verified — Cindy Apache-2.0, Copyright 2026 XD Inc., pinned commit `b7e46bcbbe41eeee2f16381fef00df61a31a3b8b` fully credited in `THIRD_PARTY_NOTICES.md` and research records.
-- **`CI_PASS`**: Local full verification green across 437 pytest items, 325 unittests, 13 bootstrap tests, Ruff, Mypy, and Bandit.
+- **`CI_PASS`**: Local & remote matrix green across GitHub Actions 40293982843 (4/4 PASS), 437 pytest items, 325 unittests, 13 bootstrap tests, Ruff, Mypy, and Bandit.
 - **`GIT_CLEANUP_DEFERRED`**: Verified — all 16 worktrees and branches preserved; cleanup manifest documented pending human merge authorization.
 - **`MERGE_REVIEW_READY`**: Verified — ready for review and human-approved push/merge.
 
@@ -926,7 +939,7 @@ All 5 concurrency requirements are verified in `tests/test_team_store_migration.
 
 ---
 
-*Report last updated: 2026-10-26T15:35+07:00 - C07 Concurrent Migration Race Closure Verified (Codex 4375020701 Resolved).*
+*Report last updated: 2026-10-26T15:47+07:00 - C07 Concurrent Migration Race Closure Verified (Codex 4375020701 Resolved, CI 40293982843 4/4 PASS).*
 
 
 
