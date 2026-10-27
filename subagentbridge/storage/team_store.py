@@ -415,6 +415,16 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
             # 3. Queue (Comparing ALL columns: dispatch_id, team_id, from_session_id, to_session_id, task_id, payload_json, status, dedup_key, priority, steering_json, created_at, updated_at)
             if "orca_queue" in active_legacy_tables:
                 cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_queue)").fetchall()}
+                # Normalize each optional legacy column independently. ALTER TABLE is
+                # transactional here, so failures restore the original schema and data.
+                # Existing populated columns are NEVER replaced by fallbacks.
+                if "dedup_key" not in cols:
+                    conn.execute("ALTER TABLE orca_queue ADD COLUMN dedup_key TEXT")
+                if "priority" not in cols:
+                    conn.execute("ALTER TABLE orca_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+                if "steering_json" not in cols:
+                    conn.execute("ALTER TABLE orca_queue ADD COLUMN steering_json TEXT NOT NULL DEFAULT '[]'")
+                cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_queue)").fetchall()}
                 if "dedup_key" in cols and "priority" in cols and "steering_json" in cols:
                     conflicts = conn.execute("""
                         SELECT o.dispatch_id FROM orca_queue o
@@ -884,13 +894,80 @@ class TeamStore:
         return self._row_to_queue_item(row)
 
     def find_queue_item_by_dedup(self, team_id: str, dedup_key: str) -> QueueItem | None:
+        """Return a non-retryable attempt, never a superseded failed/cancelled one."""
         cur = self._conn.execute(
-            "SELECT * FROM simpul_queue WHERE team_id = ? AND dedup_key = ?", (team_id, dedup_key)
+            """SELECT * FROM simpul_queue WHERE team_id = ? AND dedup_key = ?
+               AND status NOT IN (?, ?, ?)
+               ORDER BY updated_at DESC, created_at DESC LIMIT 1""",
+            (team_id, dedup_key, QueueTaskStatus.FAILED.value,
+             QueueTaskStatus.CANCELLED.value, QueueTaskStatus.INTERRUPTED.value),
         )
         row = cur.fetchone()
-        if not row:
-            return None
-        return self._row_to_queue_item(row)
+        return self._row_to_queue_item(row) if row else None
+
+    def dispatch_or_get_existing(self, item: QueueItem) -> QueueItem:
+        """Serialize dedup lookup + insertion across threads AND SQLite connections."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if item.dedup_key:
+                    row = self._conn.execute(
+                        """SELECT * FROM simpul_queue WHERE team_id = ? AND dedup_key = ?
+                           AND status NOT IN (?, ?, ?)
+                           ORDER BY updated_at DESC, created_at DESC LIMIT 1""",
+                        (item.team_id, item.dedup_key, QueueTaskStatus.FAILED.value,
+                         QueueTaskStatus.CANCELLED.value, QueueTaskStatus.INTERRUPTED.value),
+                    ).fetchone()
+                    if row is not None:
+                        existing = self._row_to_queue_item(row)
+                        self._conn.execute("COMMIT")
+                        return existing
+                self._conn.execute(
+                    """INSERT INTO simpul_queue
+                       (dispatch_id, team_id, from_session_id, to_session_id, task_id,
+                        payload_json, status, dedup_key, priority, steering_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (item.dispatch_id, item.team_id, item.from_session_id, item.to_session_id,
+                     item.task_id, json.dumps(item.payload), item.status.value, item.dedup_key,
+                     item.priority, json.dumps(item.steering_instructions), item.created_at, item.updated_at),
+                )
+                self._conn.execute("COMMIT")
+                return item
+            except Exception:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+
+    def cancel_queue_if_active(self, dispatch_id: str, team_id: str, actor: str, reason: str) -> QueueItem:
+        """Commit cancellation only for active items, serialized with final handoff."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM simpul_queue WHERE dispatch_id = ? AND team_id = ?",
+                    (dispatch_id, team_id),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"queue item {dispatch_id!r} not found")
+                item = self._row_to_queue_item(row)
+                if item.status not in (QueueTaskStatus.PENDING, QueueTaskStatus.DISPATCHED, QueueTaskStatus.RUNNING):
+                    raise ValueError(f"Cannot cancel task in terminal status {item.status.value}")
+                if reason:
+                    item.steering_instructions.append({
+                        "cancellation_reason": reason, "cancelled_by": actor, "timestamp": time.time(),
+                    })
+                item.status = QueueTaskStatus.CANCELLED
+                item.updated_at = time.time()
+                self._conn.execute(
+                    "UPDATE simpul_queue SET status = ?, steering_json = ?, updated_at = ? WHERE dispatch_id = ?",
+                    (item.status.value, json.dumps(item.steering_instructions), item.updated_at, dispatch_id),
+                )
+                self._conn.execute("COMMIT")
+                return item
+            except Exception:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
 
     def fetch_next_pending_task(self, team_id: str, worker_id: str) -> QueueItem | None:
         cur = self._conn.execute(
@@ -1064,7 +1141,11 @@ class TeamStore:
 
         Guarantees transactional integrity and prevents duplicate finalization or replay across processes.
         """
-        with self._conn:
+        with self._lock, self._conn:
+            # Acquire SQLite's cross-process writer lock before reading queue status.
+            # A racing cancellation must commit either before or after this handoff.
+            self._conn.execute("UPDATE simpul_queue SET updated_at = updated_at WHERE dispatch_id = ?",
+                               (evidence.dispatch_id,))
             cur = self._conn.execute(
                 "SELECT status, to_session_id FROM simpul_queue WHERE dispatch_id = ?",
                 (evidence.dispatch_id,),
@@ -1074,7 +1155,7 @@ class TeamStore:
                 raise KeyError(f"dispatch {evidence.dispatch_id!r} not found in queue")
             q_status = row["status"]
             worker_id = row["to_session_id"]
-            if q_status in (QueueTaskStatus.COMPLETED.value, QueueTaskStatus.CANCELLED.value):
+            if q_status not in (QueueTaskStatus.DISPATCHED.value, QueueTaskStatus.RUNNING.value):
                 raise ValueError(
                     f"Handoff already finalized for dispatch {evidence.dispatch_id!r} (queue status: {q_status})"
                 )
