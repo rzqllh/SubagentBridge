@@ -20,13 +20,13 @@ from typing import Any, IO
 
 import psutil
 
-from subagentbridge.domain.orca_contracts import (
-    OrcaRole,
+from subagentbridge.domain.team_contracts import (
+    AgentRole,
     WorkerStatus,
     WorkerConfig,
-    OrcaSession,
+    AgentSession,
 )
-from subagentbridge.storage.orca_store import OrcaStore
+from subagentbridge.storage.team_store import TeamStore
 from subagentbridge.approval.trusted_authority import (
     TrustedApprovalAuthority,
     get_trusted_authority,
@@ -125,7 +125,7 @@ class WorkerProcessController:
 
     def __init__(
         self,
-        store: OrcaStore,
+        store: TeamStore,
         approval_authority: TrustedApprovalAuthority | None = None,
     ) -> None:
         self.store = store
@@ -157,6 +157,8 @@ class WorkerProcessController:
         ]
         if config.budget_tokens is not None:
             cmd.extend(["--budget-tokens", str(config.budget_tokens)])
+        if config.tokens_consumed:
+            cmd.extend(["--tokens-consumed", str(config.tokens_consumed)])
         if config.harness:
             cmd.extend(["--harness", config.harness])
         if worktree_path:
@@ -219,7 +221,7 @@ class WorkerProcessController:
             started_at=now,
             last_heartbeat=now,
             create_time=create_time,
-            tokens_consumed=0,
+            tokens_consumed=config.tokens_consumed,
             worktree_path=worktree_path,
             session_secret=session_secret,
         )
@@ -241,11 +243,11 @@ class WorkerProcessController:
             budget_tokens=config.budget_tokens,
             pid=child_pid,
             process_create_time=create_time,
-            tokens_consumed=0,
+            tokens_consumed=config.tokens_consumed,
         )
-        session = OrcaSession(
+        session = AgentSession(
             session_id=config.worker_id,
-            orca_role=OrcaRole.WORKER,
+            role=AgentRole.WORKER,
             team_id=config.team_id,
             status=WorkerStatus.IDLE,
             config=config_with_pid,
@@ -255,6 +257,17 @@ class WorkerProcessController:
         self.store.save_session(session)
 
         return record
+
+    def is_worker_dispatchable(self, worker_id: str) -> bool:
+        """Require owned live process and IPC streams, not only an OS PID record."""
+        proc = self._processes.get(worker_id)
+        reader = self._readers.get(worker_id)
+        record = self._records.get(worker_id)
+        return bool(
+            proc is not None and proc.poll() is None and proc.stdin is not None
+            and not proc.stdin.closed and reader is not None and record is not None
+            and is_process_identically_alive(proc.pid, record.create_time)
+        )
 
     def is_worker_alive(self, worker_id: str) -> bool:
         proc = self._processes.get(worker_id)
@@ -508,6 +521,11 @@ class WorkerProcessController:
         self._readers.pop(worker_id, None)
         return True
 
+    def terminate_all(self, timeout: float = 3.0) -> None:
+        """Terminates all tracked worker child processes safely."""
+        for worker_id in list(self._processes.keys()):
+            self.terminate_worker(worker_id, timeout=timeout)
+
     def reap_dead_workers(self) -> list[str]:
         reaped: list[str] = []
         for worker_id, proc in list(self._processes.items()):
@@ -562,9 +580,9 @@ class WorkerProcessController:
             process_create_time=create_time,
             tokens_consumed=config.tokens_consumed,
         )
-        session = OrcaSession(
+        session = AgentSession(
             session_id=worker_id,
-            orca_role=OrcaRole.WORKER,
+            role=AgentRole.WORKER,
             team_id=config.team_id,
             status=WorkerStatus.RUNNING,
             config=cfg_with_pid,
@@ -593,7 +611,7 @@ class WorkerProcessController:
             w_id = session.session_id
             if w_id in reconciled:
                 continue
-            if session.orca_role == OrcaRole.WORKER and session.status in (WorkerStatus.RUNNING, WorkerStatus.IDLE):
+            if session.role == AgentRole.WORKER and session.status in (WorkerStatus.RUNNING, WorkerStatus.IDLE):
                 pid = session.config.pid
                 c_time = session.config.process_create_time
                 if pid is None or not is_process_identically_alive(pid, c_time):

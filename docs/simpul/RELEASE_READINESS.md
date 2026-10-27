@@ -1,0 +1,58 @@
+# Simpul — Release Readiness and Operator Guide
+
+> Status: **release candidate**, not a published release. The last published baseline recorded in this repository is **v1.0.0**. Do not install a proposed version/tag until it actually exists.
+
+## Scope
+
+The C00–C07 stacked change set brings native Python Lead/Worker orchestration contracts, independent OS worker processes and JSONL IPC, local capability-checked harness routing, durable dispatch and priority queue, authenticated message/handoff checks, checkpoint recovery, Git worktree ownership, and migration from legacy `orca_*` tables to `simpul_*`.
+
+The full development history is in [the parity audit](SIMPUL_CINDY_PARITY_REPORT.md). The current PR stack is [#9](https://github.com/rzqllh/SubagentBridge/pull/9) through [#16](https://github.com/rzqllh/SubagentBridge/pull/16), each stacked on its predecessor. This is **not the same as eight independently merged releases**.
+
+## Install the published baseline
+
+```powershell
+git clone https://github.com/rzqllh/SubagentBridge.git
+cd SubagentBridge
+git checkout v1.0.0
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m subagentbridge.server
+```
+
+The last command launches an MCP stdio server, **not** a chat UI. On macOS/Linux use `.venv/bin/python`. For the C07 candidate, use the **explicit review branch** `simpul/15-native-naming` instead of the published tag; it may still change before release.
+
+## Developer verification gate
+
+Run in a checked-out candidate commit:
+
+```bash
+python -m pip install -e .
+python -m pip install ruff==0.14.0 mypy==1.18.2 bandit==1.9.4
+python -m pytest tests artifacts/bootstrap/v3_1/tests -rs
+python -B -m unittest discover -s tests -p "test_*.py"
+python -m ruff check --select E4,E7,E9,F subagentbridge
+python -m mypy --ignore-missing-imports --check-untyped-defs subagentbridge
+python -m bandit -q -r -ll subagentbridge
+```
+
+Require passing CI on the **exact commit to be merged** for all four combinations: Windows/Ubuntu and Python 3.11/3.13. Distinguish `skipped` tests from tests actually exercised. Treat review comments as open until explicitly resolved.
+
+## Operating constraints and security
+
+- `AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`: no unattended privileged command, merge, tag or release.
+- E18: `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`. Lead and workers share an OS account; filesystem and process sandboxing between those processes is **not** provided.
+- Model-supplied `approved: true`, self-reported exit code, or a handoff summary is **not** human authority or execution provenance.
+- External host adapters declare capabilities; not all are independently verified against a real external session.
+- Worktree deletion must preserve dirty, ignored, locked and unknown-owned paths. No force cleanup or raw recursive deletion.
+- SQLite migration uses an online logical backup before destructive table transformation, independent optional-column mapping, explicit transaction rollback, and legacy read-only views. Backups remain operator-owned files and must not be silently overwritten.
+- Task recovery may be *at-least-once* after ambiguous external side effects. Resume must rebind the exact dispatch, task, worker, team, commit and workspace, then revalidate observed artifacts.
+
+## Merge and release criteria
+
+A release is only eligible when all relevant correctness and review findings are closed, all stacked PRs merge without lost commits or unsafe force updates, merged `main` passes the complete CI matrix, distribution/version metadata matches the intended tag, documentation reflects actual published behavior, and an authorized operator approves release. Create the release from that tested `main` SHA, attach changelog and release receipts, then perform a clean-environment install smoke test.
+
+Before deleting local worktrees, inspect their individual Git status, ignored files, branch ownership, tags, active PRs, and any SQLite backups. Never assume a green PR test authorizes deleting a user's workspace.
+
+## Attribution
+
+Simpul is independently implemented in Python and does not bundle Cindy source code. Cindy's architecture was studied for its multi-worker coordination patterns. See [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md), including the upstream project and pinned research revision. The release must preserve the notice. 

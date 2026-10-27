@@ -2,7 +2,7 @@
 
 **Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
-> **Production reality & release status — October 2026:** Simpul v1.0.0 is published on GitHub Releases (commit `953c0f5`, tag `v1.0.0`). All roadmap phases P00–P06 (PRs #2–#8) are merged into `main`. Current governance strictly operates under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`. In accordance with genuine adversarial evidence (E18), same-user OS process isolation is recognized as a documented residual boundary (`RISK_ACCEPTED_SAME_IDENTITY`), not OS-level containerization. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md).
+> **Publication status:** Simpul v1.0.0 was published on GitHub Releases (commit `953c0f5`, tag `v1.0.0`). The C07 stack targets **v1.1.0**; check [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) for the actually published version. All roadmap phases P00–P06 (PRs #2–#8) are merged into `main`. Current governance strictly operates under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`. In accordance with genuine adversarial evidence (E18), same-user OS process isolation is recognized as a documented residual boundary (`RISK_ACCEPTED_SAME_IDENTITY`), not OS-level containerization. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md).
 
 ## What is implemented in Simpul
 
@@ -14,7 +14,7 @@
 - Locally pinned skills registry with path and hash checking.
 - Local-loopback 9Router text-client interface with explicit model discovery and budget bounds.
 - MCP stdio server with run submission, readback, cancellation, and supervised execution tools (`submit_goal`, `execute_run`, `execute_task`).
-- Optional Orca integration seam; native mode does not depend on Orca.
+- Native multi-worker team coordination: Lead/Worker distinct sessions, durable priority dispatch queue, status lifecycles, SQLite transactional persistence, worktree isolation, and crash recovery (architecturally inspired by Cindy research, independently implemented in Python).
 
 **Execution Lifecycle:** `submit_goal(..., execute=True)` or `execute_run(run_id, commands=...)` executes the complete supervised PM → Developer → QA lifecycle. Under SIM-403 strict fail-closed enforcement, tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status.
 
@@ -71,6 +71,18 @@ The display name is **Simpul**, but the MCP tool namespace, Python module, distr
 
 The legacy session inspection endpoints remain available in this candidate, but legacy raw-runner execution paths are locked down. `approve_action` and `apply_code_fix` are **not model-callable MCP tools**; their compatibility functions deny privileged operations.
 
+## Multi-worker coordination (C01–C07 candidate)
+
+The current [C07 pull request](https://github.com/rzqllh/SubagentBridge/pull/16) extends the released v1.0.0 baseline. **These changes are not part of the v1.0.0 tag**. Consult [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) to verify whether v1.1.0 has been published.
+
+Simpul now maintains separate Lead and Worker session identities, OS subprocess IPC, a durable SQLite task queue, step-indexed checkpoints, authenticated message and artifact handoffs, per-worker Git worktrees, and capability-checked host adapters. The core is Python-based and does not require running Cindy.
+
+The application-facing names are `AgentRole`, `AgentSession`, `AgentTeam`, `TeamStore`, `TeamManager` and `IntegrationProbe`. Legacy `Orca*` Python aliases and read-only `orca_*` SQLite views remain as **migration compatibility**, not separate runtime engines. New databases use `simpul_*` tables; migration includes a pre-migration SQLite online backup, explicit transaction rollback, full-column row comparison and concurrent initializer tests. Legacy SQL views are **read-only**; consumers must write through the Python store API.
+
+Operational boundaries remain important: host capability declaration is not proof of an interactive external host end-to-end deployment; subprocess isolation is not an OS sandbox; automated test approval is not authenticated human approval; and a crash between an external side effect and its checkpoint can require operator reconciliation. No autonomous merge/release is permitted absent operator authorization.
+
+For architecture and the exact implementation/verification distinction see [core parity report](docs/simpul/SIMPUL_CINDY_PARITY_REPORT.md) and [release readiness](docs/simpul/RELEASE_READINESS.md). Source attribution to [Cindy](https://github.com/makecindy/cindy) is maintained in [third-party notices](THIRD_PARTY_NOTICES.md). Simpul is independently implemented and is not a Cindy fork.
+
 ## Documentation
 
 - [Developer roadmap, backlog, acceptance gates and next-session handoff](docs/simpul/README.md)
@@ -86,4 +98,4 @@ The legacy session inspection endpoints remain available in this candidate, but 
 
 ## License and attribution
 
-[MIT](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md). Development history retains `SubagentBridge` names where required for traceability.
+[MIT](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) (including Cindy/Orca architectural attribution under Apache-2.0). Technical identity retains `SubagentBridge` identifiers for compatibility.

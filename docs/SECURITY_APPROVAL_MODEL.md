@@ -1,3 +1,7 @@
+## C07 security posture (27 October 2026)
+
+Authorization is **default-deny**. A model-originated approval boolean or QA claim is not trusted provenance. Worker commands require a cryptographically bound, single-use ticket from an authenticated approval authority; automated test fixtures do not constitute a production human interface. Task resume must return `AWAITING_APPROVAL` when the human decision is still blocked, not dispatch a command. Alive OS PIDs without owned IPC streams must be treated as unattached. E18 same-user OS confinement remains `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`; never describe it as kernel isolation. See [release readiness](simpul/RELEASE_READINESS.md).
+
 # Simpul — Human approvals and security boundary
 
 **Status: development candidate, not security certified.** The code implements `ApprovalBroker` token and operation-fingerprint logic, but a malicious worker using the same OS identity may be able to access secrets or UI state. Its unit tests are **not** E18 adversarial isolation evidence.

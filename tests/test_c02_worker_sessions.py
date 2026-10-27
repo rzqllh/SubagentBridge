@@ -25,11 +25,11 @@ from pathlib import Path
 
 import psutil
 
-from subagentbridge.domain.orca_contracts import (
+from subagentbridge.domain.team_contracts import (
     WorkerStatus,
     WorkerConfig,
 )
-from subagentbridge.storage.orca_store import OrcaStore
+from subagentbridge.storage.team_store import TeamStore as OrcaStore
 from subagentbridge.approval.trusted_authority import (
     TrustedApprovalAuthority,
 )

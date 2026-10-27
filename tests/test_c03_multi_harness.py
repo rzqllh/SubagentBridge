@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from subagentbridge.domain.orca_contracts import (
+from subagentbridge.domain.team_contracts import (
     WorkerConfig,
 )
 from subagentbridge.runners.harness_adapters import (
@@ -34,7 +34,7 @@ from subagentbridge.runners.harness_adapters import (
     HarnessRegistry,
     get_harness_registry,
 )
-from subagentbridge.storage.orca_store import OrcaStore
+from subagentbridge.storage.team_store import TeamStore as OrcaStore
 from subagentbridge.execution.worker_process import WorkerProcessController
 
 

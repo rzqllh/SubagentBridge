@@ -1,10 +1,13 @@
 import unittest
-from subagentbridge.execution.orca_adapter import OptionalOrcaBackend
+from subagentbridge.execution.orca_adapter import OptionalOrcaBackend, IntegrationProbe, OrcaProbe
 class OrcaOptionalTests(unittest.TestCase):
  def test_disabled_no_calls(self):
   calls=[]
   b=OptionalOrcaBackend(enabled=False,status_runner=lambda:(calls.append(1) or {'available':True}))
-  self.assertFalse(b.probe().available)
+  probe = b.probe()
+  self.assertFalse(probe.available)
+  self.assertTrue(isinstance(probe, IntegrationProbe))
+  self.assertTrue(isinstance(probe, OrcaProbe))
   self.assertEqual(calls,[])
  def test_enabled_does_not_claim_enforcement(self):
   b=OptionalOrcaBackend(enabled=True,status_runner=lambda:{'available':True})
