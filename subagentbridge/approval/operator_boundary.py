@@ -314,6 +314,8 @@ class IndependentOperatorApprovalBoundary:
             raise PermissionError("DENIED: operator identity verification failed") from exc
         if verified is not True:
             raise PermissionError("DENIED: operator identity has not been authenticated")
+        if operator.role not in ("security_lead", "security_admin", "operator"):
+            raise PermissionError("DENIED: authenticated operator role cannot resolve approvals")
 
         now = time.time()
         with self._lock:
@@ -404,6 +406,8 @@ class IndependentOperatorApprovalBoundary:
                 return False, f"DENIED: action is in state {req.state.value}, not APPROVED", None
             if not req.operator_verified:
                 return False, "DENIED: approval has no verified operator provenance", None
+            if self._operator_verifier is None:
+                return False, "DENIED: operator authentication boundary is unavailable", None
 
             if req.nonce in self._consumed_nonces:
                 return False, "DENIED: approval already consumed (replay prevented)", None
