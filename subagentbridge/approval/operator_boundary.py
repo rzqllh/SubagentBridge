@@ -318,23 +318,26 @@ class IndependentOperatorApprovalBoundary:
                 if answers:
                     req.answers.update(dict(answers))
 
-            self._persist_request(req)
+            if self.ledger:
+                # Distinct idempotency key per decision transition allows ANSWER_QUESTIONS followed by ALLOW_ONCE/DENY
+                idemp_key = f"{action_id}:decision:{decision.value}:{len(req.answers)}"
+                self.ledger.append(
+                    stream="operator_approvals",
+                    idempotency_key=idemp_key,
+                    event_type="OPERATOR_DECISION",
+                    payload={
+                        "action_id": action_id,
+                        "decision": decision.value,
+                        "operator_id": operator.operator_id,
+                        "operator_role": operator.role,
+                        "operator_channel": operator.channel,
+                        "state": req.state.value,
+                        "notes": notes,
+                        "answers": dict(req.answers),
+                    },
+                )
 
-        if self.ledger:
-            self.ledger.append(
-                stream="operator_approvals",
-                idempotency_key=f"{action_id}:resolve",
-                event_type="OPERATOR_DECISION",
-                payload={
-                    "action_id": action_id,
-                    "decision": decision.value,
-                    "operator_id": operator.operator_id,
-                    "operator_role": operator.role,
-                    "operator_channel": operator.channel,
-                    "state": req.state.value,
-                    "notes": notes,
-                },
-            )
+            self._persist_request(req)
 
         return req
 

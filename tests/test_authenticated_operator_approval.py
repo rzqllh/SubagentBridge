@@ -231,3 +231,68 @@ def test_orchestrator_restart_recovery_and_replay_prevention(tmp_path: Path, ope
     # Expired action is expired
     r3 = b2.get_request(req3.action_id)
     assert r3 is not None and r3.state == ApprovalState.EXPIRED
+
+
+def test_audit_ledger_multi_decision_transition_preserves_trail(tmp_path: Path):
+    ledger = AuditLedger(tmp_path / "multi_dec_ledger.jsonl")
+    boundary = IndependentOperatorApprovalBoundary(
+        db_path=tmp_path / "multi_dec.db",
+        ledger=ledger,
+    )
+
+    operator = OperatorIdentity(
+        operator_id="sec-lead-1",
+        role="security_admin",
+        channel="webauthn",
+        auth_token="token-abc",
+    )
+
+    req = boundary.create_request(
+        session_id="w-q-1",
+        task_id="t-q-1",
+        command=["python", "script.py"],
+        workspace_path=str(tmp_path),
+        questions=["Is production credential needed?"],
+    )
+
+    # 1. First decision: Answer questions
+    r1 = boundary.resolve_by_operator(
+        req.action_id,
+        decision=OperatorDecision.ANSWER_QUESTIONS,
+        operator=operator,
+        answers={"Is production credential needed?": "No, mock credentials only"},
+    )
+    assert r1.state == ApprovalState.QUESTION_PENDING
+    assert r1.answers["Is production credential needed?"] == "No, mock credentials only"
+
+    # 2. Subsequent decision: Allow Once (must not raise ReplayConflict on ledger append)
+    r2 = boundary.resolve_by_operator(
+        req.action_id,
+        decision=OperatorDecision.ALLOW_ONCE,
+        operator=operator,
+        notes="Approved with mock creds",
+    )
+    assert r2.state == ApprovalState.APPROVED
+
+    # 3. Consume for execution
+    ok, status, ticket = boundary.consume_for_execution(
+        req.action_id,
+        session_id="w-q-1",
+        task_id="t-q-1",
+        command=["python", "script.py"],
+        workspace_path=str(tmp_path),
+    )
+    assert ok
+    assert ticket is not None
+
+    # Verify audit ledger chain integrity
+    tail = ledger.verify(stream="operator_approvals")
+    assert tail is not None and len(tail) == 64
+    events = ledger.read(stream="operator_approvals", reader_stream="operator_approvals")
+    event_types = [e.event_type for e in events]
+    assert event_types == [
+        "REQUEST_CREATED",
+        "OPERATOR_DECISION",
+        "OPERATOR_DECISION",
+        "APPROVAL_CONSUMED",
+    ]
