@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from secrets import compare_digest
 
@@ -483,3 +484,26 @@ def test_verified_grant_not_consumed_if_verification_backend_unavailable(tmp_pat
         workspace_path=str(tmp_path),
     )
     assert not ok and ticket is None and "boundary is unavailable" in reason
+
+
+def test_concurrent_legacy_provenance_migration_uses_one_writer(tmp_path: Path):
+    db = tmp_path / "parallel_old.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("""CREATE TABLE operator_approvals (
+            action_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, task_id TEXT NOT NULL,
+            command_json TEXT NOT NULL, workspace_path TEXT NOT NULL,
+            nonce TEXT NOT NULL UNIQUE, created_at REAL NOT NULL,
+            expires_at REAL NOT NULL, state TEXT NOT NULL, decision TEXT,
+            operator_id TEXT, operator_role TEXT, operator_channel TEXT,
+            operator_notes TEXT, questions_json TEXT, answers_json TEXT
+        )""")
+
+    def start_supervisor(_: int) -> bool:
+        boundary = fixture_boundary(db_path=db)
+        return boundary is not None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert all(pool.map(start_supervisor, range(16)))
+    with sqlite3.connect(db) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")]
+    assert columns.count("operator_verified") == 1
