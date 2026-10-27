@@ -124,11 +124,21 @@ def resume_task_from_checkpoint(
     Recovers worktree binding, commit identity, skipped steps from checkpoint context,
     revalidates approvals, executes remaining steps, and updates durable state.
     """
+    # A process visible in the OS is not necessarily attached to this controller.
+    # Never launch a replacement or dispatch to an orphan whose pipes we do not own.
+    pre_item = store.load_queue_item(dispatch_id)
+    if pre_item and controller.is_worker_alive(pre_item.to_session_id) and not controller.is_worker_dispatchable(pre_item.to_session_id):
+        return {
+            "status": "RECOVERY_BLOCKED",
+            "dispatch_id": dispatch_id,
+            "reason": "Worker PID is alive but this controller has no attached IPC; operator reconciliation required",
+        }
+
     # Enforce atomic resume transition to prevent concurrent or duplicate resume
     item = store.mark_task_resuming(dispatch_id)
 
     worker_id = item.to_session_id
-    if not controller.is_worker_alive(worker_id):
+    if not controller.is_worker_dispatchable(worker_id):
         session = resume_worker_from_checkpoint(worker_id, store=store, controller=controller)
     else:
         loaded = store.load_session(worker_id)
@@ -266,15 +276,42 @@ def resume_task_from_checkpoint(
             if worktree_path:
                 step_payload["workspace_path"] = worktree_path
 
-            # Revalidate approval ticket if step is a command
+            # Preserve a request across retries. Approval is a separate human action;
+            # issuing a BLOCKED action never authorizes immediate command execution.
             if "command" in step_payload and approval_authority:
-                action = approval_authority.request_command_approval(
-                    worker_id=worker_id,
-                    task_id=f"{item.task_id}-{step_name}",
-                    command=step_payload["command"] if isinstance(step_payload["command"], list) else [step_payload["command"]],
-                    workspace_path=worktree_path or "",
-                )
-                step_payload["approval_action_id"] = action.action_id
+                if approval_authority is not controller.approval_authority:
+                    item.status = QueueTaskStatus.FAILED
+                    store.save_queue_item(item)
+                    return {"status": "RECOVERY_BLOCKED",
+                            "reason": "Approval authority does not match the attached controller",
+                            "failed_step": step_name}
+                action_id = step.get("approval_action_id")
+                action = approval_authority.broker.get_action(action_id) if action_id else None
+                if action is None:
+                    action = approval_authority.request_command_approval(
+                        worker_id=worker_id,
+                        task_id=f"{item.task_id}-{step_name}",
+                        command=(step_payload["command"] if isinstance(step_payload["command"], list)
+                                 else [step_payload["command"]]),
+                        workspace_path=worktree_path or "",
+                    )
+                    step["approval_action_id"] = action.action_id
+                    action_id = action.action_id
+                    item.payload["steps"] = steps
+                if action.state.value == "BLOCKED":
+                    item.status = QueueTaskStatus.DISPATCHED
+                    item.updated_at = time.time()
+                    store.save_queue_item(item)
+                    return {"status": "AWAITING_APPROVAL", "dispatch_id": item.dispatch_id,
+                            "action_id": action_id, "pending_step": step_name,
+                            "completed_steps": completed_steps}
+                if action.state.value != "APPROVED":
+                    item.status = QueueTaskStatus.FAILED
+                    store.save_queue_item(item)
+                    return {"status": "RECOVERY_BLOCKED", "action_id": action_id,
+                            "reason": f"Approval action is {action.state.value}",
+                            "failed_step": step_name}
+                step_payload["approval_action_id"] = action_id
 
             res = controller.dispatch_task_to_worker(worker_id, f"{item.task_id}-{step_name}", step_payload)
             if res.get("status") != "COMPLETED":
