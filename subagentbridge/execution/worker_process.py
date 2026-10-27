@@ -171,6 +171,7 @@ class WorkerProcessController:
         if worktree_path:
             cmd.extend(["--worktree-path", worktree_path])
 
+        cwd: str | None
         if self.isolation_policy.mode == "dedicated_user":
             # Never fall back to supervisor cwd when a configured isolated
             # workspace is missing, inaccessible, or not a directory.
