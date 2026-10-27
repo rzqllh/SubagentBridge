@@ -22,7 +22,8 @@ This security patch is not published until CI/review and a SHA-gated release pas
 - Approval actions now carry an absolute deadline (15-minute default, bounded to 24 hours) and transition permanently to EXPIRED. Pending/approved expired decisions cannot create new execution tickets.
 - Operator credential comparison uses constant-time comparison.
 - Recovery requires a fresh human decision when an action expires rather than reusing stale approvals.
-- Dedicated expiry tests cover pending, already-approved, token mismatch, lifetime bounds and irreversible expiration.
+- Execution tickets enforce finite TTL within (0, 60] seconds before consuming an approval; malformed IPC expiries are rejected without exceptions.
+- Dedicated expiry tests cover pending, already-approved, token mismatch, lifetime bounds, malformed tickets and irreversible expiration.
 - **Not enterprise-certified:** in-process broker test credentials do not prove out-of-band identity; E18 OS user isolation remains BLOCKED. No public release until 4/4 CI and review.
 
 ## [1.1.1] - 2026-10-27
