@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from copy import deepcopy
 import json
 from dataclasses import dataclass, field
 from enum import Enum
@@ -82,6 +83,8 @@ class OperatorApprovalRequest:
     operator_notes: str = ""
     questions: list[str] = field(default_factory=list)
     answers: dict[str, str] = field(default_factory=dict)
+    # False for all legacy rows; only a trusted host verifier can set True.
+    operator_verified: bool = False
 
 
 def canonical_command_digest(command: list[str], workspace_path: str, task_id: str) -> str:
@@ -146,9 +149,18 @@ class IndependentOperatorApprovalBoundary:
                     operator_channel TEXT,
                     operator_notes TEXT,
                     questions_json TEXT,
-                    answers_json TEXT
+                    answers_json TEXT,
+                    operator_verified INTEGER NOT NULL DEFAULT 0
                 )
             """)
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")}
+            if "operator_verified" not in existing:
+                # Existing approvals have no independent authentication evidence.
+                # A default of 0 means they cannot be consumed after upgrade.
+                conn.execute(
+                    "ALTER TABLE operator_approvals "
+                    "ADD COLUMN operator_verified INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _persist_request(self, req: OperatorApprovalRequest) -> None:
         if not self.db_path:
@@ -159,8 +171,8 @@ class IndependentOperatorApprovalBoundary:
                     action_id, session_id, task_id, command_json, workspace_path,
                     nonce, created_at, expires_at, state, decision,
                     operator_id, operator_role, operator_channel, operator_notes,
-                    questions_json, answers_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    questions_json, answers_json, operator_verified
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 req.action_id,
                 req.session_id,
@@ -178,6 +190,7 @@ class IndependentOperatorApprovalBoundary:
                 req.operator_notes,
                 json.dumps(req.questions),
                 json.dumps(req.answers),
+                int(req.operator_verified),
             ))
 
     def rehydrate_from_disk(self) -> int:
@@ -214,6 +227,7 @@ class IndependentOperatorApprovalBoundary:
                     operator_notes=r["operator_notes"] or "",
                     questions=json.loads(r["questions_json"] or "[]"),
                     answers=json.loads(r["answers_json"] or "{}"),
+                    operator_verified=bool(r["operator_verified"]),
                 )
                 self._requests[req.action_id] = req
                 if state == ApprovalState.CONSUMED:
@@ -276,7 +290,7 @@ class IndependentOperatorApprovalBoundary:
                 },
             )
 
-        return req
+        return deepcopy(req)
 
     def resolve_by_operator(
         self,
@@ -323,6 +337,7 @@ class IndependentOperatorApprovalBoundary:
             req.operator_role = operator.role
             req.operator_channel = operator.channel
             req.operator_notes = notes
+            req.operator_verified = True
 
             if decision == OperatorDecision.ALLOW_ONCE:
                 req.state = ApprovalState.APPROVED
@@ -354,7 +369,7 @@ class IndependentOperatorApprovalBoundary:
 
             self._persist_request(req)
 
-        return req
+        return deepcopy(req)
 
     def consume_for_execution(
         self,
@@ -383,6 +398,8 @@ class IndependentOperatorApprovalBoundary:
 
             if req.state != ApprovalState.APPROVED:
                 return False, f"DENIED: action is in state {req.state.value}, not APPROVED", None
+            if not req.operator_verified:
+                return False, "DENIED: approval has no verified operator provenance", None
 
             if req.nonce in self._consumed_nonces:
                 return False, "DENIED: approval already consumed (replay prevented)", None
@@ -440,7 +457,7 @@ class IndependentOperatorApprovalBoundary:
                 if time.time() >= req.expires_at:
                     req.state = ApprovalState.EXPIRED
                     self._persist_request(req)
-            return req
+            return deepcopy(req) if req is not None else None
 
     def list_pending(self) -> list[OperatorApprovalRequest]:
         now = time.time()
@@ -452,5 +469,5 @@ class IndependentOperatorApprovalBoundary:
                         req.state = ApprovalState.EXPIRED
                         self._persist_request(req)
                     else:
-                        pending.append(req)
+                        pending.append(deepcopy(req))
             return pending
