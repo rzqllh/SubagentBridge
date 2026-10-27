@@ -451,3 +451,35 @@ def test_ledger_failure_cannot_leave_operator_action_approved(tmp_path: Path, op
     revived = fixture_boundary(db_path=tmp_path / "decisions.db")
     assert revived.rehydrate_from_disk() == 1
     assert revived.get_request(req.action_id).state == ApprovalState.BLOCKED
+
+
+def test_verified_read_only_auditor_cannot_authorize(tmp_path: Path):
+    boundary = IndependentOperatorApprovalBoundary(operator_verifier=lambda _: True)
+    req = boundary.create_request(
+        session_id="w", task_id="t", command=["echo", "test"], workspace_path=str(tmp_path),
+    )
+    auditor = OperatorIdentity(
+        operator_id="auditor-1", role="auditor", channel="webauthn", auth_token="some-assertion",
+    )
+    with pytest.raises(PermissionError, match="role cannot resolve"):
+        boundary.resolve_by_operator(req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=auditor)
+    assert boundary.get_request(req.action_id).state == ApprovalState.BLOCKED
+
+
+def test_verified_grant_not_consumed_if_verification_backend_unavailable(tmp_path: Path):
+    db = tmp_path / "decisions.db"
+    active = fixture_boundary(db_path=db)
+    operator = OperatorIdentity(
+        operator_id="sec-lead-1", role="security_admin", channel="webauthn", auth_token="token-abc",
+    )
+    req = active.create_request(
+        session_id="w", task_id="t", command=["echo", "test"], workspace_path=str(tmp_path),
+    )
+    active.resolve_by_operator(req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator)
+    unavailable = IndependentOperatorApprovalBoundary(db_path=db)
+    assert unavailable.rehydrate_from_disk() == 1
+    ok, reason, ticket = unavailable.consume_for_execution(
+        req.action_id, session_id="w", task_id="t", command=["echo", "test"],
+        workspace_path=str(tmp_path),
+    )
+    assert not ok and ticket is None and "boundary is unavailable" in reason
