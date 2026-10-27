@@ -107,7 +107,6 @@ def worker_launch_configuration(
         "PYTHONPATH": str(code_root.resolve(strict=True)),
         "PYTHONNOUSERSITE": "1",
         "PYTHONSAFEPATH": "1",
-        "TMPDIR": "/tmp",
     }
     for key in ("LANG", "LC_ALL", "LC_CTYPE"):
         if key in os.environ:
