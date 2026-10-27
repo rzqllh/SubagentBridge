@@ -1250,3 +1250,38 @@ def test_failed_begin_immediate_does_not_mask_original_error():
         conn_competing.close()
 
 
+
+
+@pytest.mark.parametrize("present", [
+    ("dedup_key",), ("priority",), ("steering_json",),
+    ("dedup_key", "priority"), ("priority", "steering_json"),
+    ("dedup_key", "steering_json"),
+])
+def test_migration_preserves_independent_optional_queue_columns(present):
+    """Legacy partial optional schemas must preserve each available column."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "partial_queue.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(LEGACY_ORCA_DDL)
+        for column in ("dedup_key", "priority", "steering_json"):
+            if column not in present:
+                conn.execute(f"ALTER TABLE orca_queue DROP COLUMN {column}")
+        now = 100.0
+        conn.execute("INSERT INTO orca_teams VALUES ('team-q', 'lead-q', 'Team Q', ?)", (now,))
+        conn.execute("INSERT INTO orca_sessions VALUES ('lead-q', 'lead', 'team-q', 'IDLE', '{}', ?, ?)", (now, now))
+        conn.execute("INSERT INTO orca_sessions VALUES ('worker-q', 'worker', 'team-q', 'IDLE', '{}', ?, ?)", (now, now))
+        columns = ["dispatch_id", "team_id", "from_session_id", "to_session_id",
+                   "task_id", "payload_json", "status", "created_at", "updated_at"] + list(present)
+        values = ["dsp-q", "team-q", "lead-q", "worker-q", "task-q", "{}", "PENDING", now, now]
+        values += [{"dedup_key": "important", "priority": 17, "steering_json": '["keep"]'}[c] for c in present]
+        conn.execute(
+            f"INSERT INTO orca_queue ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+            values,
+        )
+        conn.commit()
+        conn.close()
+        with TeamStore(db_path) as store:
+            row = store._conn.execute("SELECT * FROM simpul_queue WHERE dispatch_id='dsp-q'").fetchone()
+            assert row["dedup_key"] == ("important" if "dedup_key" in present else None)
+            assert row["priority"] == (17 if "priority" in present else 0)
+            assert row["steering_json"] == ('["keep"]' if "steering_json" in present else "[]")
