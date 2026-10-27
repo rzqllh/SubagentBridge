@@ -1,7 +1,9 @@
 """Independent authenticated human operator approval boundary (P0 / Issue #22).
 
-Provides an out-of-band operator authorization plane completely separated
-from model-callable MCP tools and untrusted worker processes.
+Provides a **candidate** operator decision store; it does NOT itself authenticate
+OIDC/WebAuthn tokens or integrate into the production command dispatcher.
+The trusted host must supply an independently authenticated verifier, and the
+boundary denies all operator decisions until one is supplied.
 Decisions are cryptographically bound to:
 1. Authenticated operator identity (OIDC/WebAuthn/console assertion)
 2. Operator role (e.g. 'security_lead', 'operator', 'auditor')
@@ -26,7 +28,7 @@ from secrets import token_hex
 import sqlite3
 import threading
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from subagentbridge.storage.audit_ledger import AuditLedger
 
@@ -48,12 +50,12 @@ class ApprovalState(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class OperatorIdentity:
-    """Independently authenticated operator credentials outside model trust boundary."""
+    """Unverified operator assertion. Construction does not prove authentication."""
 
     operator_id: str
     role: str
     channel: str  # e.g. "webauthn", "oidc", "operator_console"
-    auth_token: str  # Cryptographic proof or signed bearer token
+    auth_token: str  # UNVERIFIED caller-supplied assertion; must be checked by an external verifier
 
     def __post_init__(self) -> None:
         if not self.operator_id or not self.role or not self.channel or not self.auth_token:
@@ -92,7 +94,7 @@ def canonical_command_digest(command: list[str], workspace_path: str, task_id: s
 
 
 class IndependentOperatorApprovalBoundary:
-    """Durable, tamper-evident operator approval gate."""
+    """Local decision store; requires externally verified operator assertions."""
 
     def __init__(
         self,
@@ -101,10 +103,15 @@ class IndependentOperatorApprovalBoundary:
         *,
         default_ttl_seconds: float = 900.0,
         signing_secret: str | None = None,
+        operator_verifier: Callable[[OperatorIdentity], bool] | None = None,
     ) -> None:
         if not 0 < default_ttl_seconds <= 86400:
             raise ValueError("default_ttl_seconds must be within (0, 86400]")
         self.default_ttl = default_ttl_seconds
+        # Production must inject a trusted out-of-process/OIDC/WebAuthn assertion
+        # verifier. A caller-constructed OperatorIdentity is never authentication.
+        # No verifier => ALLOW_ONCE, DENY and ANSWER_QUESTIONS all fail closed.
+        self._operator_verifier = operator_verifier
         self._secret = signing_secret or token_hex(32)
         self._lock = threading.RLock()
         self._requests: dict[str, OperatorApprovalRequest] = {}
@@ -280,11 +287,19 @@ class IndependentOperatorApprovalBoundary:
         notes: str = "",
         answers: Mapping[str, str] | None = None,
     ) -> OperatorApprovalRequest:
-        """Resolves an approval strictly by an authenticated operator."""
+        """Resolve only after a trusted external verifier authenticates the assertion."""
         if not isinstance(decision, OperatorDecision):
             raise TypeError("decision must be an instance of OperatorDecision")
         if not isinstance(operator, OperatorIdentity):
             raise TypeError("operator must be an instance of OperatorIdentity")
+        if self._operator_verifier is None:
+            raise PermissionError("DENIED: independently authenticated operator verifier is not configured")
+        try:
+            verified = self._operator_verifier(operator)
+        except Exception as exc:
+            raise PermissionError("DENIED: operator identity verification failed") from exc
+        if verified is not True:
+            raise PermissionError("DENIED: operator identity has not been authenticated")
 
         now = time.time()
         with self._lock:
