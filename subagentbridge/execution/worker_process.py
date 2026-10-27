@@ -134,6 +134,19 @@ class WorkerProcessController:
         self._readers: dict[str, TimedStreamReader] = {}
         self._records: dict[str, WorkerProcessRecord] = {}
 
+    def has_attached_worker(self, worker_id: str) -> bool:
+        """Require an owned live Popen handle, reader AND matching PID record for IPC."""
+        proc = self._processes.get(worker_id)
+        record = self._records.get(worker_id)
+        return bool(
+            proc is not None
+            and record is not None
+            and worker_id in self._readers
+            and proc.poll() is None
+            and proc.pid == record.pid
+            and is_process_identically_alive(record.pid, record.create_time)
+        )
+
     def spawn_worker(
         self,
         config: WorkerConfig,
