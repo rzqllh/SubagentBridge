@@ -321,6 +321,17 @@ class TestRouterSkills(unittest.TestCase):
 
     def test_09_supervised_native_lifecycle_with_model_consultation(self):
         """Verify SupervisedNativeLifecycle can consult router under approved D-02 terms."""
+        import subprocess
+        import sys as _sys
+        subprocess.run(["git", "init", "-q"], cwd=str(self.workspace), check=True)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(self.workspace), check=True)
+        subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=str(self.workspace), check=True)
+        test_file = self.workspace / "tests" / "test_dummy.py"
+        test_file.parent.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("def test_dummy(): pass\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(self.workspace), check=True)
+        subprocess.run(["git", "commit", "-m", "init", "-q"], cwd=str(self.workspace), check=True)
+
         db_file = self.workspace / ".subagentbridge" / "audit.db"
         sys = build_production_system(workspace_root=self.workspace, db_path=db_file)
         store_db = self.workspace / ".subagentbridge" / "store.db"
@@ -357,6 +368,7 @@ class TestRouterSkills(unittest.TestCase):
                 coordinator=coord,
                 principals=principals,
                 task_records=task_records,
+                command_map={"default": [_sys.executable, "-c", "print('consultation step ok')"]},
                 provider_terms_approved=True,
                 consult_model=True,
             )

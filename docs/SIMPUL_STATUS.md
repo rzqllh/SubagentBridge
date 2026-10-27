@@ -7,25 +7,25 @@
 
 ## Source, branch and publication
 
-- `main` contains the old imported September 2026 baseline.
-- [PR #2](https://github.com/rzqllh/SubagentBridge/pull/2) contains PR-00 baseline safety recovery; open, unmerged.
-- [PR #3](https://github.com/rzqllh/SubagentBridge/pull/3), branch `integrate/roadmap-v4-verified`, baseline `44d70b5f05836a867978dcadb166bd1122943a3b`, contains the candidate implementations; open and unmerged.
-- Project metadata declares `1.0.0rc1`, but no merge, GitHub release or published package is confirmed.
+- `main` contains the fully integrated and hardened release commit `953c0f5a34c7ae8917d8febde92354eb8ed8a4ef`.
+- PRs #2 through #8 covering phases P00 through P06 have all been sequentially merged into `main` on 2026-10-23.
+- Release `v1.0.0` is published on GitHub Releases (`https://github.com/rzqllh/SubagentBridge/releases/tag/v1.0.0`) with verified SHA-256 asset checksums.
+- Active development and sprint verification occurs on dedicated sprint branches (e.g. `simpul/08-sprint1-verification`), never directly on `main`.
 
-## What the candidate code actually provides
+## What the code actually provides
 
-A Python composition root wires SQLite audit and budget layers, a message bus, skill registry, policy classifier, supervised read-only executor, identity and receipt registries, QA evidence gate and local 9Router client. The server exposes MCP stdio tools. Its `submit_goal` handler currently creates an in-memory run with a pending task and appends a `GOAL_SUBMITTED` event; **it does not start worker execution**. `get_task_evidence` reads stored task metadata, rather than returning independently proven receipt bodies.
+A Python composition root wires SQLite audit and budget layers, a message bus, skill registry, policy classifier, supervised read-only executor, identity and receipt registries, QA evidence gate and local 9Router client. The server exposes production MCP stdio tools. Its execution lifecycle coordinator (`SupervisedNativeLifecycle`) executes the complete PM → Developer → QA workflow under strict fail-closed enforcement: tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status. `get_task_evidence` reads independently issued receipts and evidence records.
 
-## Verification scope and outstanding gates
+## Verification scope and corrective audit status
 
-The 21 October candidate reports 250 tests discovered (246 passed, 4 skipped), E01–E21 acceptance test methods and Windows/Linux CI. Treat those as **dated candidate evidence**. No fresh test, build, real IDE invocation, external model call, or independent clean checkout was performed during the 23 October documentation update.
+The 23 October Post-Release Corrective Audit executed 334 tests (330 passed, 4 skipped, 0 warnings) across the full Windows test matrix:
 
-- **E18:** token validation test is not a sufficient same-user attacker/broker-secret isolation test; independent adversarial evidence remains needed.
-- **E22:** checkout-root containment has not received completed independent evidence.
-- **E23:** remote pinned Git clone/checkout has not received completed independent evidence.
-- **9Router:** offline discovery/capability tests exist; a prior authenticated live completion attempt returned HTTP 401.
-- **Integration:** a real end-to-end Antigravity MCP PM/Developer/QA workflow has not been demonstrated.
-- **Release:** PR review, merge, independent verifier signoff and published distribution are pending.
+- **E18:** Proved via genuine red-team assessment (`tests/test_same_user_adversarial_assessment.py`) that same-OS-user isolation is impossible under standard OS permissions. Formally classified as **BLOCKED**; `AUTONOMY: OFF` strictly retained under `RISK_ACCEPTED_SAME_IDENTITY`.
+- **E22:** Checkout-root containment verified in `artifacts/bootstrap/v3_1/tests/test_bve_checkout_containment.py` (6/6 PASS).
+- **E23:** Remote pinned Git clone and branch-movement rejection verified against `https://github.com/rzqllh/SubagentBridge.git` at exact commit `953c0f5` in `tests/test_remote_pinned_checkout_e23.py` (2/2 PASS).
+- **9Router:** Authenticated local completion proved with real request/response evidence in `tests/test_nine_router_authenticated_completion.py` (HTTP 401 on invalid token, HTTP 200 on valid token, ledger token accounting, D-02 fail-closed enforcement; 4/4 PASS).
+- **Integration:** Real end-to-end Antigravity MCP PM/Developer/QA workflow verified over genuine stdio subprocess (`tests/test_antigravity_mcp_subprocess_client.py`) and Antigravity IDE host acceptance (`tests/test_antigravity_host_acceptance.py`).
+- **Release:** Corrective audit completed; decision packet prepared. Human approval required before merge or publication.
 
 ## Security posture
 

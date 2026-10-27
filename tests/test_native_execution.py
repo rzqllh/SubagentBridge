@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from uuid import uuid4
@@ -61,6 +63,12 @@ class SupervisedNativeLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp).resolve()
+
+        # Genuine git repository setup
+        subprocess.run(["git", "init", "-q"], cwd=str(self.root), check=True)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(self.root), check=True)
+        subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=str(self.root), check=True)
+
         self.db_path = self.root / ".subagentbridge" / "audit.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.store = SQLiteStore(str(self.root / "store.db"))
@@ -70,6 +78,9 @@ class SupervisedNativeLifecycleTests(unittest.TestCase):
         test_file.write_text("def test_dummy(): pass\n", encoding="utf-8")
         import hashlib
         self.test_hash = hashlib.sha256(test_file.read_bytes()).hexdigest()
+
+        subprocess.run(["git", "add", "."], cwd=str(self.root), check=True)
+        subprocess.run(["git", "commit", "-m", "init clean workspace", "-q"], cwd=str(self.root), check=True)
 
         self.sys = build_production_system(
             workspace_root=self.root,
@@ -100,11 +111,22 @@ class SupervisedNativeLifecycleTests(unittest.TestCase):
             dependencies=dependencies,
         )
 
+        import sys
+        pm_id = f"{run_id}_pm"
+        dev_id = f"{run_id}_dev"
+        qa_id = f"{run_id}_qa"
+        commands = {
+            pm_id: [sys.executable, "-c", "print('pm scope ok')"],
+            dev_id: [sys.executable, "-c", "print('dev pass')"],
+            qa_id: [sys.executable, "-c", "print('qa pass')"],
+        }
+
         result = lifecycle.execute_lifecycle(
             run_id=run_id,
             coordinator=coordinator,
             principals=principals,
             task_records=records,
+            command_map=commands,
         )
 
         self.assertEqual(result["status"], "COMPLETED")
@@ -137,16 +159,17 @@ class SupervisedNativeLifecycleTests(unittest.TestCase):
             dependencies=dependencies,
         )
 
-        # Inject a failing command for the developer task
+        import sys
+        pm_id = f"{run_id}_pm"
         dev_id = f"{run_id}_dev"
-        failing_cmd = ["python", "-c", "import sys; sys.exit(42)"]
+        failing_cmd = [sys.executable, "-c", "import sys; sys.exit(42)"]
 
         result = lifecycle.execute_lifecycle(
             run_id=run_id,
             coordinator=coordinator,
             principals=principals,
             task_records=records,
-            command_map={dev_id: failing_cmd},
+            command_map={pm_id: [sys.executable, "-c", "print('pm ok')"], dev_id: failing_cmd},
         )
 
         self.assertEqual(result["status"], "FAILED")
@@ -252,6 +275,14 @@ class McpNativeExecutionServerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp).resolve()
+        subprocess.run(["git", "init", "-q"], cwd=str(self.root), check=True)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(self.root), check=True)
+        subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=str(self.root), check=True)
+        test_file = self.root / "tests" / "test_dummy.py"
+        test_file.parent.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("def test_dummy(): pass\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(self.root), check=True)
+        subprocess.run(["git", "commit", "-m", "init", "-q"], cwd=str(self.root), check=True)
         srv.close_production_system()
 
     def tearDown(self):
@@ -259,11 +290,13 @@ class McpNativeExecutionServerTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_submit_goal_with_execute_runs_full_lifecycle(self):
-        """submit_goal(..., execute=True) completes and marks tasks VERIFIED."""
+        """submit_goal(..., execute=True) completes and marks tasks VERIFIED with genuine execution."""
+        import sys
         res = srv.submit_goal(
             goal="Build authenticated token bucket",
             workspace_path=str(self.root),
             execute=True,
+            commands={"default": [sys.executable, "-c", "print('task ok')"]},
         )
 
         self.assertEqual(res["status"], "COMPLETED")
@@ -283,10 +316,12 @@ class McpNativeExecutionServerTests(unittest.TestCase):
 
     def test_execute_run_and_execute_task_tools(self):
         """submit_goal(..., execute=False) leaves run SUBMITTED; execute_run completes it."""
+        import sys
         res = srv.submit_goal(
             goal="Build circuit breaker",
             workspace_path=str(self.root),
             execute=False,
+            commands={"default": [sys.executable, "-c", "print('task ok')"]},
         )
         self.assertEqual(res["status"], "SUBMITTED")
         run_id = res["run_id"]
@@ -295,17 +330,22 @@ class McpNativeExecutionServerTests(unittest.TestCase):
         exec_res = srv.execute_run(run_id)
         self.assertEqual(exec_res["status"], "COMPLETED")
 
-        # Run execute_task on individual task returns current state
+        # Run execute_task on individual task returns current state and exact evidence
         tasks = srv.list_tasks(run_id)
         task_res = srv.execute_task(run_id, tasks[0]["task_id"])
         self.assertEqual(task_res["status"], "VERIFIED")
+        self.assertIn("evidence", task_res)
+        self.assertTrue(task_res["evidence"]["verified"])
+        self.assertEqual(task_res["task_id"], tasks[0]["task_id"])
 
     def test_completed_run_rehydrates_with_verified_evidence(self):
         """A completed run rehydrates from SQLite and retains verified status and evidence."""
+        import sys
         res = srv.submit_goal(
             goal="Persistent cache integration",
             workspace_path=str(self.root),
             execute=True,
+            commands={"default": [sys.executable, "-c", "print('task ok')"]},
         )
         run_id = res["run_id"]
         self.assertEqual(res["status"], "COMPLETED")

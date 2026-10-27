@@ -100,6 +100,7 @@ class IsolatedExecutionRunner:
         proc = subprocess.Popen(
             list(argv),
             cwd=str(self.workspace_path),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=clean_env,

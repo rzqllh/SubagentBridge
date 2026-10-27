@@ -42,6 +42,16 @@ class TestAntigravityMcpE2E(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.workspace = Path(self.tmp_dir.name).resolve()
+        import subprocess
+        subprocess.run(["git", "init", "-q"], cwd=str(self.workspace), check=True)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(self.workspace), check=True)
+        subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=str(self.workspace), check=True)
+        test_file = self.workspace / "tests" / "test_dummy.py"
+        test_file.parent.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("def test_dummy(): pass\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(self.workspace), check=True)
+        subprocess.run(["git", "commit", "-m", "init", "-q"], cwd=str(self.workspace), check=True)
+
         # Use workspace-isolated store for clean testing
         self.db_path = self.workspace / ".subagentbridge" / "mcp_test_store.db"
         self.store = SQLiteStore(self.db_path)
@@ -83,8 +93,14 @@ class TestAntigravityMcpE2E(unittest.TestCase):
 
     def test_02_execute_run_full_lifecycle_and_truthful_evidence(self):
         """Verify execute_run transitions through frozen, dispatched, receipts, and QA verification."""
+        import sys
         goal_text = "Execute supervised native lifecycle under MCP"
-        res = submit_goal(goal=goal_text, workspace_path=str(self.workspace), execute=False)
+        res = submit_goal(
+            goal=goal_text,
+            workspace_path=str(self.workspace),
+            execute=False,
+            commands={"default": [sys.executable, "-c", "print('mcp run pass')"]},
+        )
         run_id = res["run_id"]
 
         exec_res = execute_run(run_id)
@@ -104,15 +120,23 @@ class TestAntigravityMcpE2E(unittest.TestCase):
             self.assertEqual(ev["evidence_ids"], t["evidence_ids"])
 
     def test_03_execute_individual_task(self):
-        """Verify execute_task executes lifecycle for specific task."""
+        """Verify execute_task executes lifecycle for specific task and returns exact evidence."""
+        import sys
         goal_text = "Execute single task via MCP tool"
-        res = submit_goal(goal=goal_text, workspace_path=str(self.workspace), execute=False)
+        res = submit_goal(
+            goal=goal_text,
+            workspace_path=str(self.workspace),
+            execute=False,
+            commands={"default": [sys.executable, "-c", "print('mcp task pass')"]},
+        )
         run_id = res["run_id"]
-        tasks = list_tasks(run_id)
-        target_task_id = tasks[0]["task_id"]
+        target_task_id = f"{run_id}_pm"
 
-        task_res = execute_task(run_id, target_task_id)
-        self.assertIn(task_res.get("status"), ("COMPLETED", "VERIFIED"))
+        task_res = execute_task(run_id, target_task_id, command=[sys.executable, "-c", "print('task ok')"])
+        self.assertEqual(task_res.get("status"), "VERIFIED")
+        self.assertIn("evidence", task_res)
+        self.assertTrue(task_res["evidence"]["verified"])
+        self.assertEqual(task_res["task_id"], target_task_id)
 
     def test_04_approval_workflow_and_rejection_finality(self):
         """Verify approval workflow under CHAT_APPROVAL: listing and rejection."""

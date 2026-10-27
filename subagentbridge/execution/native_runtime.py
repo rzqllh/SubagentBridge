@@ -39,6 +39,7 @@ def resolve_tree_sha(workspace_path: Path) -> str:
         res = subprocess.run(  # nosec B603
             ["git", "rev-parse", "HEAD^{tree}"],
             cwd=str(workspace_path),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=False,
@@ -63,6 +64,88 @@ def resolve_tree_sha(workspace_path: Path) -> str:
         pass
     digest = hasher.hexdigest()
     return digest if digest != sha256().hexdigest() else ("0" * 40)
+
+
+_EXACT_ALLOWED_RUNTIME_FILENAMES = frozenset({
+    "store.db",
+    "store.db-wal",
+    "store.db-shm",
+    "audit.db",
+    "audit.db-wal",
+    "audit.db-shm",
+    "production_audit.db",
+    "production_audit.db-wal",
+    "production_audit.db-shm",
+    "sessions.db",
+    "sessions.db-wal",
+    "sessions.db-shm",
+})
+
+_EXACT_ALLOWED_RUNTIME_DIRS = frozenset({
+    ".subagentbridge",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    ".mypy_cache",
+})
+
+
+def _is_ignored_checkout_status_line(line: str) -> bool:
+    """Parse git porcelain status line and verify if it represents exclusively allowed runtime artifacts.
+
+    Only explicitly allowed generated runtime artifacts (e.g. SQLite databases, cache directories)
+    may be excluded from cleanliness check. Tracked source files or files with similar names
+    (such as restore.db.py) strictly make the checkout dirty.
+    """
+    if not line or not line.strip():
+        return True
+    if len(line) < 3:
+        return False
+
+    raw_path_part = line[3:].strip()
+    if not raw_path_part:
+        return False
+
+    # Handle rename notation "old -> new" if present
+    paths = [p.strip() for p in raw_path_part.split(" -> ")]
+    for raw_p in paths:
+        if not raw_p:
+            continue
+        # Unquote git C-style quoted string if wrapped in double quotes
+        if raw_p.startswith('"') and raw_p.endswith('"'):
+            raw_p = raw_p[1:-1]
+        norm_p = raw_p.replace("\\", "/")
+        p = Path(norm_p)
+        if p.name in _EXACT_ALLOWED_RUNTIME_FILENAMES:
+            continue
+        if any(part in _EXACT_ALLOWED_RUNTIME_DIRS for part in p.parts):
+            continue
+        return False
+    return True
+
+
+def check_clean_checkout(workspace_path: Path) -> bool:
+    """Verify whether workspace checkout is genuinely clean without uncommitted changes."""
+    try:
+        res = subprocess.run(  # nosec B603
+            ["git", "status", "--porcelain"],
+            cwd=str(workspace_path),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if res.returncode == 0:
+            dirty_lines = [
+                line
+                for line in res.stdout.splitlines()
+                if line.strip() and not _is_ignored_checkout_status_line(line)
+            ]
+            return len(dirty_lines) == 0
+    except Exception:
+        pass
+    return False
 
 
 class TaskDecomposer:
@@ -244,6 +327,20 @@ class SupervisedNativeLifecycle:
                 self.store.upsert_task(record)
             self._log_event(run_id, f"freeze:{task_id}", "TASK_FROZEN", {"task_id": task_id})
 
+            # Check developer command availability BEFORE reserving dispatch budget (Thread #4 fix)
+            cmd = commands.get(task_id) or commands.get(record.get("role", "")) or commands.get("default")
+            if not cmd:
+                record["status"] = "FAILED"
+                if self.store is not None:
+                    self.store.upsert_task(record)
+                self._log_event(run_id, f"no_cmd:{task_id}", "COMMAND_MISSING", {"task_id": task_id})
+                return {
+                    "status": "FAILED",
+                    "run_id": run_id,
+                    "failed_task_id": task_id,
+                    "reason": f"no developer command provided for execution of task {task_id}; synthetic exit code is prohibited",
+                }
+
             # 2. Begin dispatch (reserve budget)
             idempotency_key = f"dispatch:{run_id}:{task_id}"
             dispatch_plan = coordinator.begin(
@@ -283,6 +380,7 @@ class SupervisedNativeLifecycle:
             # Optional model consultation under D-02 review gate
             if consult_model:
                 if not provider_terms_approved:
+                    coordinator.release_dispatch(task_id)
                     return {
                         "status": "FAILED",
                         "run_id": run_id,
@@ -328,90 +426,14 @@ class SupervisedNativeLifecycle:
                     )
 
             # 4. Developer execution under ToolExecutor supervision
-            cmd = commands.get(task_id)
-            exit_code = 0
-            if cmd:
+            try:
+                result = self.runner.run_isolated(cmd, timeout_seconds=30)
+                exit_code = result.exit_code
+            except Exception:
+                exit_code = 1
 
-                try:
-                    result = self.runner.run_isolated(cmd, timeout_seconds=30)
-                    exit_code = result.exit_code
-                except Exception:
-                    exit_code = 1
-            else:
-                # Default non-modifying inspection/verification step
-                exit_code = 0
-
-            # 4. Developer reports process succeeded (if exit_code == 0)
-            if exit_code == 0:
-                coordinator.report_process_succeeded(
-                    developer=dev,
-                    task_id=task_id,
-                    dispatch_id=dispatch_plan.dispatch_id,
-                    tree_sha=dispatch_plan.tree_sha,
-                )
-                record["status"] = "PROCESS_SUCCEEDED"
-                if self.store is not None:
-                    self.store.upsert_task(record)
-                self._log_event(
-                    run_id,
-                    f"proc_succ:{dispatch_plan.dispatch_id}",
-                    "PROCESS_SUCCEEDED",
-                    {"task_id": task_id, "dispatch_id": dispatch_plan.dispatch_id},
-                )
-
-                # 5. ToolExecutor issues trustworthy execution receipt
-                receipt = self.sys.receipts.issue(
-                    executor,
-                    task_id=task_id,
-                    dispatch_id=dispatch_plan.dispatch_id,
-                    tree_sha=dispatch_plan.tree_sha,
-                    exit_code=exit_code,
-                )
-                evidence = self.sys.receipts.create_evidence(
-                    receipt.receipt_id,
-                    task_id=task_id,
-                    dispatch_id=dispatch_plan.dispatch_id,
-                    tree_sha=dispatch_plan.tree_sha,
-                )
-
-                # 6. Independent QA review
-                decision = coordinator.qa_review(
-                    qa=qa,
-                    task_id=task_id,
-                    evidence=(evidence,),
-                    covered_criteria=task_contract.acceptance_criteria,
-                    actual_test_hashes=self.sys.qa_gate.test_hashes,
-                    actual_tree_sha=dispatch_plan.tree_sha,
-                    clean=True,
-                    fix_round=0,
-                )
-
-                if decision.status == "QA_VERIFIED":
-                    record["status"] = "VERIFIED"
-                    record["evidence_ids"] = [evidence.evidence_id]
-                    if self.store is not None:
-                        self.store.upsert_task(record)
-                    self._log_event(
-                        run_id,
-                        f"qa_ver:{dispatch_plan.dispatch_id}",
-                        "TASK_VERIFIED",
-                        {
-                            "task_id": task_id,
-                            "dispatch_id": dispatch_plan.dispatch_id,
-                            "evidence_id": evidence.evidence_id,
-                        },
-                    )
-                else:
-                    record["status"] = decision.status
-                    if self.store is not None:
-                        self.store.upsert_task(record)
-                    return {
-                        "status": "FAILED",
-                        "run_id": run_id,
-                        "failed_task_id": task_id,
-                        "reason": decision.reason,
-                    }
-            else:
+            if exit_code != 0:
+                coordinator.release_dispatch(task_id)
                 record["status"] = "FAILED"
                 if self.store is not None:
                     self.store.upsert_task(record)
@@ -420,6 +442,175 @@ class SupervisedNativeLifecycle:
                     "run_id": run_id,
                     "failed_task_id": task_id,
                     "reason": f"process execution failed with exit code {exit_code}",
+                }
+
+            # 5. Developer reports process succeeded (with genuine exit_code == 0)
+            coordinator.report_process_succeeded(
+                developer=dev,
+                task_id=task_id,
+                dispatch_id=dispatch_plan.dispatch_id,
+                tree_sha=dispatch_plan.tree_sha,
+            )
+            record["status"] = "PROCESS_SUCCEEDED"
+            if self.store is not None:
+                self.store.upsert_task(record)
+            self._log_event(
+                run_id,
+                f"proc_succ:{dispatch_plan.dispatch_id}",
+                "PROCESS_SUCCEEDED",
+                {"task_id": task_id, "dispatch_id": dispatch_plan.dispatch_id},
+            )
+
+            # 6. ToolExecutor issues trustworthy execution receipt from actual execution
+            receipt = self.sys.receipts.issue(
+                executor,
+                task_id=task_id,
+                dispatch_id=dispatch_plan.dispatch_id,
+                tree_sha=dispatch_plan.tree_sha,
+                exit_code=exit_code,
+            )
+            evidence = self.sys.receipts.create_evidence(
+                receipt.receipt_id,
+                task_id=task_id,
+                dispatch_id=dispatch_plan.dispatch_id,
+                tree_sha=dispatch_plan.tree_sha,
+            )
+
+            # 7. Independent QA review
+            # Execute qualifying QA tests first so post-QA integrity can be re-evaluated
+            qa_passed = False
+            qa_test_files = [
+                str(self.workspace_path / rel_path)
+                for rel_path in self.sys.qa_gate.test_hashes
+                if (self.workspace_path / rel_path).is_file()
+            ]
+            if qa_test_files:
+                import re as _re
+                import sys as _sys
+                import tempfile as _tempfile
+                import xml.etree.ElementTree as _ET
+
+                # Create dedicated temp file outside workspace for structured results
+                tmp_xml = _tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
+                tmp_xml_path = Path(tmp_xml.name).resolve()
+                tmp_xml.close()
+
+                try:
+                    try:
+                        import pytest  # noqa: F401
+                        qa_cmd = [_sys.executable, "-m", "pytest", f"--junitxml={tmp_xml_path}", "-ra", "-v", *qa_test_files]
+                    except ImportError:
+                        qa_cmd = [_sys.executable, "-m", "unittest", "-v", *qa_test_files]
+
+                    qa_run = self.runner.run_isolated(
+                        qa_cmd,
+                        timeout_seconds=30,
+                    )
+
+                    # Structured result evaluation (P2 QA Skip & Collection Detection)
+                    if tmp_xml_path.exists() and tmp_xml_path.stat().st_size > 0:
+                        try:
+                            tree = _ET.parse(str(tmp_xml_path))  # nosec B314
+                            root = tree.getroot()
+                            if root.tag == "testsuite":
+                                suites = [root]
+                            else:
+                                suites = list(root.findall("testsuite")) or [root]
+
+                            total_tests = 0
+                            total_failures = 0
+                            total_errors = 0
+                            total_skipped = 0
+                            has_skipped_tags = bool(root.findall(".//skipped"))
+
+                            for s in suites:
+                                total_tests += int(s.attrib.get("tests", 0))
+                                total_failures += int(s.attrib.get("failures", 0))
+                                total_errors += int(s.attrib.get("errors", 0))
+                                total_skipped += int(s.attrib.get("skipped", 0))
+
+                            # Qualifying tests must have been collected and executed without any skips
+                            qa_passed = (
+                                qa_run.exit_code == 0
+                                and total_tests > 0
+                                and total_skipped == 0
+                                and not has_skipped_tags
+                                and total_failures == 0
+                                and total_errors == 0
+                            )
+                        except Exception:
+                            qa_passed = False
+                    else:
+                        out_text = qa_run.output_text or ""
+                        ran_match = _re.search(r"Ran (\d+) tests?", out_text)
+                        tests_count = int(ran_match.group(1)) if ran_match else 0
+                        has_skipped = ("skipped=" in out_text or "SKIPPED" in out_text or "skip" in out_text.lower())
+                        qa_passed = (
+                            qa_run.exit_code == 0
+                            and tests_count > 0
+                            and not has_skipped
+                            and "OK" in out_text
+                        )
+                except Exception:
+                    qa_passed = False
+                finally:
+                    try:
+                        if tmp_xml_path.exists():
+                            tmp_xml_path.unlink()
+                    except Exception:
+                        pass
+
+            # Thread #6 fix: revalidate checkout integrity, tree SHA, and test hashes AFTER running QA
+            is_clean = check_clean_checkout(self.workspace_path)
+            current_tree_sha = resolve_tree_sha(self.workspace_path)
+
+            # Read actual QA test hashes from disk post-QA
+            actual_test_hashes: dict[str, str] = {}
+            for rel_path in self.sys.qa_gate.test_hashes:
+                test_file = (self.workspace_path / rel_path).resolve()
+                if test_file.is_file():
+                    actual_test_hashes[rel_path] = sha256(test_file.read_bytes()).hexdigest()
+                else:
+                    actual_test_hashes[rel_path] = "0" * 64
+
+            covered_criteria = task_contract.acceptance_criteria if qa_passed else ()
+
+            decision = coordinator.qa_review(
+                qa=qa,
+                task_id=task_id,
+                evidence=(evidence,),
+                covered_criteria=covered_criteria,
+                actual_test_hashes=actual_test_hashes,
+                actual_tree_sha=current_tree_sha,
+                clean=is_clean,
+                fix_round=0,
+            )
+
+            if decision.status == "QA_VERIFIED":
+                record["status"] = "VERIFIED"
+                record["evidence_ids"] = [evidence.evidence_id]
+                if self.store is not None:
+                    self.store.upsert_task(record)
+                self._log_event(
+                    run_id,
+                    f"qa_ver:{dispatch_plan.dispatch_id}",
+                    "TASK_VERIFIED",
+                    {
+                        "task_id": task_id,
+                        "dispatch_id": dispatch_plan.dispatch_id,
+                        "evidence_id": evidence.evidence_id,
+                    },
+                )
+            else:
+                coordinator.release_dispatch(task_id)
+                record["status"] = decision.status
+                if self.store is not None:
+                    self.store.upsert_task(record)
+                return {
+                    "status": "FAILED",
+                    "run_id": run_id,
+                    "failed_task_id": task_id,
+                    "reason": decision.reason,
                 }
 
         return {

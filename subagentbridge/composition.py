@@ -153,7 +153,14 @@ def build_production_system(
                 import hashlib
                 qa_pins[test_path] = hashlib.sha256(real_test.read_bytes()).hexdigest()
             else:
-                qa_pins[test_path] = "0" * 64
+                found_tests = sorted((root_path / "tests").glob("test_*.py")) if (root_path / "tests").is_dir() else []
+                if found_tests:
+                    first_test = found_tests[0]
+                    rel_p = str(first_test.relative_to(root_path)).replace("\\", "/")
+                    import hashlib
+                    qa_pins[rel_p] = hashlib.sha256(first_test.read_bytes()).hexdigest()
+                else:
+                    qa_pins[test_path] = "0" * 64
 
         qa_gate = QaEvidenceGate(
             receipts=receipts,

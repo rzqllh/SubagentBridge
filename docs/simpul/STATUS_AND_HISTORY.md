@@ -24,10 +24,13 @@ At [workflow run 39866552770](https://github.com/rzqllh/SubagentBridge/actions/r
 - **2026-10-23:** Public branding/documentation updated to Simpul; technical `subagentbridge` identifiers retained. Documentation-only commits caused doc-contract CI regression. At snapshot: 12 open PR #3 review threads (8 P1, 4 P2) and 3 open PR #2 threads (1 P1, 2 P2). New docs must not obscure these blockers.
 
 ## Facts vs claims
-
-**Present in candidate source:** typed contracts, SQLite audit/budget/messaging modules, approval broker, policy, local skill registry, tool executor utilities, QA evidence gate, coordinator module and stdio MCP facade.
-
-**Not demonstrated as a production full journey:** `server.submit_goal` only creates in-memory `SUBMITTED` run and `PENDING` task; composition root returns `coordinator=None`. No proven real PM→Dev→QA dispatch, restart recovery of MCP run/task maps, safe same-user broker boundary, or authenticated live 9Router completion. A reported HTTP 401 prevented the earlier live completion attempt. Real Antigravity MCP flow requires a clean independently observed smoke.
+ 
+**Verified in Post-Release Corrective Audit:**
+- Supervised native execution lifecycle executes end-to-end (`submit_goal -> PM DAG -> Dev dispatch -> ToolExecutor -> trustworthy receipts -> independent QA`) with genuine exit codes, real `check_clean_checkout` (`git status --porcelain`), and qualifying QA test execution.
+- MCP stdio server operates as a genuine subprocess under actual Python MCP client (`tests/test_antigravity_mcp_subprocess_client.py`) and passes dedicated Antigravity Host Acceptance (`tests/test_antigravity_host_acceptance.py`).
+- 9Router authenticated local completion proven with real loopback HTTP request/response evidence (HTTP 401 on missing/invalid token, HTTP 200 on valid token, D-02 fail-closed enforcement).
+- Remote pinned checkout (E23) verified against GitHub remote at exact commit SHA `953c0f5`.
+- Real same-OS-user red-team assessment (`tests/test_same_user_adversarial_assessment.py`) proved same-UID processes cannot be isolated by OS permissions alone; E18 is formally classified as **BLOCKED**, retaining `AUTONOMY: OFF` under `RISK_ACCEPTED_SAME_IDENTITY`.
 
 ## Evidence status vocabulary
 

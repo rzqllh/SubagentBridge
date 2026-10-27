@@ -15,7 +15,7 @@ class TestOnlyFakeDeveloper:
         return p
 
 
-class TestOnlyFakeQaVerifier:
+class FakeQaVerifierHelper:
     def __init__(self, registry, principal):
         self.registry, self.principal = registry, principal
 
@@ -48,7 +48,7 @@ class SkeletonTests(unittest.TestCase):
             p=TestOnlyFakeDeveloper().write_patch(Path(root))
             self.assertEqual(p.read_text(),'proposed')
         self.aggregate.process_succeeded(self.dispatch.dispatch_id,'tree-abc')
-        v=TestOnlyFakeQaVerifier(self.receipts,self.qa).verify_receipts(
+        v=FakeQaVerifierHelper(self.receipts,self.qa).verify_receipts(
             self.evidence(),'task',self.dispatch.dispatch_id,'tree-abc')
         self.aggregate.qa_verified(self.qa,v)
         self.aggregate.mark_verified(self.qa)
@@ -79,7 +79,7 @@ class SkeletonTests(unittest.TestCase):
 
     def test_tree_change_revokes_verification(self):
         self.aggregate.process_succeeded(self.dispatch.dispatch_id,'tree-abc')
-        v=TestOnlyFakeQaVerifier(self.receipts,self.qa).verify_receipts(
+        v=FakeQaVerifierHelper(self.receipts,self.qa).verify_receipts(
             self.evidence(),'task',self.dispatch.dispatch_id,'tree-abc')
         self.aggregate.qa_verified(self.qa,v)
         self.aggregate.mark_verified(self.qa)
