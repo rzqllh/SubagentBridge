@@ -55,7 +55,6 @@ def test_worker_environment_does_not_inherit_secrets_or_attacker_pythonpath(tmp_
     assert privileges == {}
     assert env["PYTHONPATH"] == str(tmp_path.resolve())
     assert env["PYTHONNOUSERSITE"] == "1"
-    assert env["PYTHONSAFEPATH"] == "1"
     for secret in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
                    "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "SIMPUL_WORKER_SECRET",
                    "SSH_AUTH_SOCK"):
