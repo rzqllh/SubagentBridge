@@ -12,6 +12,10 @@ v1.1.2 removes unauthenticated MCP self-approval. v1.1.3 expires all pending/app
 
 The broker remains **in-process and credential-gated**; fixture token tests do not demonstrate independently authenticated human identity, durable identity policy, or hostile-worker OS isolation. See [Enterprise Readiness](../ENTERPRISE_READINESS.md).
 
+## Post-merge operator authentication limitation
+
+Merged PR #33 introduces `operator_boundary.py`, but constructing `OperatorIdentity(role="security_admin", channel="webauthn", auth_token="any-value")` is **not** authentication. No OIDC issuer/JWKS, WebAuthn challenge verification, trusted operator UI, or production runtime wiring has been demonstrated. The corrective branch makes operator decisions default-deny unless a trusted host supplies a verifier; its unit-test checker is explicitly a test fixture. Existing command dispatch still uses the older `TrustedApprovalAuthority`. Issue #22 remains OPEN.
+
 ## Trust boundaries
 
 - An MCP tool caller or model output is **not** an authenticated human.
@@ -33,6 +37,6 @@ E18 same-user co-process confinement remains blocked. Per-host external CLI inte
 
 For responsibly disclosed security concerns, use GitHub's repository security reporting feature if enabled or open an issue without posting secrets, exploit credentials or sensitive logs.
 
-## Important v1.1.2 approval-gate correction (candidate)
+## Historical v1.1.2 approval-gate correction (published)
 
 The `v1.1.1` MCP implementation inadvertently exposed `approve_command` as a model-callable tool and did not authenticate the supplied `auth_token`. The security-corrective v1.1.2 branch removes this tool from the MCP registry and turns the legacy Python function into unconditional `BLOCKED`. Privileged commands cannot be approved by a model, chat string, or caller-provided token. A genuine independently authenticated human-operator approval channel remains to be implemented. This is a deliberate fail-closed compatibility restriction and must not be treated as full E18 or enterprise approval assurance. See [Issue #22](https://github.com/rzqllh/SubagentBridge/issues/22).
