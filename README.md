@@ -28,7 +28,7 @@
 | Model transport | D-02 local literal IP loopback with verified Bearer token authentication |
 | Verification | 23 October Post-Release Corrective Audit: 330 passed, 4 skipped across Windows test discovery |
 | Confinement Status | E18 is **BLOCKED**; standard OS user permissions cannot isolate workers under same UID; autonomy strictly forbidden |
-| Host Integration | Antigravity MCP stdio subprocess communication and host acceptance fully verified |
+| Host Integration | MCP stdio protocol/subprocess tests verified; independently validate real Antigravity/Codex/Claude host integration for each deployment |
 
 See [project status](docs/SIMPUL_STATUS.md), [acceptance gates](docs/simpul/ACCEPTANCE_GATES.md), and [security limitations](docs/COMPATIBILITY_LIMITATIONS.md).
 

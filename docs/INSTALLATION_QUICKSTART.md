@@ -1,10 +1,14 @@
-> **Latest release:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) — `861f040dc12c33da681331e454ef41299f2dc70b` (27 October 2026); all earlier candidate-era notes below are historical. E18 remains BLOCKED.
+# Simpul — Installation and Quick Start
 
-> **Release verified — 27 October 2026:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is published from merge commit `a29f0d98957651e482fbae989a906bb09873f329`; candidate CI ran 4/4 successfully, release workflow [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542) succeeded. Historical candidate notes below are not current status. E18 remains BLOCKED (RISK_ACCEPTED_SAME_IDENTITY).
+**Current published release:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) (27 October 2026). The Python package and executable namespace remain `subagentbridge`.
 
-## Install the verified v1.1.1 release (27 October 2026)
+## Requirements
 
-[Release v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) is published from commit `861f040dc12c33da681331e454ef41299f2dc70b`. For reproducibility, clone the repository and checkout `v1.1.1` explicitly instead of a moving branch. For native SQLite upgrades, preserve generated logical pre-migration backups and verify their integrity before cleanup. Python 3.11–3.13 supported; the MCP stdio entrypoint remains `python -m subagentbridge.server`. E18 OS isolation remains BLOCKED.
+- Python **3.11–3.13**; CI exercises 3.11 and 3.13 on Windows and Linux. Python 3.12 is declared compatible but is not in the current four-job CI matrix.
+- Git, a compatible MCP stdio client, and permission to create a virtual environment.
+- A dedicated, least-privileged user and explicitly trusted workspace. **Do not** expose untrusted credentials or assume workers are OS-sandboxed.
+
+## Windows PowerShell
 
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
@@ -15,43 +19,57 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m subagentbridge.server
 ```
 
-
-## Prerequisites
-
-Git and Python 3.11–3.13; Windows is the primary intended host, while Linux is also a supported development target. Python 3.12 is declared in package metadata, but the cited 21 October CI evidence specifically covers 3.11 and 3.13 on Windows and Linux. Host integration is not independently certified.
-
-## Windows (PowerShell)
-
-```powershell
-git clone https://github.com/rzqllh/SubagentBridge.git
-cd SubagentBridge
-git checkout 44d70b5f05836a867978dcadb166bd1122943a3b
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
-.\.venv\Scripts\python.exe -m subagentbridge.server
-```
-
 ## Linux
 
 ```bash
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout 44d70b5f05836a867978dcadb166bd1122943a3b
+git checkout v1.1.1
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
-.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 .venv/bin/python -m subagentbridge.server
 ```
 
-The commit is a reviewed **source snapshot**, not a published release. Dependency installation may access PyPI; review dependencies and your network policy before installing. `python -m subagentbridge.server` starts the MCP **stdio** transport; a compatible host must manage it. See [MCP integration](MCP_INTEGRATION.md).
+The last command starts an **MCP stdio server** and waits for a client. It is not a terminal chatbot; avoid writing diagnostics to MCP protocol stdout.
 
-## Verification expectations
+## MCP client configuration
 
-The 21 October candidate report records 250 discovered tests (246 pass, 4 skipped) and an E01–E21 unit-test matrix. This is historic evidence from a previously reported environment, **not a guarantee that this checkout will reproduce the count or pass independently today**. Always retain the actual command output and report skipped tests. Local unittest results do not validate E22/E23, same-user E18 containment, live Antigravity execution or live authenticated 9Router calls.
+Set your MCP client's `command` to the virtual environment Python (absolute path recommended) and its `args` to `["-m", "subagentbridge.server"]`. A generic example:
 
-## What starting the server actually does
+```json
+{
+  "mcpServers": {
+    "subagentbridge": {
+      "command": "python",
+      "args": ["-m", "subagentbridge.server"]
+    }
+  }
+}
+```
 
-`submit_goal` registers a run and a pending task in this candidate; it does not automatically execute a PM/Developer/QA workflow. The `_runs`/`_tasks` tracking tables are memory-resident. The default composition root may create SQLite files when invoked, but a persistent audit record is not proof of MCP run-state recovery.
+Each IDE/host uses its own configuration format; an adapter capability declaration is not proof of acceptance testing against every external host version. See [MCP Integration](MCP_INTEGRATION.md) and [public getting started](public/GETTING_STARTED.md).
 
-Do not add credentials to `mcp_config.example.json` or enable unattended worker modifications. See [Configuration](CONFIGURATION.md) and [Current status](SIMPUL_STATUS.md).
+## Verify locally
+
+With the virtual environment active:
+
+```bash
+python -m pytest tests artifacts/bootstrap/v3_1/tests -rs
+python -m ruff check --select E4,E7,E9,F subagentbridge
+python -m mypy --ignore-missing-imports --check-untyped-defs subagentbridge
+python -m bandit -q -r -ll subagentbridge
+```
+
+The last three commands require development-only `ruff`, `mypy` and `bandit`; see [Release Readiness](simpul/RELEASE_READINESS.md) for pinned versions.
+
+## Existing SQLite databases
+
+Before migration, keep a separate known-good database backup. The v2 migration creates a logical SQLite pre-migration snapshot (including committed WAL contents) and retains non-colliding older backups. Verify backup readability and `PRAGMA integrity_check` before decommissioning data. SQL `orca_*` compatibility views are read-only; Python compatibility aliases remain. See [migration](public/MIGRATION.md).
+
+## Security and operating mode
+
+`AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL` remain mandatory. A model tool call is not proof of authenticated human approval. E18 same-user OS confinement is **BLOCKED**: worker subprocesses are not independent privilege sandboxes. This release is supervised runtime-hardening, not enterprise isolation certification. See [Security](public/SECURITY.md) and [Enterprise Readiness](ENTERPRISE_READINESS.md).
+
+## Source and attribution
+
+The release tag is immutable for reproducibility; [GitHub Release v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) includes Python wheel, source distribution, and SHA256 manifest. Cindy's Apache-2.0 architectural research attribution is preserved in [Third-party Notices](../THIRD_PARTY_NOTICES.md). Simpul is an independent Python implementation.
