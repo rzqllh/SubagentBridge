@@ -7,6 +7,30 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — C00–C07 orchestration parity candidate
+
+**Not yet published.** The existing `v1.0.0` tag does not contain these changes.
+
+### Added
+- Native Simpul `AgentTeam`, `AgentSession`, `TeamStore`, `TeamManager` contracts.
+- Real child-process worker IPC, lead/worker coordination, durable SQLite dispatch queue, inter-agent channels, priority/steering/cancellation, auditable handoff evidence and checkpointed recovery.
+- Capability-aware adapters for native and other supported host categories, with unsupported integrations reported explicitly.
+- Per-worker Git worktrees with safe ownership and dirty-worktree protection.
+- Migration from legacy `orca_*` SQL tables to `simpul_*`, logical pre-migration backup and compatibility read-only views.
+
+### Fixed
+- Dispatch deduplication is now serialized across connections; failed/cancelled retries cannot mask an active successor.
+- Cancellation cannot overwrite a terminal `COMPLETED` task.
+- Migration preserves each optional queue column individually and uses parameterized SQL rather than interpolated query text.
+- Recovery refuses orphaned live worker PIDs without owned IPC; human command approvals pause rather than self-approve.
+- Handoff evidence is checked for real file existence, hashes, execution receipts and transaction-safe uniqueness.
+
+### Security & compatibility
+- `AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`, and the E18 same-user isolation limitation remain.
+- Older `Orca*` Python aliases and read-only compatibility views remain temporarily supported.
+- Cindy attribution is retained in `THIRD_PARTY_NOTICES.md`. This is an independent implementation, not a fork.
+- The publication version and release date must be inserted **only after** merged-main CI, code review and release authorization.
+
 ## [1.0.0] - 2026-10-23
 
 ### Production Release
