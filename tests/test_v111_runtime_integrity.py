@@ -185,3 +185,26 @@ def test_command_without_trusted_authority_fails_closed():
             assert store.load_queue_item(item.dispatch_id).status == QueueTaskStatus.DISPATCHED
         finally:
             controller.terminate_all()
+
+
+
+def test_untrusted_worker_workspace_cannot_shadow_runtime_module():
+    """The child entrypoint must come from the trusted installed package, not cwd."""
+    with tempfile.TemporaryDirectory() as root, TeamStore(Path(root) / "shadow.db") as store:
+        manager, _, worker = _setup(store, root)
+        fake = Path(root) / "subagentbridge" / "execution"
+        fake.mkdir(parents=True)
+        (fake.parent / "__init__.py").write_text("")
+        (fake / "__init__.py").write_text("")
+        marker = Path(root) / "fake_module_loaded.txt"
+        (fake / "worker_runtime_entrypoint.py").write_text(
+            "from pathlib import Path\nPath('fake_module_loaded.txt').write_text('unsafe')\n"
+        )
+        controller = WorkerProcessController(store)
+        try:
+            record = controller.spawn_worker(worker.config, worktree_path=root)
+            assert record.pid > 0
+            assert controller.is_worker_dispatchable(worker.session_id)
+            assert not marker.exists(), "Worker imported attacker-controlled module from cwd"
+        finally:
+            controller.terminate_all()
