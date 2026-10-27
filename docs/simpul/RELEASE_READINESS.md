@@ -1,12 +1,12 @@
 # Simpul — Release Readiness and Operator Guide
 
-> Status: **release candidate**, not a published release. The last published baseline recorded in this repository is **v1.0.0**. Do not install a proposed version/tag until it actually exists.
+> **Published release:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) · 27 October 2026 · main merge SHA `a29f0d98957651e482fbae989a906bb09873f329` · release workflow 40440851542 SUCCESS. E18 remains BLOCKED.
 
 ## Scope
 
 The C00–C07 stacked change set brings native Python Lead/Worker orchestration contracts, independent OS worker processes and JSONL IPC, local capability-checked harness routing, durable dispatch and priority queue, authenticated message/handoff checks, checkpoint recovery, Git worktree ownership, and migration from legacy `orca_*` tables to `simpul_*`.
 
-The full development history is in [the parity audit](SIMPUL_CINDY_PARITY_REPORT.md). The current PR stack is [#9](https://github.com/rzqllh/SubagentBridge/pull/9) through [#16](https://github.com/rzqllh/SubagentBridge/pull/16), each stacked on its predecessor. This is **not the same as eight independently merged releases**.
+The full development history is in [the parity audit](SIMPUL_CINDY_PARITY_REPORT.md). PRs #9–#12 were merged individually; PR #16 integrated C04–C07, while #13–#15 were closed as superseded after confirming their commits were included.
 
 ## Install v1.1.0
 
@@ -19,11 +19,11 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m subagentbridge.server
 ```
 
-The last command launches an MCP stdio server, **not** a chat UI. On macOS/Linux use `.venv/bin/python`. For the C07 candidate, use the **explicit review branch** `simpul/15-native-naming` instead of the published tag; it may still change before release.
+The last command launches an MCP stdio server, **not** a chat UI. On macOS/Linux use `.venv/bin/python`. For supported reproduction, use the immutable published `v1.1.0` tag rather than a historical feature branch.
 
 ## Developer verification gate
 
-Run in a checked-out candidate commit:
+Run in a checked-out release commit:
 
 ```bash
 python -m pip install -e .
