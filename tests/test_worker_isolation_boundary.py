@@ -106,6 +106,7 @@ def test_dedicated_identity_fails_closed_without_privileged_os_support(tmp_path)
 def test_dedicated_identity_rejects_worker_writable_supervisor_code(tmp_path):
     root = tmp_path / "runtime_code"
     root.mkdir()
+    (root / "subagentbridge").mkdir()
     root.chmod(0o777)
     try:
         with pytest.raises(PermissionError, match="trusted runtime"):
@@ -119,3 +120,31 @@ def test_inherited_mode_is_never_advertised_as_dedicated_identity(tmp_path):
         ctrl = WorkerProcessController(store)
         assert ctrl.isolation_policy.mode == "inherited"
         assert ctrl.isolation_policy.uid is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX permission bits")
+def test_dedicated_identity_rejects_writable_python_module_in_protected_directory(tmp_path):
+    runtime = tmp_path / "runtime_code"
+    package = runtime / "subagentbridge"
+    package.mkdir(parents=True)
+    module = package / "worker_runtime_entrypoint.py"
+    module.write_text("# trusted entrypoint\\n")
+    module.chmod(0o666)
+    try:
+        with pytest.raises(PermissionError, match="trusted runtime"):
+            _verify_trusted_code_path(runtime, worker_uid=65431, worker_gid=65431)
+    finally:
+        module.chmod(0o644)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX permission bits")
+def test_dedicated_identity_rejects_symlinked_python_module(tmp_path):
+    runtime = tmp_path / "runtime_code"
+    package = runtime / "subagentbridge"
+    package.mkdir(parents=True)
+    external = tmp_path / "outside.py"
+    external.write_text("# attacker-controlled\\n")
+    linked = package / "worker_runtime_entrypoint.py"
+    linked.symlink_to(external)
+    with pytest.raises(PermissionError, match="symlink"):
+        _verify_trusted_code_path(runtime, worker_uid=65431, worker_gid=65431)
