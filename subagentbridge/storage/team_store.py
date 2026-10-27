@@ -415,70 +415,52 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
             # 3. Queue (Comparing ALL columns: dispatch_id, team_id, from_session_id, to_session_id, task_id, payload_json, status, dedup_key, priority, steering_json, created_at, updated_at)
             if "orca_queue" in active_legacy_tables:
                 cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_queue)").fetchall()}
-                if "dedup_key" in cols and "priority" in cols and "steering_json" in cols:
-                    conflicts = conn.execute("""
-                        SELECT o.dispatch_id FROM orca_queue o
-                        INNER JOIN simpul_queue s ON o.dispatch_id = s.dispatch_id
-                        WHERE o.team_id != s.team_id
-                           OR o.from_session_id != s.from_session_id
-                           OR o.to_session_id != s.to_session_id
-                           OR o.task_id != s.task_id
-                           OR o.payload_json != s.payload_json
-                           OR o.status != s.status
-                           OR ((o.dedup_key IS NULL AND s.dedup_key IS NOT NULL) OR (o.dedup_key IS NOT NULL AND s.dedup_key IS NULL) OR o.dedup_key != s.dedup_key)
-                           OR o.priority != s.priority
-                           OR o.steering_json != s.steering_json
-                           OR ABS(o.created_at - s.created_at) > 0.001
-                           OR ABS(o.updated_at - s.updated_at) > 0.001
-                    """).fetchall()
-                else:
-                    conflicts = conn.execute("""
-                        SELECT o.dispatch_id FROM orca_queue o
-                        INNER JOIN simpul_queue s ON o.dispatch_id = s.dispatch_id
-                        WHERE o.team_id != s.team_id
-                           OR o.from_session_id != s.from_session_id
-                           OR o.to_session_id != s.to_session_id
-                           OR o.task_id != s.task_id
-                           OR o.payload_json != s.payload_json
-                           OR o.status != s.status
-                           OR s.dedup_key IS NOT NULL
-                           OR s.priority != 0
-                           OR s.steering_json != '[]'
-                           OR ABS(o.created_at - s.created_at) > 0.001
-                           OR ABS(o.updated_at - s.updated_at) > 0.001
-                    """).fetchall()
+                # Each optional column is handled independently; never discard a populated
+                # legacy value merely because a different optional column is missing.
+                optional_defaults = {
+                    "dedup_key": "NULL",
+                    "priority": "0",
+                    "steering_json": "'[]'",
+                }
+                def legacy_expr(column: str) -> str:
+                    return f"o.{column}" if column in cols else optional_defaults[column]
+
+                dedup_expr = legacy_expr("dedup_key")
+                priority_expr = legacy_expr("priority")
+                steering_expr = legacy_expr("steering_json")
+                conflicts = conn.execute(f"""
+                    SELECT o.dispatch_id FROM orca_queue o
+                    INNER JOIN simpul_queue s ON o.dispatch_id = s.dispatch_id
+                    WHERE o.team_id IS NOT s.team_id
+                       OR o.from_session_id IS NOT s.from_session_id
+                       OR o.to_session_id IS NOT s.to_session_id
+                       OR o.task_id IS NOT s.task_id
+                       OR o.payload_json IS NOT s.payload_json
+                       OR o.status IS NOT s.status
+                       OR ({dedup_expr}) IS NOT s.dedup_key
+                       OR ({priority_expr}) IS NOT s.priority
+                       OR ({steering_expr}) IS NOT s.steering_json
+                       OR o.created_at IS NOT s.created_at
+                       OR o.updated_at IS NOT s.updated_at
+                """).fetchall()
                 if conflicts:
                     raise MigrationConflictError(
                         f"Conflicting primary keys between legacy orca_queue and simpul_queue: {[c[0] for c in conflicts]}"
                     )
-                if "dedup_key" in cols and "priority" in cols and "steering_json" in cols:
-                    conn.execute("""
-                        INSERT INTO simpul_queue (
-                            dispatch_id, team_id, from_session_id, to_session_id,
-                            task_id, payload_json, status, dedup_key, priority, steering_json,
-                            created_at, updated_at
-                        )
-                        SELECT
-                            dispatch_id, team_id, from_session_id, to_session_id,
-                            task_id, payload_json, status, dedup_key, priority, steering_json,
-                            created_at, updated_at
-                        FROM orca_queue
-                        WHERE dispatch_id NOT IN (SELECT dispatch_id FROM simpul_queue)
-                    """)
-                else:
-                    conn.execute("""
-                        INSERT INTO simpul_queue (
-                            dispatch_id, team_id, from_session_id, to_session_id,
-                            task_id, payload_json, status, dedup_key, priority, steering_json,
-                            created_at, updated_at
-                        )
-                        SELECT
-                            dispatch_id, team_id, from_session_id, to_session_id,
-                            task_id, payload_json, status, NULL, 0, '[]',
-                            created_at, updated_at
-                        FROM orca_queue
-                        WHERE dispatch_id NOT IN (SELECT dispatch_id FROM simpul_queue)
-                    """)
+                conn.execute(f"""
+                    INSERT INTO simpul_queue (
+                        dispatch_id, team_id, from_session_id, to_session_id,
+                        task_id, payload_json, status, dedup_key, priority, steering_json,
+                        created_at, updated_at
+                    )
+                    SELECT
+                        o.dispatch_id, o.team_id, o.from_session_id, o.to_session_id,
+                        o.task_id, o.payload_json, o.status,
+                        {dedup_expr}, {priority_expr}, {steering_expr},
+                        o.created_at, o.updated_at
+                    FROM orca_queue o
+                    WHERE o.dispatch_id NOT IN (SELECT dispatch_id FROM simpul_queue)
+                """)
                 for r in conn.execute("SELECT * FROM orca_queue").fetchall():
                     nr = conn.execute("SELECT * FROM simpul_queue WHERE dispatch_id = ?", (r["dispatch_id"],)).fetchone()
                     if nr is None:
