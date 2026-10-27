@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from subagentbridge.approval.broker import ApprovalBroker, ApprovalState
-from subagentbridge.approval.trusted_authority import TrustedApprovalAuthority
+from subagentbridge.approval.trusted_authority import TrustedApprovalAuthority, verify_ticket_binding
 
 
 def test_broker_rejects_expired_pending_action(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,3 +57,37 @@ def test_expired_action_cannot_become_valid_again(monkeypatch: pytest.MonkeyPatc
     assert broker.get_action(action.action_id).state == ApprovalState.EXPIRED
     monkeypatch.setattr("subagentbridge.approval.broker.time.time", lambda: now)
     assert broker.get_action(action.action_id).state == ApprovalState.EXPIRED
+
+
+@pytest.mark.parametrize("ttl", [0, -1, 61, float("inf"), float("nan"), "long"])
+def test_invalid_ticket_ttl_does_not_consume_human_approval(ttl) -> None:
+    broker = ApprovalBroker()
+    authority = TrustedApprovalAuthority(broker)
+    command = ["echo", "safe"]
+    action = authority.request_command_approval("worker", "task", command, "workspace")
+    authority.approve_by_human(action.action_id, auth_token=broker._secret)
+    approved, reason, ticket = authority.issue_execution_ticket(
+        action.action_id, "worker", "task", command, "workspace", "session", ttl_seconds=ttl,
+    )
+    assert not approved and ticket is None and "TTL" in reason
+    assert not authority.is_action_consumed(action.action_id)
+    approved, _, ticket = authority.issue_execution_ticket(
+        action.action_id, "worker", "task", command, "workspace", "session",
+    )
+    assert approved and ticket is not None
+
+
+@pytest.mark.parametrize("expiry", ["future", None, float("nan"), float("inf"), -1])
+def test_malformed_ticket_expiry_rejected_without_exception(expiry) -> None:
+    ticket = {
+        "action_id": "action",
+        "worker_id": "worker",
+        "task_id": "task",
+        "resource": "resource",
+        "expiry": expiry,
+        "signature": "bad",
+    }
+    approved, reason = verify_ticket_binding(
+        ticket, "session", "worker", "task", ["echo"], "workspace",
+    )
+    assert not approved and "DENIED" in reason
