@@ -231,3 +231,48 @@ def test_c08_atomic_resume_approval_uses_real_configured_workspace():
             assert resumed["status"] == "COMPLETED", resumed
         finally:
             controller.terminate_all()
+
+
+def test_c08_all_step_approvals_precede_any_side_effect(tmp_path):
+    db = tmp_path / "step_approvals.db"
+    with TeamStore(db) as store:
+        manager = TeamManager(store)
+        team = manager.create_team(lead_session_id="lead-all", title="Preflight Team")
+        worker_id = "worker-all"
+        manager.register_worker(WorkerConfig(
+            worker_id=worker_id, team_id=team.team_id, role="worker",
+            harness="native", working_dir=str(tmp_path),
+        ))
+        count = tmp_path / "side_effect_count.txt"
+        code = (
+            "from pathlib import Path; p=Path('side_effect_count.txt'); "
+            "n=int(p.read_text()) if p.exists() else 0; p.write_text(str(n+1))"
+        )
+        task = manager.dispatch_task(
+            team.lead_session_id, worker_id, "two-command-steps",
+            {"steps": [
+                {"name": "one", "command": [sys.executable, "-c", code]},
+                {"name": "two", "command": [sys.executable, "-c", code]},
+            ]},
+        )
+        broker = ApprovalBroker()
+        auth = TrustedApprovalAuthority(broker)
+        ctrl = WorkerProcessController(store, approval_authority=auth)
+        try:
+            first = resume_task_from_checkpoint(task.dispatch_id, store, ctrl, auth)
+            assert first["status"] == "BLOCKED"
+            assert len(first["pending_actions"]) == 2
+            assert not count.exists()
+            one = first["pending_actions"][0]["action_id"]
+            two = first["pending_actions"][1]["action_id"]
+            auth.approve_by_human(one, auth_token=broker._secret)
+            second = resume_task_from_checkpoint(task.dispatch_id, store, ctrl, auth)
+            assert second["status"] == "BLOCKED"
+            assert second["pending_actions"][0]["action_id"] == two
+            assert not count.exists(), "No command may execute until all command approvals are ready"
+            auth.approve_by_human(two, auth_token=broker._secret)
+            third = resume_task_from_checkpoint(task.dispatch_id, store, ctrl, auth)
+            assert third["status"] == "COMPLETED", third
+            assert count.read_text() == "2", "Each authorized command must execute once"
+        finally:
+            ctrl.terminate_all()
