@@ -131,7 +131,10 @@ class IndependentOperatorApprovalBoundary:
         assert self.db_path is not None
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("PRAGMA journal_mode=WAL")
+            # Concurrent Windows SQLite startups may raise SQLITE_BUSY while
+            # another process switches journal mode. Journal mode is a
+            # performance choice, not a prerequisite for serialized DDL.
+            # A single-owner deployment may enable WAL separately.
             # Serialize schema inspection + ALTER across independent processes.
             # The test for a missing column must run under the same write lock
             # as the migration itself, or concurrent startups can both ALTER.
