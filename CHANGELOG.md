@@ -7,6 +7,16 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v1.1.2 P0 approval-gate security correction
+
+This security patch is not published until CI/review and a SHA-gated release pass.
+
+- Remove `approve_command` from the MCP tool registry: model callers cannot grant their own privileged command approval.
+- Preserve the legacy Python callable only as an unconditional `BLOCKED` response; `approver` and `auth_token` parameters are never trusted.
+- Add tests that enumerate actual registered MCP tools, inspect decorator removal, and prove forged approvals cannot mutate pending states or the execution gate.
+- Breaking safety restriction: privileged commands remain BLOCKED until an independently authenticated operator approval channel is deployed. **Do not substitute chat/model text for human identity.**
+- E18 worker OS confinement and production out-of-band human approval remain BLOCKED; this patch is an emergency default-deny correction, not enterprise certification.
+
 ## [1.1.1] - 2026-10-27
 
 **Published:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) from `861f040dc12c33da681331e454ef41299f2dc70b`. PR #19 CI 4/4 PASS, release workflow 40444832484 SUCCESS. Contains wheel, source archive and SHA256 checksum manifest. Independent enterprise security certification remains outstanding.
