@@ -1,10 +1,14 @@
 # Security and responsible operation
 
-**Status: [published v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1), supervised operation; not an isolation or enterprise-security certification.** E18 same-user confinement is `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
+**Status: [published v1.1.2](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.2), supervised operation; not an isolation or enterprise-security certification.** E18 same-user confinement is `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
 
 ## v1.1.1 security correction
 
 The child process now uses Python `-P` safe-path, so a workspace-local `subagentbridge` module cannot replace the real worker entrypoint. SQLite reads/writes share an internal lock. Recovery preflights all human approvals and refuses stale or consumed execution tickets; unverified side effects require operator reconciliation. These controls are defense in depth and **do not remove E18**.
+
+## Worker environment hardening (v1.1.3 candidate)
+
+The supervised worker entrypoint is launched with Python `-P` and an environment allowlist excluding inherited provider API keys, GitHub/cloud tokens, arbitrary `PYTHONPATH` and local user-site packages. Explicitly approved test commands can still import modules from their assigned workspace. On Linux an optional `dedicated_user` launch uses non-root UID/GID and verifies the actual child identity; it fails closed without OS support. There is no equivalent Windows isolation backend yet and E18 stays **BLOCKED**. See [Worker Identity Boundary](../WORKER_ISOLATION.md).
 
 ## Trust boundaries
 
@@ -27,6 +31,6 @@ E18 same-user co-process confinement remains blocked. Per-host external CLI inte
 
 For responsibly disclosed security concerns, use GitHub's repository security reporting feature if enabled or open an issue without posting secrets, exploit credentials or sensitive logs.
 
-## Important v1.1.2 approval-gate correction (candidate)
+## Important v1.1.2 approval-gate correction (published)
 
-The `v1.1.1` MCP implementation inadvertently exposed `approve_command` as a model-callable tool and did not authenticate the supplied `auth_token`. The security-corrective v1.1.2 branch removes this tool from the MCP registry and turns the legacy Python function into unconditional `BLOCKED`. Privileged commands cannot be approved by a model, chat string, or caller-provided token. A genuine independently authenticated human-operator approval channel remains to be implemented. This is a deliberate fail-closed compatibility restriction and must not be treated as full E18 or enterprise approval assurance. See [Issue #22](https://github.com/rzqllh/SubagentBridge/issues/22).
+The `v1.1.1` MCP implementation inadvertently exposed `approve_command` as a model-callable tool and did not authenticate the supplied `auth_token`. The published security-corrective v1.1.2 release removes this tool from the MCP registry and turns the legacy Python function into unconditional `BLOCKED`. Privileged commands cannot be approved by a model, chat string, or caller-provided token. A genuine independently authenticated human-operator approval channel remains to be implemented. This is a deliberate fail-closed compatibility restriction and must not be treated as full E18 or enterprise approval assurance. See [Issue #22](https://github.com/rzqllh/SubagentBridge/issues/22).
