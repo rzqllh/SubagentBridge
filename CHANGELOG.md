@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.1.1 supervised runtime integrity patch candidate
 
-This patch is **not yet published**. Release only after exact-head CI and independent review.
+The release is valid only after exact-head CI, independent review and SHA-gated publication; verify the published tag and assets on GitHub.
 
 ### Fixed
 - Serialize all SQLite TeamStore writers sharing one connection; acquire an immediate database write reservation before cross-process resume claims.
