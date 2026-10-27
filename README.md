@@ -2,7 +2,7 @@
 
 **Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
-> **Publication status:** Simpul v1.0.0 was published on GitHub Releases (commit `953c0f5`, tag `v1.0.0`). The C07 stack targets **v1.1.0**; check [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) for the actually published version. All roadmap phases P00–P06 (PRs #2–#8) are merged into `main`. Current governance strictly operates under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`. In accordance with genuine adversarial evidence (E18), same-user OS process isolation is recognized as a documented residual boundary (`RISK_ACCEPTED_SAME_IDENTITY`), not OS-level containerization. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md).
+> **Published:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) on 27 October 2026 (merge commit `a29f0d9`), superseding the `v1.0.0` baseline. Artifacts: wheel, source archive, SHA256 manifest.
 
 ## What is implemented in Simpul
 
@@ -32,14 +32,14 @@
 
 See [project status](docs/SIMPUL_STATUS.md), [acceptance gates](docs/simpul/ACCEPTANCE_GATES.md), and [security limitations](docs/COMPATIBILITY_LIMITATIONS.md).
 
-## Quick start — candidate branch
+## Quick start — v1.1.0
 
 Requires Python 3.11–3.13 and Git. Example for PowerShell:
 
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.0.0
+git checkout v1.1.0
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
@@ -71,9 +71,9 @@ The display name is **Simpul**, but the MCP tool namespace, Python module, distr
 
 The legacy session inspection endpoints remain available in this candidate, but legacy raw-runner execution paths are locked down. `approve_action` and `apply_code_fix` are **not model-callable MCP tools**; their compatibility functions deny privileged operations.
 
-## Multi-worker coordination (C01–C07 candidate)
+## Multi-worker coordination (C01–C07, v1.1.0)
 
-The current [C07 pull request](https://github.com/rzqllh/SubagentBridge/pull/16) extends the released v1.0.0 baseline. **These changes are not part of the v1.0.0 tag**. Consult [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) to verify whether v1.1.0 has been published.
+The [C07 integration PR #16](https://github.com/rzqllh/SubagentBridge/pull/16) merged into `main`, and these capabilities are **included in v1.1.0 but not v1.0.0**.
 
 Simpul now maintains separate Lead and Worker session identities, OS subprocess IPC, a durable SQLite task queue, step-indexed checkpoints, authenticated message and artifact handoffs, per-worker Git worktrees, and capability-checked host adapters. The core is Python-based and does not require running Cindy.
 
@@ -84,6 +84,8 @@ Operational boundaries remain important: host capability declaration is not proo
 For architecture and the exact implementation/verification distinction see [core parity report](docs/simpul/SIMPUL_CINDY_PARITY_REPORT.md) and [release readiness](docs/simpul/RELEASE_READINESS.md). Source attribution to [Cindy](https://github.com/makecindy/cindy) is maintained in [third-party notices](THIRD_PARTY_NOTICES.md). Simpul is independently implemented and is not a Cindy fork.
 
 ## Documentation
+
+- **[Start here: public user documentation](docs/public/README.md)** — installation, MCP integration, architecture, migration, security and release notes.
 
 - [Developer roadmap, backlog, acceptance gates and next-session handoff](docs/simpul/README.md)
 

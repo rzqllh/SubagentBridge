@@ -1,10 +1,12 @@
+> **Release verified — 27 October 2026:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is published from merge commit `a29f0d98957651e482fbae989a906bb09873f329`; candidate CI ran 4/4 successfully, release workflow [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542) succeeded. Historical candidate notes below are not current status. E18 remains BLOCKED (RISK_ACCEPTED_SAME_IDENTITY).
+
 ## Candidate versus published installation (27 October 2026)
 
 `v1.0.0` is the last documented published release. Install it from its tag for stable reproduction. C00–C07 features are still reviewed on `simpul/15-native-naming`; they are **not available on v1.0.0**. To test that candidate, explicitly checkout that branch and run the four-platform CI-equivalent commands shown in [release readiness](simpul/RELEASE_READINESS.md). Back up any legacy SQLite database before testing an upgrade; migration creates a logical pre-migration backup. The MCP stdio entrypoint remains `python -m subagentbridge.server`, not a standalone chat application.
 
 # Simpul — Installation and candidate quick start
 
-Simpul is the public name. The Python distribution and import package remain `subagentbridge`. **The default GitHub branch still contains an older baseline**; this guide applies to the PR #3 development candidate and is not a general-availability release guide.
+Simpul is the public name. The Python distribution and import package remain `subagentbridge`. **The default GitHub branch now contains v1.1.0 code**; this guide applies to the PR #3 development candidate and is not a general-availability release guide.
 
 ## Prerequisites
 

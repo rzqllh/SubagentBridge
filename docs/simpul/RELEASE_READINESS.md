@@ -1,29 +1,29 @@
 # Simpul — Release Readiness and Operator Guide
 
-> Status: **release candidate**, not a published release. The last published baseline recorded in this repository is **v1.0.0**. Do not install a proposed version/tag until it actually exists.
+> **Published release:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) · 27 October 2026 · main merge SHA `a29f0d98957651e482fbae989a906bb09873f329` · release workflow 40440851542 SUCCESS. E18 remains BLOCKED.
 
 ## Scope
 
 The C00–C07 stacked change set brings native Python Lead/Worker orchestration contracts, independent OS worker processes and JSONL IPC, local capability-checked harness routing, durable dispatch and priority queue, authenticated message/handoff checks, checkpoint recovery, Git worktree ownership, and migration from legacy `orca_*` tables to `simpul_*`.
 
-The full development history is in [the parity audit](SIMPUL_CINDY_PARITY_REPORT.md). The current PR stack is [#9](https://github.com/rzqllh/SubagentBridge/pull/9) through [#16](https://github.com/rzqllh/SubagentBridge/pull/16), each stacked on its predecessor. This is **not the same as eight independently merged releases**.
+The full development history is in [the parity audit](SIMPUL_CINDY_PARITY_REPORT.md). PRs #9–#12 were merged individually; PR #16 integrated C04–C07, while #13–#15 were closed as superseded after confirming their commits were included.
 
-## Install the published baseline
+## Install v1.1.0
 
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.0.0
+git checkout v1.1.0
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m subagentbridge.server
 ```
 
-The last command launches an MCP stdio server, **not** a chat UI. On macOS/Linux use `.venv/bin/python`. For the C07 candidate, use the **explicit review branch** `simpul/15-native-naming` instead of the published tag; it may still change before release.
+The last command launches an MCP stdio server, **not** a chat UI. On macOS/Linux use `.venv/bin/python`. For supported reproduction, use the immutable published `v1.1.0` tag rather than a historical feature branch.
 
 ## Developer verification gate
 
-Run in a checked-out candidate commit:
+Run in a checked-out release commit:
 
 ```bash
 python -m pip install -e .
@@ -56,3 +56,12 @@ Before deleting local worktrees, inspect their individual Git status, ignored fi
 ## Attribution
 
 Simpul is independently implemented in Python and does not bundle Cindy source code. Cindy's architecture was studied for its multi-worker coordination patterns. See [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md), including the upstream project and pinned research revision. The release must preserve the notice. 
+
+## Publication receipt
+
+- GitHub Release [v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0), published 27 October 2026.
+- Main merge commit: `a29f0d98957651e482fbae989a906bb09873f329`.
+- Candidate CI: 40440192101, 4/4 PASS; tested tree SHA `36551fe8faa25bd4c2886db0c41c8d4cab7bd39c` matches main merge tree.
+- Release workflow: [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542), SUCCESS.
+- Assets: wheel, source archive, SHA256SUMS.txt.
+- E18 same-user OS confinement remains BLOCKED (accepted risk), not a kernel sandbox.
