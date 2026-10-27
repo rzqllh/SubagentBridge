@@ -1,6 +1,6 @@
 # Simpul — project status and evidence boundaries
 
-**Updated:** 27 October 2026. Simpul 1.1.0 is a supervised beta release candidate until an actual GitHub release/tag is published. The existing published baseline is v1.0.0. See [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases).
+**Updated:** 27 October 2026. Simpul 1.1.0 follows a supervised beta release track. Publication is determined by the matching GitHub tag/release, not by this status file. The existing historical baseline is v1.0.0. See [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases).
 
 ## Implemented candidate capabilities
 
