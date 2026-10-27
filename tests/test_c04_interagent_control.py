@@ -630,3 +630,59 @@ def test_c04_contract_only_handoff_keeps_separate_status(store_and_service):
     assert reloaded_item.status == QueueTaskStatus.RUNNING
     assert reloaded_item.status != QueueTaskStatus.COMPLETED
 
+
+
+def test_c04_dedup_retry_never_returns_failed_attempt(store_and_service):
+    store, service = store_and_service
+    team, worker, _ = _setup_lead_and_workers(service)
+    kwargs = dict(from_session_id=team.lead_session_id, to_session_id=worker.session_id,
+                  task_id="retry", payload={"instruction": "retry"}, dedup_key="retry-key")
+    original = service.dispatch_task(**kwargs)
+    service.cancel_task(team.lead_session_id, original.dispatch_id)
+    retry = service.dispatch_task(**kwargs)
+    again = service.dispatch_task(**kwargs)
+    assert original.dispatch_id != retry.dispatch_id
+    assert retry.dispatch_id == again.dispatch_id
+    assert len([x for x in store.list_queue_by_team(team.team_id)
+                if x.status == QueueTaskStatus.PENDING]) == 1
+
+
+def test_c04_cancel_completed_task_preserves_terminal_result(store_and_service):
+    store, service = store_and_service
+    team, worker, _ = _setup_lead_and_workers(service)
+    item = service.dispatch_task(team.lead_session_id, worker.session_id, "finished", {})
+    service.update_queue_status(item.dispatch_id, QueueTaskStatus.COMPLETED)
+    with pytest.raises(ValueError, match="cannot be cancelled"):
+        service.cancel_task(team.lead_session_id, item.dispatch_id)
+    assert store.load_queue_item(item.dispatch_id).status == QueueTaskStatus.COMPLETED
+
+
+def test_c04_cross_connection_atomic_dedup(store_and_service):
+    import threading
+    store, service = store_and_service
+    team, worker, _ = _setup_lead_and_workers(service)
+    db_path = store.db_path
+    gate = threading.Barrier(2)
+    outcome = []
+    errors = []
+
+    def submit():
+        try:
+            with TeamStore(db_path) as other:
+                manager = TeamManager(store=other)
+                gate.wait(timeout=10)
+                result = manager.dispatch_task(
+                    team.lead_session_id, worker.session_id,
+                    "parallel", {"instruction": "bounded"}, dedup_key="parallel-key",
+                )
+                outcome.append(result.dispatch_id)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=submit) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+    assert not errors, errors
+    assert len(outcome) == 2 and len(set(outcome)) == 1
