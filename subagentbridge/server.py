@@ -580,52 +580,20 @@ def reject_approval(action_id: str, reason: str = "") -> dict:
     return {"status": "REJECTED", "action_id": action_id, "reason": reason}
 
 
-@mcp.tool()
 def approve_command(action_id: str, approver: str = "human", auth_token: str | None = None) -> dict:
-    """Approve a gated command action for exact single-use execution through trusted human approval path."""
-    target_action = None
-    for a in _pending.list_pending():
-        if a.action_id == action_id:
-            target_action = a
-            break
+    """Deprecated NON-MCP callable: fail closed until trusted operator approval exists.
 
-    if target_action is None:
-        return {"status": "ERROR", "error": f"action {action_id!r} not found or already resolved"}
-
-    raw_call: dict[str, object] = target_action.raw_tool_call if isinstance(target_action.raw_tool_call, dict) else {}
-    raw_fp = raw_call.get("fingerprint")
-    if not isinstance(raw_fp, str) or not raw_fp:
-        return {"status": "ERROR", "error": "action lacks command fingerprint"}
-    fp: str = raw_fp
-
-    try:
-        target_action.resolved = True
-        target_action.approved = True
-        target_action.reason = f"Approved by {approver}"
-        if action_id in _pending._resolved_events:
-            _pending._resolved_events[action_id].set()
-        _pending._persist(target_action)
-    except Exception as exc:
-        return {"status": "ERROR", "error": str(exc)}
-
-    _approved_commands[fp] = {
-        "action_id": action_id,
-        "run_id": target_action.session_id,
-        "task_id": raw_call.get("task_id"),
-        "workspace_path": raw_call.get("path"),
-        "command": raw_call.get("command_list"),
-        "fingerprint": fp,
-        "consumed": False,
-        "approved_at": time.time(),
-        "approver": approver,
-    }
+    Historical implementations ignored `auth_token` and wrote into
+    `_approved_commands` directly. Never interpret a model-provided identity
+    string or argument as independently authenticated human authorization.
+    The function remains importable only for explicit legacy-denial semantics.
+    """
     return {
-        "status": "APPROVED",
+        "status": "BLOCKED",
         "action_id": action_id,
-        "fingerprint": fp,
-        "run_id": target_action.session_id,
+        "reason": "Human approval must originate outside model-callable MCP tools; "
+                  "independent operator authentication is not configured",
     }
-
 
 @mcp.tool()
 def cancel_run(run_id: str, reason: str = "") -> dict:
