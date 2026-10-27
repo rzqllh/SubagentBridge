@@ -18,7 +18,10 @@ import threading
 import time
 from typing import Any
 
-import psutil
+try:
+    import psutil
+except ImportError:
+    psutil = None  # type: ignore[assignment]
 
 from subagentbridge.approval.trusted_authority import verify_ticket_binding
 from subagentbridge.domain.team_contracts import WorkerConfig
@@ -37,7 +40,7 @@ def main() -> int:
     parser.add_argument("--role", default="worker", help="Worker role")
     parser.add_argument("--budget-tokens", type=int, default=None, help="Token budget ceiling")
     parser.add_argument("--tokens-consumed", type=int, default=0, help="Initial tokens consumed")
-    parser.add_argument("--session-secret", default=None, help="Session secret for ticket verification")
+    parser.add_argument("--session-secret", default=None, help="Deprecated session secret argument")
     parser.add_argument("--worktree-path", default=None, help="Assigned worktree directory path")
     parser.add_argument("--harness", default="native", help="Configured worker harness adapter")
     args = parser.parse_args()
@@ -52,11 +55,13 @@ def main() -> int:
 
     # Process identity metadata
     current_pid = os.getpid()
-    try:
-        proc_identity = psutil.Process(current_pid)
-        proc_create_time = proc_identity.create_time()
-    except Exception:
-        proc_create_time = time.time()
+    proc_create_time = time.time()
+    if psutil is not None:
+        try:
+            proc_identity = psutil.Process(current_pid)
+            proc_create_time = proc_identity.create_time()
+        except Exception:
+            pass
 
     # 1. Send INIT event with real OS PID and process creation timestamp
     send_event({
@@ -68,6 +73,17 @@ def main() -> int:
         "create_time": proc_create_time,
         "timestamp": time.time(),
     })
+
+    # Read INIT_ACK with session secret securely over private stdin pipe
+    if not session_secret:
+        try:
+            ack_line = sys.stdin.readline()
+            if ack_line:
+                ack_data = json.loads(ack_line.strip())
+                if isinstance(ack_data, dict) and ack_data.get("command") == "INIT_ACK":
+                    session_secret = str(ack_data.get("session_secret", ""))
+        except Exception:
+            pass
 
     # Internal state tracking
     total_tokens_consumed: int = int(args.tokens_consumed or 0)

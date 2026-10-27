@@ -29,20 +29,57 @@ _WORKER_ENV_KEYS = (
 class WorkerIsolationPolicy:
     """Configured by the trusted supervisor, never from task or MCP input."""
 
-    mode: str = "inherited"  # 'inherited' or 'dedicated_user'
+    mode: str = "inherited"  # 'inherited', 'dedicated_user', or 'windows_job_restricted'
     uid: int | None = None
     gid: int | None = None
 
     def __post_init__(self) -> None:
-        if self.mode not in ("inherited", "dedicated_user"):
+        if self.mode not in ("inherited", "dedicated_user", "windows_job_restricted"):
             raise ValueError(f"Unsupported isolation mode: {self.mode!r}")
-        if self.mode == "inherited" and (self.uid is not None or self.gid is not None):
-            raise ValueError("UID/GID cannot be set when isolation mode is inherited")
+        if self.mode in ("inherited", "windows_job_restricted") and (self.uid is not None or self.gid is not None):
+            raise ValueError("UID/GID cannot be set when isolation mode is not dedicated_user")
         if self.mode == "dedicated_user" and (
             isinstance(self.uid, bool) or not isinstance(self.uid, int) or self.uid <= 0
             or isinstance(self.gid, bool) or not isinstance(self.gid, int) or self.gid <= 0
         ):
             raise ValueError("Dedicated-user isolation requires explicit positive non-root UID/GID")
+
+
+def assign_windows_job_restrictions(process_handle: int) -> int:
+    """Create a Windows Job Object with UI restrictions and assign process handle."""
+    if sys.platform != "win32":
+        raise RuntimeError("Windows Job Object is only available on win32")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+
+    class JOBOBJECT_BASIC_UI_RESTRICTIONS(ctypes.Structure):
+        _fields_ = [("UIRestrictionsClass", wintypes.DWORD)]
+
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise OSError("CreateJobObjectW failed")
+
+    # Limit UI handles, clipboard read/write, global atoms, desktop, exit windows
+    ui_flags = 0x00000001 | 0x00000002 | 0x00000004 | 0x00000020 | 0x00000040 | 0x00000080
+    ui_limits = JOBOBJECT_BASIC_UI_RESTRICTIONS(ui_flags)
+    res = kernel32.SetInformationJobObject(
+        job,
+        4,  # JobObjectBasicUIRestrictions
+        ctypes.byref(ui_limits),
+        ctypes.sizeof(ui_limits),
+    )
+    if not res:
+        kernel32.CloseHandle(job)
+        raise OSError("SetInformationJobObject for JobObjectBasicUIRestrictions failed")
+
+    assign_res = kernel32.AssignProcessToJobObject(job, wintypes.HANDLE(process_handle))
+    if not assign_res:
+        kernel32.CloseHandle(job)
+        raise OSError("AssignProcessToJobObject failed")
+
+    return int(job)
 
 
 def _verify_trusted_code_path(code_root: Path, worker_uid: int, worker_gid: int) -> None:
@@ -87,7 +124,13 @@ def worker_launch_configuration(
     # Never accept a model/user-injected PYTHONPATH. Only trusted package path.
     env["PYTHONPATH"] = str(code_root.resolve(strict=True))
     env["PYTHONNOUSERSITE"] = "1"
+
     if policy.mode == "inherited":
+        return env, {}
+
+    if policy.mode == "windows_job_restricted":
+        if sys.platform != "win32":
+            raise RuntimeError("WINDOWS_JOB_RESTRICTED_UNAVAILABLE: Windows Job Object is only available on win32")
         return env, {}
 
     if not sys.platform.startswith("linux") or not hasattr(os, "geteuid"):

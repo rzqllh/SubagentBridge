@@ -161,3 +161,55 @@ def test_dedicated_identity_rejects_missing_workspace_without_spawning(tmp_path)
         with pytest.raises(FileNotFoundError):
             controller.spawn_worker(cfg)
         assert not controller._processes
+
+
+def test_spawned_worker_command_line_does_not_expose_session_secret(tmp_path):
+    """P0 requirement: session secrets must not appear in process command line arguments."""
+    with TeamStore(tmp_path / "state.db") as store:
+        authority = TrustedApprovalAuthority()
+        controller = WorkerProcessController(store, approval_authority=authority)
+        cfg = WorkerConfig(
+            worker_id="cmd-secret-test",
+            team_id="cmd-team",
+            role="worker",
+            working_dir=str(tmp_path),
+        )
+        record = controller.spawn_worker(cfg)
+        try:
+            assert record.session_secret, "Session secret must be generated for IPC"
+            proc = controller._processes.get(cfg.worker_id)
+            assert proc is not None
+            # Inspect command line via psutil
+            import psutil
+
+            child_proc = psutil.Process(proc.pid)
+            cmdline = child_proc.cmdline()
+            # Verify --session-secret and the secret token itself are completely absent from argv
+            assert "--session-secret" not in cmdline
+            assert record.session_secret not in " ".join(cmdline)
+        finally:
+            controller.terminate_all()
+
+
+def test_windows_job_restricted_mode_applied_or_fails_closed(tmp_path):
+    """Windows Job Object isolation fails closed on unsupported hosts and applies restrictions on Windows."""
+    policy = WorkerIsolationPolicy(mode="windows_job_restricted")
+    if sys.platform == "win32":
+        with TeamStore(tmp_path / "state.db") as store:
+            controller = WorkerProcessController(store, isolation_policy=policy)
+            cfg = WorkerConfig(
+                worker_id="job-test",
+                team_id="job-team",
+                role="worker",
+                working_dir=str(tmp_path),
+            )
+            record = controller.spawn_worker(cfg)
+            try:
+                assert record.isolation_mode == "windows_job_restricted"
+                assert cfg.worker_id in controller._job_handles
+            finally:
+                controller.terminate_all()
+    else:
+        with pytest.raises(RuntimeError, match="Windows Job Object"):
+            worker_launch_configuration(policy, code_root=tmp_path)
+

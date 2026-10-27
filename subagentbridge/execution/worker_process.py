@@ -138,6 +138,7 @@ class WorkerProcessController:
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._readers: dict[str, TimedStreamReader] = {}
         self._records: dict[str, WorkerProcessRecord] = {}
+        self._job_handles: dict[str, Any] = {}
 
     def spawn_worker(
         self,
@@ -159,8 +160,6 @@ class WorkerProcessController:
             config.team_id,
             "--role",
             config.role,
-            "--session-secret",
-            session_secret,
         ]
         if config.budget_tokens is not None:
             cmd.extend(["--budget-tokens", str(config.budget_tokens)])
@@ -207,6 +206,19 @@ class WorkerProcessController:
             proc.kill()
             raise RuntimeError(f"failed to initialize IPC pipes for worker {config.worker_id}")
 
+        if self.isolation_policy.mode == "windows_job_restricted":
+            if sys.platform != "win32":
+                kill_process_tree(proc.pid)
+                raise RuntimeError("WINDOWS_JOB_RESTRICTED_UNAVAILABLE: mode is only supported on Windows")
+            try:
+                from .worker_isolation import assign_windows_job_restrictions
+
+                job_handle = assign_windows_job_restrictions(int(proc._handle))  # type: ignore[attr-defined]
+                self._job_handles[config.worker_id] = job_handle
+            except Exception as exc:
+                kill_process_tree(proc.pid)
+                raise RuntimeError(f"Failed to apply Windows Job Object restrictions: {exc}") from exc
+
         reader = TimedStreamReader(proc.stdout)
         self._readers[config.worker_id] = reader
 
@@ -238,6 +250,15 @@ class WorkerProcessController:
             ):
                 kill_process_tree(proc.pid)
                 raise PermissionError("Dedicated worker OS UID/GID verification failed")
+
+        # Send INIT_ACK with session secret over private stdin pipe (no CLI exposure)
+        try:
+            proc.stdin.write(json.dumps({"command": "INIT_ACK", "session_secret": session_secret}) + "\n")
+            proc.stdin.flush()
+        except OSError as exc:
+            kill_process_tree(proc.pid)
+            raise RuntimeError(f"failed to send INIT_ACK to worker {config.worker_id}: {exc}") from exc
+
         create_time = float(init_event.get("create_time", 0.0))
         if create_time <= 0:
             try:
@@ -553,6 +574,13 @@ class WorkerProcessController:
 
         self._processes.pop(worker_id, None)
         self._readers.pop(worker_id, None)
+        job_handle = self._job_handles.pop(worker_id, None)
+        if job_handle:
+            try:
+                import ctypes
+                ctypes.windll.kernel32.CloseHandle(job_handle)
+            except Exception:
+                pass
         return True
 
     def terminate_all(self, timeout: float = 3.0) -> None:
