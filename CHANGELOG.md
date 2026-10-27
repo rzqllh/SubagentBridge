@@ -7,6 +7,24 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v1.1.1 supervised runtime integrity patch candidate
+
+The release is valid only after exact-head CI, independent review and SHA-gated publication; verify the published tag and assets on GitHub.
+
+### Fixed
+- Serialize all SQLite TeamStore readers and writers sharing one connection; acquire an immediate database write reservation before cross-process resume claims.
+- Require the effective worker workspace to match both execution-ticket and human-approval action binding, including workers without Git worktrees.
+- Obtain approval for all outstanding multi-step commands before beginning any side effects; reuse pending actions but request a new human approval after a ticket is consumed.
+- Fail closed when previously observed side effects cannot be reconciled against a trusted checkpoint instead of promising exactly-once execution.
+- Launch child workers with Python `-P` safe-path, preventing workspace-local `subagentbridge` package shadowing of the trusted worker entrypoint.
+- Add runtime regressions for concurrent readers/writers, competing resume claims, workspace binding, approval renewal, preflight, default-deny and malicious package shadowing.
+
+### Security limitations
+- E18 same-user process confinement remains **BLOCKED**. Worker subprocesses are not an adversarial OS security sandbox.
+- Interactive production out-of-band human authentication is **not** implemented by the test broker.
+- The candidate should be treated as a **supervised patch**, not independently enterprise security-certified.
+- Cindy reference attribution and compatibility semantics remain unchanged.
+
 ## [1.1.0] - 2026-10-27
 
 **Published:** [v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) from `a29f0d9`. The `v1.0.0` tag does not contain these changes.

@@ -85,6 +85,8 @@ For architecture and the exact implementation/verification distinction see [core
 
 ## Documentation
 
+- [Enterprise production readiness and unresolved security gates](docs/ENTERPRISE_READINESS.md) — explicit PASS/PARTIAL/BLOCKED criteria; v1.1.1 is a supervised corrective patch, not certification.
+
 - **[Start here: public user documentation](docs/public/README.md)** — installation, MCP integration, architecture, migration, security and release notes.
 
 - [Developer roadmap, backlog, acceptance gates and next-session handoff](docs/simpul/README.md)

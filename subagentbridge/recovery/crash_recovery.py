@@ -187,6 +187,51 @@ def resume_task_from_checkpoint(
     steps = payload.get("steps")
     expected_artifacts = payload.get("expected_artifacts", [])
 
+    # Approval must be resolved by the exact authority attached to this IPC controller.
+    # All command approvals are obtained BEFORE running any multi-step side effects.
+    def preflight_command_approvals(
+        command_steps: list[tuple[str, dict[str, Any]]],
+    ) -> dict[str, Any] | None:
+        if not command_steps:
+            return None
+        if approval_authority is None or approval_authority is not controller.approval_authority:
+            item.status = QueueTaskStatus.DISPATCHED
+            store.save_queue_item(item)
+            return {"status": "RECOVERY_BLOCKED", "reason": "Trusted attached human approval authority required",
+                    "dispatch_id": item.dispatch_id}
+        pending: list[dict[str, str]] = []
+        for command_task_id, owner in command_steps:
+            cmd = owner["command"]
+            command_list = [str(x) for x in cmd] if isinstance(cmd, list) else [str(cmd)]
+            action_id = owner.get("approval_action_id")
+            action = approval_authority.broker.get_action(action_id) if action_id else None
+            if action is None or (
+                action.state.value == "APPROVED" and approval_authority.is_action_consumed(action.action_id)
+            ):
+                action = approval_authority.request_command_approval(
+                    worker_id=worker_id,
+                    task_id=command_task_id,
+                    command=command_list,
+                    workspace_path=worktree_path or "",
+                )
+                owner["approval_action_id"] = action.action_id
+            if action.state.value == "BLOCKED":
+                pending.append({"task_id": command_task_id, "action_id": action.action_id})
+            elif action.state.value != "APPROVED":
+                item.status = QueueTaskStatus.DISPATCHED
+                item.updated_at = time.time()
+                store.save_queue_item(item)
+                return {"status": "RECOVERY_BLOCKED", "reason": f"Human approval {action.state.value}",
+                        "action_id": action.action_id, "dispatch_id": item.dispatch_id}
+        item.status = QueueTaskStatus.DISPATCHED if pending else QueueTaskStatus.RUNNING
+        item.updated_at = time.time()
+        store.save_queue_item(item)
+        if pending:
+            return {"status": "AWAITING_APPROVAL", "dispatch_id": item.dispatch_id,
+                    "action_id": pending[0]["action_id"], "pending_actions": pending,
+                    "completed_steps": completed_steps}
+        return None
+
     if is_valid_checkpoint and latest_cp and latest_cp.context_snapshot:
         candidate_completed = list(latest_cp.context_snapshot.get("completed_steps", []))
         # Validate task-specific evidence for every completed/skipped step
@@ -262,6 +307,29 @@ def resume_task_from_checkpoint(
                     "execution_classification": classification,
                 }
 
+        # Invalid or missing checkpoint identity must never silently replay an
+        # already observed successful side effect from an earlier failed resume.
+        if item.payload.get("_unverified_completed_steps") and not is_valid_checkpoint:
+            item.status = QueueTaskStatus.DISPATCHED
+            store.save_queue_item(item)
+            return {"status": "RECOVERY_BLOCKED", "reason": "Ambiguous side effects require operator reconciliation",
+                    "completed_steps": item.payload["_unverified_completed_steps"]}
+
+        if not isinstance(remaining_steps, list) or any(not isinstance(step, dict) for step in remaining_steps):
+            raise ValueError("Malformed multi-step payload")
+        seen_step_names: set[str] = set()
+        command_steps: list[tuple[str, dict[str, Any]]] = []
+        for step_index, step in enumerate(remaining_steps):
+            step_name = str(step.get("name", f"step_{step_index + 1}"))
+            if step_name in seen_step_names:
+                raise ValueError("Duplicate step name cannot safely bind approvals")
+            seen_step_names.add(step_name)
+            if "command" in step:
+                command_steps.append((f"{item.task_id}-{step_name}", step))
+        preflight = preflight_command_approvals(command_steps)
+        if preflight is not None:
+            return preflight
+
         item.status = QueueTaskStatus.RUNNING
         item.updated_at = time.time()
         store.save_queue_item(item)
@@ -276,43 +344,8 @@ def resume_task_from_checkpoint(
             if worktree_path:
                 step_payload["workspace_path"] = worktree_path
 
-            # Preserve a request across retries. Approval is a separate human action;
-            # issuing a BLOCKED action never authorizes immediate command execution.
-            if "command" in step_payload and approval_authority:
-                if approval_authority is not controller.approval_authority:
-                    item.status = QueueTaskStatus.FAILED
-                    store.save_queue_item(item)
-                    return {"status": "RECOVERY_BLOCKED",
-                            "reason": "Approval authority does not match the attached controller",
-                            "failed_step": step_name}
-                action_id = step.get("approval_action_id")
-                action = approval_authority.broker.get_action(action_id) if action_id else None
-                if action is None:
-                    action = approval_authority.request_command_approval(
-                        worker_id=worker_id,
-                        task_id=f"{item.task_id}-{step_name}",
-                        command=(step_payload["command"] if isinstance(step_payload["command"], list)
-                                 else [step_payload["command"]]),
-                        workspace_path=worktree_path or "",
-                    )
-                    step["approval_action_id"] = action.action_id
-                    action_id = action.action_id
-                    item.payload["steps"] = steps
-                if action.state.value == "BLOCKED":
-                    item.status = QueueTaskStatus.DISPATCHED
-                    item.updated_at = time.time()
-                    store.save_queue_item(item)
-                    return {"status": "AWAITING_APPROVAL", "dispatch_id": item.dispatch_id,
-                            "action_id": action_id, "pending_step": step_name,
-                            "completed_steps": completed_steps}
-                if action.state.value != "APPROVED":
-                    item.status = QueueTaskStatus.FAILED
-                    store.save_queue_item(item)
-                    return {"status": "RECOVERY_BLOCKED", "action_id": action_id,
-                            "reason": f"Approval action is {action.state.value}",
-                            "failed_step": step_name}
-                step_payload["approval_action_id"] = action_id
-
+            # Ticket is bound to this step and comes from the preflight-approved
+            # action. Do not request or self-approve a new action mid-execution.
             res = controller.dispatch_task_to_worker(worker_id, f"{item.task_id}-{step_name}", step_payload)
             if res.get("status") != "COMPLETED":
                 item.status = QueueTaskStatus.FAILED
@@ -326,6 +359,10 @@ def resume_task_from_checkpoint(
                 }
 
             completed_steps.append(step_name)
+            # If checkpoint evidence cannot be bound to a Git commit, a later
+            # retry must not automatically replay an observed side effect.
+            item.payload["_unverified_completed_steps"] = list(completed_steps)
+            store.save_queue_item(item)
             metered = int(res.get("metered_tokens", 0))
             current_tokens += metered
 
@@ -381,6 +418,12 @@ def resume_task_from_checkpoint(
             item.updated_at = time.time()
             store.save_queue_item(item)
             return {"status": "COMPLETED", "summary": "Task was completed before crash and verified against evidence"}
+
+    if "command" in item.payload:
+        preflight = preflight_command_approvals([(item.task_id, item.payload)])
+        if preflight is not None:
+            return preflight
+        payload = dict(item.payload)
 
     item.status = QueueTaskStatus.RUNNING
     item.updated_at = time.time()

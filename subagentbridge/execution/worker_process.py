@@ -141,9 +141,11 @@ class WorkerProcessController:
         branch_name: str | None = None,
     ) -> WorkerProcessRecord:
         """Spawns a real child OS process running worker_runtime_entrypoint."""
+        worktree_path = worktree_path or config.working_dir
         session_secret = token_hex(32)
         cmd = [
             sys.executable,
+            "-P",  # Python 3.11+ safe-path: never import shadow modules from worker cwd
             "-m",
             "subagentbridge.execution.worker_runtime_entrypoint",
             "--worker-id",

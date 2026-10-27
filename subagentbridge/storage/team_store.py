@@ -668,7 +668,8 @@ class TeamStore:
             migrate_schema(self._conn, db_path=self.db_path)
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def __enter__(self) -> TeamStore:
         return self
@@ -679,7 +680,7 @@ class TeamStore:
     # ---- Teams -----------------------------------------------------------
 
     def save_team(self, team: AgentTeam) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_teams (team_id, lead_session_id, title, created_at)
@@ -692,16 +693,17 @@ class TeamStore:
             )
 
     def load_team(self, team_id: str) -> AgentTeam | None:
-        cur = self._conn.execute("SELECT * FROM simpul_teams WHERE team_id = ?", (team_id,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        return AgentTeam(
-            team_id=row["team_id"],
-            lead_session_id=row["lead_session_id"],
-            title=row["title"],
-            created_at=row["created_at"],
-        )
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM simpul_teams WHERE team_id = ?", (team_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return AgentTeam(
+                team_id=row["team_id"],
+                lead_session_id=row["lead_session_id"],
+                title=row["title"],
+                created_at=row["created_at"],
+            )
 
     # ---- Sessions --------------------------------------------------------
 
@@ -721,7 +723,7 @@ class TeamStore:
             "process_create_time": session.config.process_create_time,
             "tokens_consumed": session.config.tokens_consumed,
         }
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_sessions (session_id, role, team_id, status, config_json, created_at, updated_at)
@@ -743,21 +745,24 @@ class TeamStore:
             )
 
     def load_session(self, session_id: str) -> AgentSession | None:
-        cur = self._conn.execute("SELECT * FROM simpul_sessions WHERE session_id = ?", (session_id,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        return self._row_to_session(row)
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM simpul_sessions WHERE session_id = ?", (session_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return self._row_to_session(row)
 
     def list_all_sessions(self) -> list[AgentSession]:
-        cur = self._conn.execute("SELECT * FROM simpul_sessions ORDER BY created_at ASC")
-        return [self._row_to_session(row) for row in cur.fetchall()]
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM simpul_sessions ORDER BY created_at ASC")
+            return [self._row_to_session(row) for row in cur.fetchall()]
 
     def list_sessions_by_team(self, team_id: str) -> list[AgentSession]:
-        cur = self._conn.execute(
-            "SELECT * FROM simpul_sessions WHERE team_id = ? ORDER BY created_at ASC", (team_id,)
-        )
-        return [self._row_to_session(row) for row in cur.fetchall()]
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM simpul_sessions WHERE team_id = ? ORDER BY created_at ASC", (team_id,)
+            )
+            return [self._row_to_session(row) for row in cur.fetchall()]
 
     def _row_to_session(self, row: sqlite3.Row) -> AgentSession:
         raw_cfg = json.loads(row["config_json"])
@@ -814,7 +819,7 @@ class TeamStore:
         )
 
     def save_queue_item(self, item: QueueItem) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_queue (
@@ -848,11 +853,12 @@ class TeamStore:
             )
 
     def load_queue_item(self, dispatch_id: str) -> QueueItem | None:
-        cur = self._conn.execute("SELECT * FROM simpul_queue WHERE dispatch_id = ?", (dispatch_id,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        return self._row_to_queue_item(row)
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM simpul_queue WHERE dispatch_id = ?", (dispatch_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return self._row_to_queue_item(row)
 
     def insert_queue_item_once(self, item: QueueItem) -> QueueItem:
         """Atomically deduplicate active/finished work across SQLite connections.
@@ -934,68 +940,79 @@ class TeamStore:
                 raise
 
     def find_queue_item_by_dedup(self, team_id: str, dedup_key: str) -> QueueItem | None:
-        cur = self._conn.execute(
-            """SELECT * FROM simpul_queue WHERE team_id = ? AND dedup_key = ?
-               AND status NOT IN (?, ?) ORDER BY created_at DESC LIMIT 1""",
-            (team_id, dedup_key, QueueTaskStatus.FAILED.value, QueueTaskStatus.CANCELLED.value)
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        return self._row_to_queue_item(row)
-
-    def fetch_next_pending_task(self, team_id: str, worker_id: str) -> QueueItem | None:
-        cur = self._conn.execute(
-            """
-            SELECT * FROM simpul_queue
-            WHERE team_id = ? AND to_session_id = ? AND status = ?
-            ORDER BY priority DESC, created_at ASC
-            LIMIT 1
-            """,
-            (team_id, worker_id, QueueTaskStatus.PENDING.value),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        return self._row_to_queue_item(row)
-
-    def list_queue_by_team(self, team_id: str) -> list[QueueItem]:
-        cur = self._conn.execute(
-            "SELECT * FROM simpul_queue WHERE team_id = ? ORDER BY created_at ASC", (team_id,)
-        )
-        return [self._row_to_queue_item(row) for row in cur.fetchall()]
-
-    def mark_task_resuming(self, dispatch_id: str) -> QueueItem:
-        with self._conn:
+        with self._lock:
             cur = self._conn.execute(
-                "SELECT * FROM simpul_queue WHERE dispatch_id = ?",
-                (dispatch_id,),
+                """SELECT * FROM simpul_queue WHERE team_id = ? AND dedup_key = ?
+                   AND status NOT IN (?, ?) ORDER BY created_at DESC LIMIT 1""",
+                (team_id, dedup_key, QueueTaskStatus.FAILED.value, QueueTaskStatus.CANCELLED.value)
             )
             row = cur.fetchone()
             if not row:
-                raise KeyError(f"queue item {dispatch_id!r} not found")
-            status = row["status"]
-            if status == QueueTaskStatus.RUNNING.value:
-                raise RuntimeError(f"Concurrent resume rejected: task {dispatch_id!r} is already RUNNING")
-            if status == QueueTaskStatus.COMPLETED.value:
-                raise RuntimeError(f"Duplicate resume rejected: task {dispatch_id!r} is already COMPLETED")
-            if status == QueueTaskStatus.CANCELLED.value:
-                raise RuntimeError(f"Resume rejected: task {dispatch_id!r} is CANCELLED")
+                return None
+            return self._row_to_queue_item(row)
 
-            now = time.time()
-            self._conn.execute(
-                "UPDATE simpul_queue SET status = ?, updated_at = ? WHERE dispatch_id = ?",
-                (QueueTaskStatus.RUNNING.value, now, dispatch_id),
+    def fetch_next_pending_task(self, team_id: str, worker_id: str) -> QueueItem | None:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM simpul_queue
+                WHERE team_id = ? AND to_session_id = ? AND status = ?
+                ORDER BY priority DESC, created_at ASC
+                LIMIT 1
+                """,
+                (team_id, worker_id, QueueTaskStatus.PENDING.value),
             )
-            item = self._row_to_queue_item(row)
-            item.status = QueueTaskStatus.RUNNING
-            item.updated_at = now
-            return item
+            row = cur.fetchone()
+            if not row:
+                return None
+            return self._row_to_queue_item(row)
+
+    def list_queue_by_team(self, team_id: str) -> list[QueueItem]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM simpul_queue WHERE team_id = ? ORDER BY created_at ASC", (team_id,)
+            )
+            return [self._row_to_queue_item(row) for row in cur.fetchall()]
+
+    def mark_task_resuming(self, dispatch_id: str) -> QueueItem:
+        """Claim one resume in a BEGIN IMMEDIATE transaction across OS processes."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM simpul_queue WHERE dispatch_id = ?", (dispatch_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"queue item {dispatch_id!r} not found")
+                status = row["status"]
+                if status == QueueTaskStatus.RUNNING.value:
+                    raise RuntimeError(f"Concurrent resume rejected: task {dispatch_id!r} is already RUNNING")
+                if status == QueueTaskStatus.COMPLETED.value:
+                    raise RuntimeError(f"Duplicate resume rejected: task {dispatch_id!r} is already COMPLETED")
+                if status == QueueTaskStatus.CANCELLED.value:
+                    raise RuntimeError(f"Resume rejected: task {dispatch_id!r} is CANCELLED")
+                now = time.time()
+                cur = self._conn.execute(
+                    """UPDATE simpul_queue SET status = ?, updated_at = ?
+                       WHERE dispatch_id = ? AND status = ?""",
+                    (QueueTaskStatus.RUNNING.value, now, dispatch_id, status),
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"Concurrent resume claim lost for {dispatch_id!r}")
+                self._conn.execute("COMMIT")
+                item = self._row_to_queue_item(row)
+                item.status = QueueTaskStatus.RUNNING
+                item.updated_at = now
+                return item
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
 
     # ---- Channel Messages ------------------------------------------------
 
     def save_channel_message(self, msg: ChannelMessage) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_channel_messages (
@@ -1017,34 +1034,35 @@ class TeamStore:
             )
 
     def list_channel_messages_by_team(self, team_id: str, limit: int = 100) -> list[ChannelMessage]:
-        cur = self._conn.execute(
-            """
-            SELECT * FROM simpul_channel_messages
-            WHERE team_id = ?
-            ORDER BY created_at ASC
-            LIMIT ?
-            """,
-            (team_id, limit),
-        )
-        messages = []
-        for row in cur.fetchall():
-            messages.append(
-                ChannelMessage(
-                    message_id=row["message_id"],
-                    team_id=row["team_id"],
-                    from_session_id=row["from_session_id"],
-                    to_session_id=row["to_session_id"],
-                    content=row["content"],
-                    role=row["role"],
-                    created_at=row["created_at"],
-                )
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM simpul_channel_messages
+                WHERE team_id = ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (team_id, limit),
             )
-        return messages
+            messages = []
+            for row in cur.fetchall():
+                messages.append(
+                    ChannelMessage(
+                        message_id=row["message_id"],
+                        team_id=row["team_id"],
+                        from_session_id=row["from_session_id"],
+                        to_session_id=row["to_session_id"],
+                        content=row["content"],
+                        role=row["role"],
+                        created_at=row["created_at"],
+                    )
+                )
+            return messages
 
     # ---- Worktrees -------------------------------------------------------
 
     def save_worktree(self, assignment: WorktreeAssignment) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_worktrees (worker_id, team_id, worktree_path, branch_name, created_at)
@@ -1063,22 +1081,23 @@ class TeamStore:
             )
 
     def load_worktree(self, worker_id: str) -> WorktreeAssignment | None:
-        cur = self._conn.execute("SELECT * FROM simpul_worktrees WHERE worker_id = ?", (worker_id,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        return WorktreeAssignment(
-            worker_id=row["worker_id"],
-            team_id=row["team_id"],
-            worktree_path=row["worktree_path"],
-            branch_name=row["branch_name"],
-            created_at=row["created_at"],
-        )
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM simpul_worktrees WHERE worker_id = ?", (worker_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return WorktreeAssignment(
+                worker_id=row["worker_id"],
+                team_id=row["team_id"],
+                worktree_path=row["worktree_path"],
+                branch_name=row["branch_name"],
+                created_at=row["created_at"],
+            )
 
     # ---- Handoffs --------------------------------------------------------
 
     def save_handoff(self, team_id: str, evidence: HandoffEvidence) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_handoffs (
@@ -1116,7 +1135,7 @@ class TeamStore:
 
         Guarantees transactional integrity and prevents duplicate finalization or replay across processes.
         """
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "SELECT status, to_session_id FROM simpul_queue WHERE dispatch_id = ?",
                 (evidence.dispatch_id,),
@@ -1175,33 +1194,34 @@ class TeamStore:
             )
 
     def list_handoffs_by_team(self, team_id: str) -> list[HandoffEvidence]:
-        cur = self._conn.execute(
-            "SELECT * FROM simpul_handoffs WHERE team_id = ? ORDER BY submitted_at ASC", (team_id,)
-        )
-        handoffs = []
-        for row in cur.fetchall():
-            handoffs.append(
-                HandoffEvidence(
-                    dispatch_id=row["dispatch_id"],
-                    from_worker_id=row["from_worker_id"],
-                    to_lead_id=row["to_lead_id"],
-                    status=row["status"],
-                    summary=row["summary"],
-                    artifacts=json.loads(row["artifacts_json"]),
-                    metrics=json.loads(row["metrics_json"]),
-                    submitted_at=row["submitted_at"],
-                )
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM simpul_handoffs WHERE team_id = ? ORDER BY submitted_at ASC", (team_id,)
             )
-        return handoffs
+            handoffs = []
+            for row in cur.fetchall():
+                handoffs.append(
+                    HandoffEvidence(
+                        dispatch_id=row["dispatch_id"],
+                        from_worker_id=row["from_worker_id"],
+                        to_lead_id=row["to_lead_id"],
+                        status=row["status"],
+                        summary=row["summary"],
+                        artifacts=json.loads(row["artifacts_json"]),
+                        metrics=json.loads(row["metrics_json"]),
+                        submitted_at=row["submitted_at"],
+                    )
+                )
+            return handoffs
 
     def delete_worktree(self, worker_id: str) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM simpul_worktrees WHERE worker_id = ?", (worker_id,))
 
     # ---- Checkpoints -----------------------------------------------------
 
     def save_checkpoint(self, checkpoint: WorkerCheckpoint) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_checkpoints (
@@ -1228,53 +1248,55 @@ class TeamStore:
             )
 
     def load_latest_checkpoint(self, worker_id: str) -> WorkerCheckpoint | None:
-        cur = self._conn.execute(
-            """
-            SELECT * FROM simpul_checkpoints
-            WHERE worker_id = ?
-            ORDER BY step_index DESC, created_at DESC
-            LIMIT 1
-            """,
-            (worker_id,),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        return WorkerCheckpoint(
-            checkpoint_id=row["checkpoint_id"],
-            worker_id=row["worker_id"],
-            team_id=row["team_id"],
-            step_index=row["step_index"],
-            state_summary=row["state_summary"],
-            tokens_consumed=row["tokens_consumed"],
-            context_snapshot=json.loads(row["context_json"]),
-            created_at=row["created_at"],
-        )
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM simpul_checkpoints
+                WHERE worker_id = ?
+                ORDER BY step_index DESC, created_at DESC
+                LIMIT 1
+                """,
+                (worker_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return WorkerCheckpoint(
+                checkpoint_id=row["checkpoint_id"],
+                worker_id=row["worker_id"],
+                team_id=row["team_id"],
+                step_index=row["step_index"],
+                state_summary=row["state_summary"],
+                tokens_consumed=row["tokens_consumed"],
+                context_snapshot=json.loads(row["context_json"]),
+                created_at=row["created_at"],
+            )
 
     def list_checkpoints(self, worker_id: str) -> list[WorkerCheckpoint]:
-        cur = self._conn.execute(
-            """
-            SELECT * FROM simpul_checkpoints
-            WHERE worker_id = ?
-            ORDER BY step_index ASC, created_at ASC
-            """,
-            (worker_id,),
-        )
-        cps = []
-        for row in cur.fetchall():
-            cps.append(
-                WorkerCheckpoint(
-                    checkpoint_id=row["checkpoint_id"],
-                    worker_id=row["worker_id"],
-                    team_id=row["team_id"],
-                    step_index=row["step_index"],
-                    state_summary=row["state_summary"],
-                    tokens_consumed=row["tokens_consumed"],
-                    context_snapshot=json.loads(row["context_json"]),
-                    created_at=row["created_at"],
-                )
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM simpul_checkpoints
+                WHERE worker_id = ?
+                ORDER BY step_index ASC, created_at ASC
+                """,
+                (worker_id,),
             )
-        return cps
+            cps = []
+            for row in cur.fetchall():
+                cps.append(
+                    WorkerCheckpoint(
+                        checkpoint_id=row["checkpoint_id"],
+                        worker_id=row["worker_id"],
+                        team_id=row["team_id"],
+                        step_index=row["step_index"],
+                        state_summary=row["state_summary"],
+                        tokens_consumed=row["tokens_consumed"],
+                        context_snapshot=json.loads(row["context_json"]),
+                        created_at=row["created_at"],
+                    )
+                )
+            return cps
 
 
 # Backward-compatibility alias
