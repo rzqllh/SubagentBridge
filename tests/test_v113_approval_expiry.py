@@ -1,6 +1,10 @@
 """Approval lifetime & renewal regressions; fixture secret is NOT human identity."""
 from __future__ import annotations
 
+import hashlib
+import hmac
+import time
+
 import pytest
 
 from subagentbridge.approval.broker import ApprovalBroker, ApprovalState
@@ -59,7 +63,7 @@ def test_expired_action_cannot_become_valid_again(monkeypatch: pytest.MonkeyPatc
     assert broker.get_action(action.action_id).state == ApprovalState.EXPIRED
 
 
-@pytest.mark.parametrize("ttl", [0, -1, 61, float("inf"), float("nan"), "long"])
+@pytest.mark.parametrize("ttl", [0, -1, 61, float("inf"), float("nan"), "long", 10**1000])
 def test_invalid_ticket_ttl_does_not_consume_human_approval(ttl) -> None:
     broker = ApprovalBroker()
     authority = TrustedApprovalAuthority(broker)
@@ -77,7 +81,7 @@ def test_invalid_ticket_ttl_does_not_consume_human_approval(ttl) -> None:
     assert approved and ticket is not None
 
 
-@pytest.mark.parametrize("expiry", ["future", None, float("nan"), float("inf"), -1])
+@pytest.mark.parametrize("expiry", ["future", None, float("nan"), float("inf"), -1, 10**1000, True])
 def test_malformed_ticket_expiry_rejected_without_exception(expiry) -> None:
     ticket = {
         "action_id": "action",
@@ -91,3 +95,35 @@ def test_malformed_ticket_expiry_rejected_without_exception(expiry) -> None:
         ticket, "session", "worker", "task", ["echo"], "workspace",
     )
     assert not approved and "DENIED" in reason
+
+
+def test_non_ascii_signature_does_not_crash_ticket_validation() -> None:
+    ticket = {
+        "action_id": "action",
+        "worker_id": "worker",
+        "task_id": "task",
+        "resource": "resource",
+        "expiry": time.time() + 30,
+        "signature": "é" * 64,
+    }
+    approved, reason = verify_ticket_binding(
+        ticket, "session", "worker", "task", ["echo"], "workspace",
+    )
+    assert not approved and "signature malformed" in reason
+
+
+def test_signed_far_future_ticket_denied_even_with_valid_hmac() -> None:
+    worker, task, secret, command, workspace = "worker", "task", "session", ["echo"], "workspace"
+    from subagentbridge.approval.trusted_authority import compute_action_resource
+
+    action_id = "action"
+    resource = compute_action_resource(command, workspace, task)
+    expiry = time.time() + 3600
+    payload = f"{action_id}:{worker}:{task}:{resource}:{expiry:.3f}"
+    signature = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    ticket = {
+        "action_id": action_id, "worker_id": worker, "task_id": task,
+        "resource": resource, "expiry": expiry, "signature": signature,
+    }
+    approved, reason = verify_ticket_binding(ticket, secret, worker, task, command, workspace)
+    assert not approved and "maximum TTL" in reason
