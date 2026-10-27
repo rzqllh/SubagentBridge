@@ -1,6 +1,10 @@
 # Security and responsible operation
 
-**Status: [published v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0), supervised operation; not an isolation or security certification.** E18 same-user confinement is `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
+**Status: [published v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1), supervised operation; not an isolation or enterprise-security certification.** E18 same-user confinement is `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
+
+## v1.1.1 security correction
+
+The child process now uses Python `-P` safe-path, so a workspace-local `subagentbridge` module cannot replace the real worker entrypoint. SQLite reads/writes share an internal lock. Recovery preflights all human approvals and refuses stale or consumed execution tickets; unverified side effects require operator reconciliation. These controls are defense in depth and **do not remove E18**.
 
 ## Trust boundaries
 

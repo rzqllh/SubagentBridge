@@ -7,9 +7,9 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.1.1 supervised runtime integrity patch candidate
+## [1.1.1] - 2026-10-27
 
-The release is valid only after exact-head CI, independent review and SHA-gated publication; verify the published tag and assets on GitHub.
+**Published:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) from `861f040dc12c33da681331e454ef41299f2dc70b`. PR #19 CI 4/4 PASS, release workflow 40444832484 SUCCESS. Contains wheel, source archive and SHA256 checksum manifest. Independent enterprise security certification remains outstanding.
 
 ### Fixed
 - Serialize all SQLite TeamStore readers and writers sharing one connection; acquire an immediate database write reservation before cross-process resume claims.

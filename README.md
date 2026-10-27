@@ -2,7 +2,7 @@
 
 **Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
-> **Published:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) on 27 October 2026 (merge commit `a29f0d9`), superseding the `v1.0.0` baseline. Artifacts: wheel, source archive, SHA256 manifest.
+> **Published:** [Simpul v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1), 27 October 2026, merge SHA `861f040dc12c33da681331e454ef41299f2dc70b`. 4/4 CI PASS; release workflow [40444832484](https://github.com/rzqllh/SubagentBridge/actions/runs/40444832484) SUCCESS. Supervised runtime patch, **not** enterprise OS isolation certification.
 
 ## What is implemented in Simpul
 
@@ -28,18 +28,18 @@
 | Model transport | D-02 local literal IP loopback with verified Bearer token authentication |
 | Verification | 23 October Post-Release Corrective Audit: 330 passed, 4 skipped across Windows test discovery |
 | Confinement Status | E18 is **BLOCKED**; standard OS user permissions cannot isolate workers under same UID; autonomy strictly forbidden |
-| Host Integration | Antigravity MCP stdio subprocess communication and host acceptance fully verified |
+| Host Integration | MCP stdio protocol/subprocess tests verified; independently validate real Antigravity/Codex/Claude host integration for each deployment |
 
 See [project status](docs/SIMPUL_STATUS.md), [acceptance gates](docs/simpul/ACCEPTANCE_GATES.md), and [security limitations](docs/COMPATIBILITY_LIMITATIONS.md).
 
-## Quick start — v1.1.0
+## Quick start — v1.1.1
 
 Requires Python 3.11–3.13 and Git. Example for PowerShell:
 
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.0
+git checkout v1.1.1
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"

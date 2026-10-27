@@ -1,48 +1,42 @@
-> **Release verified — 27 October 2026:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is published from merge commit `a29f0d98957651e482fbae989a906bb09873f329`; candidate CI ran 4/4 successfully, release workflow [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542) succeeded. Historical candidate notes below are not current status. E18 remains BLOCKED (RISK_ACCEPTED_SAME_IDENTITY).
+# Simpul — Project Status
 
-## 27 October 2026 — Active release candidate update
+**As of:** 27 October 2026  
+**Latest published:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1)  
+**Package:** `subagentbridge` · **Repository:** [rzqllh/SubagentBridge](https://github.com/rzqllh/SubagentBridge)  
+**Release merge SHA:** `861f040dc12c33da681331e454ef41299f2dc70b`  
+**Release workflow:** [40444832484](https://github.com/rzqllh/SubagentBridge/actions/runs/40444832484) — SUCCESS
 
-The C00–C07 PR stack (#9–#16) adds team sessions, real subprocess IPC, authenticated handoffs, SQLite state/checkpoints, worktree continuity, native Simpul names and Cindy-attributed migration compatibility. This work is being developed and verified on `simpul/15-native-naming`, **not yet published from `main`**. Follow the exact PR head SHA, GitHub Actions matrix and unresolved review threads before describing it as released. The existing `v1.0.0` tag remains the documented published baseline. Safety boundary: `AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`, E18 `BLOCKED`. See [release readiness](simpul/RELEASE_READINESS.md) and [parity report](simpul/SIMPUL_CINDY_PARITY_REPORT.md).
+## Delivery and verified scope
 
-# Simpul — Project status and evidence boundaries
+- **C00–C07:** Native Simpul/Lead/Worker contract and typed lifecycle, real worker OS processes and JSONL IPC, durable SQLite dispatch and message channels, checked artifact handoffs, checkpoint continuity, worktree ownership, and safe `orca_*` database migration with compatibility aliases. Architecture inspired by Cindy research; independently implemented.
+- **v1.1.1 runtime integrity corrections:** All shared SQLite reads and writes serialized; atomic cross-process task resumption; consistent human approval/workspace binding; preflight of all command approvals before side effects; consumed-ticket renewal; fail-closed ambiguous replay; Python child `-P` safe-path to protect trusted runtime imports from writable workspaces.
+- **CI:** PR #19 final source tree passed the 4-job matrix (Ubuntu/Windows × Python 3.11/3.13), including full pytest, static quality/security checks, and import smoke test. Source tree of the merged `main` matches the tested PR head. Release workflow revalidated the exact `main` SHA before publishing wheel, sdist and checksums.
 
-**As of:** 23 October 2026  
-**Public name:** Simpul (formerly SubagentBridge)  
-**Repository:** `rzqllh/SubagentBridge` (repository has not been renamed)  
-**Compatibility:** `subagentbridge` imports/distribution/CLI, `SUBAGENTBRIDGE_*` variable namespace
+## Enterprise safety gates
 
-## Source, branch and publication
+| Gate | Status |
+|---|---|
+| Supervised multi-worker execution, local SQLite persistence, versioned migration | **VERIFIED (bounded)** |
+| Concurrent shared-store integrity / multi-step human approval preflight | **VERIFIED (bounded)** |
+| Signed / independently authenticated real human approval surface | **BLOCKED for enterprise** |
+| E18 same-OS-identity worker confinement under hostile workloads | **BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)** |
+| Exactly-once recovery of external side effects across crashes | **NOT GUARANTEED** |
+| All real external host versions / multi-tenant production acceptance | **NOT VERIFIED** |
 
-- `main` contains the fully integrated and hardened release commit `953c0f5a34c7ae8917d8febde92354eb8ed8a4ef`.
-- PRs #2 through #8 covering phases P00 through P06 have all been sequentially merged into `main` on 2026-10-23.
-- Release `v1.0.0` is published on GitHub Releases (`https://github.com/rzqllh/SubagentBridge/releases/tag/v1.0.0`) with verified SHA-256 asset checksums.
-- Active development and sprint verification occurs on dedicated sprint branches (e.g. `simpul/08-sprint1-verification`), never directly on `main`.
+Governance remains `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`. A green CI matrix does not make a same-user worker an OS security sandbox, establish independent human identity, or certify malicious-worker isolation. Use dedicated least-privilege user accounts and supervised trusted workspaces.
 
-## What the code actually provides
+## Current release artifacts
 
-A Python composition root wires SQLite audit and budget layers, a message bus, skill registry, policy classifier, supervised read-only executor, identity and receipt registries, QA evidence gate and local 9Router client. The server exposes production MCP stdio tools. Its execution lifecycle coordinator (`SupervisedNativeLifecycle`) executes the complete PM → Developer → QA workflow under strict fail-closed enforcement: tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status. `get_task_evidence` reads independently issued receipts and evidence records.
+[GitHub Release v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) contains:
+- `subagentbridge-1.1.1-py3-none-any.whl`
+- `subagentbridge-1.1.1.tar.gz`
+- `SHA256SUMS.txt`
 
-## Verification scope and corrective audit status
+## Navigation and provenance
 
-The 23 October Post-Release Corrective Audit executed 334 tests (330 passed, 4 skipped, 0 warnings) across the full Windows test matrix:
+- [Public user guides](public/README.md) · [Installation](INSTALLATION_QUICKSTART.md) · [Security](public/SECURITY.md)
+- [Enterprise readiness evidence & remaining blockers](ENTERPRISE_READINESS.md)
+- [Core Cindy parity audit with historical phase receipts](simpul/SIMPUL_CINDY_PARITY_REPORT.md)
+- [Release validation](simpul/RELEASE_READINESS.md) · [Third-party attribution](../THIRD_PARTY_NOTICES.md)
 
-- **E18:** Proved via genuine red-team assessment (`tests/test_same_user_adversarial_assessment.py`) that same-OS-user isolation is impossible under standard OS permissions. Formally classified as **BLOCKED**; `AUTONOMY: OFF` strictly retained under `RISK_ACCEPTED_SAME_IDENTITY`.
-- **E22:** Checkout-root containment verified in `artifacts/bootstrap/v3_1/tests/test_bve_checkout_containment.py` (6/6 PASS).
-- **E23:** Remote pinned Git clone and branch-movement rejection verified against `https://github.com/rzqllh/SubagentBridge.git` at exact commit `953c0f5` in `tests/test_remote_pinned_checkout_e23.py` (2/2 PASS).
-- **9Router:** Authenticated local completion proved with real request/response evidence in `tests/test_nine_router_authenticated_completion.py` (HTTP 401 on invalid token, HTTP 200 on valid token, ledger token accounting, D-02 fail-closed enforcement; 4/4 PASS).
-- **Integration:** Real end-to-end Antigravity MCP PM/Developer/QA workflow verified over genuine stdio subprocess (`tests/test_antigravity_mcp_subprocess_client.py`) and Antigravity IDE host acceptance (`tests/test_antigravity_host_acceptance.py`).
-- **Release:** Corrective audit completed; decision packet prepared. Human approval required before merge or publication.
-
-## Security posture
-
-`AUTONOMY: OFF`. Decision D-01 `RISK_ACCEPTED_SAME_IDENTITY` is risk acceptance, **not container/VM isolation**. Decision D-03 `CHAT_APPROVAL` is an operational gate mode, **not proof of human identity** against same-user workers. No Always Allow or agent self-approval. Decision D-02 restricts the client to literal HTTP loopback addresses; an upstream proxy may have separate provider/network obligations.
-
-Tests that execute project source are not safe merely because their command lines are allowlisted. Local SQLite entries and Git hashes do not make receipts tamper-proof against a privileged local attacker. Do not enable unattended execution based on the present candidate evidence.
-
-## Historical evidence
-
-The [candidate acceptance matrix](ACCEPTANCE_MATRIX_E01_E21_EVIDENCE.md) and [release candidate report](RELEASE_CANDIDATE_V1_0_0.md) are retained as historical reports; more stringent independent checks supersede their unconditional readiness language. The display-name change does not rename Python imports, env vars, or existing repository URLs.
-
-## Next-development source of truth
-
-See [Simpul developer roadmap and handoff](simpul/README.md). Its task list and staged release gates describe proposed work, not independently verified completion.
+Historical PR #17 (C08 candidate) was closed as **superseded**, not merged; its remaining reviewer comments retain their actual historic GitHub disposition. The v1.1.1 corrections landed independently through PR #19. No local Windows user worktrees/backups were deleted as part of publication.

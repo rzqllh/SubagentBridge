@@ -1,6 +1,6 @@
 # Simpul — Release Readiness and Operator Guide
 
-> **Published release:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) · 27 October 2026 · main merge SHA `a29f0d98957651e482fbae989a906bb09873f329` · release workflow 40440851542 SUCCESS. E18 remains BLOCKED.
+> **Published release:** [Simpul v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) · 27 October 2026 · merged main SHA `861f040dc12c33da681331e454ef41299f2dc70b` · workflow 40444832484 SUCCESS. E18 remains BLOCKED.
 
 ## Scope
 
@@ -8,12 +8,12 @@ The C00–C07 stacked change set brings native Python Lead/Worker orchestration 
 
 The full development history is in [the parity audit](SIMPUL_CINDY_PARITY_REPORT.md). PRs #9–#12 were merged individually; PR #16 integrated C04–C07, while #13–#15 were closed as superseded after confirming their commits were included.
 
-## Install v1.1.0
+## Install v1.1.1
 
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.0
+git checkout v1.1.1
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m subagentbridge.server
@@ -65,3 +65,11 @@ Simpul is independently implemented in Python and does not bundle Cindy source c
 - Release workflow: [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542), SUCCESS.
 - Assets: wheel, source archive, SHA256SUMS.txt.
 - E18 same-user OS confinement remains BLOCKED (accepted risk), not a kernel sandbox.
+
+## v1.1.1 runtime integrity publication receipt
+
+- [Release v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1), released from exact `861f040dc12c33da681331e454ef41299f2dc70b`.
+- PR #19 candidate CI [4/4 PASS](https://github.com/rzqllh/SubagentBridge/actions/runs/40444244325) on Windows/Ubuntu Python 3.11/3.13. Merged `main` source tree matches the tested PR tree.
+- Release workflow [40444832484](https://github.com/rzqllh/SubagentBridge/actions/runs/40444832484): SUCCESS; wheel, sdist and SHA256SUMS published.
+- Correctness: SQLite shared read/write lock, serialized cross-process resume, trusted approval renewal/preflight, fail-closed ambiguous recovery, child Python safe-path hardening.
+- Non-goals: no same-user kernel sandboxing (E18 BLOCKED), no external authenticated human-approval UI, no verified enterprise workload certification.
