@@ -71,6 +71,18 @@ The display name is **Simpul**, but the MCP tool namespace, Python module, distr
 
 The legacy session inspection endpoints remain available in this candidate, but legacy raw-runner execution paths are locked down. `approve_action` and `apply_code_fix` are **not model-callable MCP tools**; their compatibility functions deny privileged operations.
 
+## Multi-worker coordination (C01–C07 candidate)
+
+The current [C07 pull request](https://github.com/rzqllh/SubagentBridge/pull/16) extends the released v1.0.0 baseline. **These changes are not part of v1.0.0** until a new release is actually published.
+
+Simpul now maintains separate Lead and Worker session identities, OS subprocess IPC, a durable SQLite task queue, step-indexed checkpoints, authenticated message and artifact handoffs, per-worker Git worktrees, and capability-checked host adapters. The core is Python-based and does not require running Cindy.
+
+The application-facing names are `AgentRole`, `AgentSession`, `AgentTeam`, `TeamStore`, `TeamManager` and `IntegrationProbe`. Legacy `Orca*` Python aliases and read-only `orca_*` SQLite views remain as **migration compatibility**, not separate runtime engines. New databases use `simpul_*` tables; migration includes a pre-migration SQLite online backup, explicit transaction rollback, full-column row comparison and concurrent initializer tests. Legacy SQL views are **read-only**; consumers must write through the Python store API.
+
+Operational boundaries remain important: host capability declaration is not proof of an interactive external host end-to-end deployment; subprocess isolation is not an OS sandbox; automated test approval is not authenticated human approval; and a crash between an external side effect and its checkpoint can require operator reconciliation. No autonomous merge/release is permitted absent operator authorization.
+
+For architecture and the exact implementation/verification distinction see [core parity report](docs/simpul/SIMPUL_CINDY_PARITY_REPORT.md) and [release readiness](docs/simpul/RELEASE_READINESS.md). Source attribution to [Cindy](https://github.com/makecindy/cindy) is maintained in [third-party notices](THIRD_PARTY_NOTICES.md). Simpul is independently implemented and is not a Cindy fork.
+
 ## Documentation
 
 - [Developer roadmap, backlog, acceptance gates and next-session handoff](docs/simpul/README.md)
