@@ -50,16 +50,25 @@ def _verify_trusted_code_path(code_root: Path, worker_uid: int, worker_gid: int)
     root = code_root.resolve(strict=True)
     # Parent writable components are checked as well: do not allow the worker
     # to swap a parent directory to replace the code module search path.
-    for part in (root, *root.parents):
-        meta = part.stat()
+    # Directories alone are not enough: a writable module inside a protected
+    # directory can replace trusted code; a worker-owned read-only file can
+    # be chmod'd to writable without changing the directory permissions.
+    package_root = root / "subagentbridge"
+    if not package_root.is_dir() or package_root.is_symlink():
+        raise PermissionError("Trusted Simpul package directory is missing or a symlink")
+    candidates = [root, *root.parents, package_root, *package_root.rglob("*"), *root.glob("*.py")]
+    for part in candidates:
+        if part.is_symlink():
+            raise PermissionError(f"Trusted runtime contains a symlink: {part}")
+        meta = part.lstat()
         mode = meta.st_mode
-        owned_write = meta.st_uid == worker_uid and bool(mode & stat.S_IWUSR)
+        worker_owned = meta.st_uid == worker_uid
         group_write = meta.st_gid == worker_gid and bool(mode & stat.S_IWGRP)
         world_write = bool(mode & stat.S_IWOTH)
-        # A sticky world-writable parent (/tmp) cannot replace a directory
-        # owned by somebody else; treat all other writable parents as unsafe.
-        sticky_protected = bool(mode & stat.S_ISVTX) and meta.st_uid != worker_uid
-        if owned_write or group_write or (world_write and not sticky_protected):
+        # A sticky world-writable parent (such as /tmp) does not allow a
+        # different UID to unlink supervisor-owned child entries.
+        sticky_protected = part in root.parents and bool(mode & stat.S_ISVTX) and not worker_owned
+        if worker_owned or group_write or (world_write and not sticky_protected):
             raise PermissionError(f"Worker UID/GID can modify trusted runtime path {part}")
 
 
