@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from secrets import compare_digest
 
 import pytest
 
@@ -23,6 +24,23 @@ from subagentbridge.approval.operator_boundary import (
     OperatorIdentity,
 )
 from subagentbridge.storage.audit_ledger import AuditLedger
+
+
+# TEST-ONLY assertion checker. This is NOT an OIDC/WebAuthn verifier and
+# is intentionally never installed or used by production runtime.
+def _test_only_verify_operator(identity: OperatorIdentity) -> bool:
+    fixture_tokens = {
+        ("operator_lead@enterprise.internal", "security_lead", "webauthn"): "verified_webauthn_signature_token_abc123",
+        ("sec-lead-1", "security_admin", "webauthn"): "token-abc",
+    }
+    expected = fixture_tokens.get((identity.operator_id, identity.role, identity.channel))
+    return expected is not None and compare_digest(identity.auth_token, expected)
+
+
+def fixture_boundary(*args, **kwargs) -> IndependentOperatorApprovalBoundary:
+    return IndependentOperatorApprovalBoundary(
+        *args, operator_verifier=_test_only_verify_operator, **kwargs
+    )
 
 
 @pytest.fixture
@@ -48,7 +66,7 @@ def test_operator_identity_rejects_untrusted_roles():
 
 def test_operator_approval_lifecycle_allow_once(tmp_path: Path, operator: OperatorIdentity):
     ledger = AuditLedger(tmp_path / "audit.db")
-    boundary = IndependentOperatorApprovalBoundary(
+    boundary = fixture_boundary(
         db_path=tmp_path / "approvals.db",
         ledger=ledger,
     )
@@ -103,7 +121,7 @@ def test_operator_approval_lifecycle_allow_once(tmp_path: Path, operator: Operat
 
 
 def test_operator_approval_context_mismatch_rejected(tmp_path: Path, operator: OperatorIdentity):
-    boundary = IndependentOperatorApprovalBoundary()
+    boundary = fixture_boundary()
     req = boundary.create_request(
         session_id="worker-01",
         task_id="task-build",
@@ -138,7 +156,7 @@ def test_operator_approval_context_mismatch_rejected(tmp_path: Path, operator: O
 
 
 def test_operator_approval_deny_policy(tmp_path: Path, operator: OperatorIdentity):
-    boundary = IndependentOperatorApprovalBoundary()
+    boundary = fixture_boundary()
     req = boundary.create_request(
         session_id="worker-01",
         task_id="task-01",
@@ -166,7 +184,7 @@ def test_operator_approval_deny_policy(tmp_path: Path, operator: OperatorIdentit
 
 
 def test_operator_approval_answer_questions_policy(tmp_path: Path, operator: OperatorIdentity):
-    boundary = IndependentOperatorApprovalBoundary()
+    boundary = fixture_boundary()
     req = boundary.create_request(
         session_id="worker-01",
         task_id="task-01",
@@ -186,7 +204,7 @@ def test_operator_approval_answer_questions_policy(tmp_path: Path, operator: Ope
 
 def test_orchestrator_restart_recovery_and_replay_prevention(tmp_path: Path, operator: OperatorIdentity):
     db_file = tmp_path / "durable_approvals.db"
-    b1 = IndependentOperatorApprovalBoundary(db_path=db_file)
+    b1 = fixture_boundary(db_path=db_file)
 
     # 1. Action that gets consumed before restart
     req1 = b1.create_request(
@@ -210,7 +228,7 @@ def test_orchestrator_restart_recovery_and_replay_prevention(tmp_path: Path, ope
     time.sleep(0.05)
 
     # Simulate orchestrator restart: create brand-new boundary instance
-    b2 = IndependentOperatorApprovalBoundary(db_path=db_file)
+    b2 = fixture_boundary(db_path=db_file)
     count = b2.rehydrate_from_disk()
     assert count == 3
 
@@ -235,7 +253,7 @@ def test_orchestrator_restart_recovery_and_replay_prevention(tmp_path: Path, ope
 
 def test_audit_ledger_multi_decision_transition_preserves_trail(tmp_path: Path):
     ledger = AuditLedger(tmp_path / "multi_dec_ledger.jsonl")
-    boundary = IndependentOperatorApprovalBoundary(
+    boundary = fixture_boundary(
         db_path=tmp_path / "multi_dec.db",
         ledger=ledger,
     )
@@ -296,3 +314,53 @@ def test_audit_ledger_multi_decision_transition_preserves_trail(tmp_path: Path):
         "OPERATOR_DECISION",
         "APPROVAL_CONSUMED",
     ]
+
+
+def test_unverified_self_declared_admin_cannot_resolve_without_trusted_verifier(tmp_path: Path):
+    boundary = IndependentOperatorApprovalBoundary(db_path=tmp_path / "default_deny.db")
+    req = boundary.create_request(
+        session_id="w-attacker", task_id="t-attacker", command=["echo", "unsafe"],
+        workspace_path=str(tmp_path),
+    )
+    forged = OperatorIdentity(
+        operator_id="security-admin", role="security_admin",
+        channel="webauthn", auth_token="any-attacker-controlled-token",
+    )
+    with pytest.raises(PermissionError, match="verifier is not configured"):
+        boundary.resolve_by_operator(req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=forged)
+    assert boundary.get_request(req.action_id).state == ApprovalState.BLOCKED
+    ok, reason, ticket = boundary.consume_for_execution(
+        req.action_id, session_id="w-attacker", task_id="t-attacker",
+        command=["echo", "unsafe"], workspace_path=str(tmp_path),
+    )
+    assert not ok and ticket is None and "not APPROVED" in reason
+
+
+@pytest.mark.parametrize("decision", [
+    OperatorDecision.ALLOW_ONCE, OperatorDecision.DENY, OperatorDecision.ANSWER_QUESTIONS,
+])
+def test_untrusted_assertion_rejected_for_every_decision(tmp_path: Path, decision: OperatorDecision):
+    boundary = fixture_boundary()
+    req = boundary.create_request(
+        session_id="w", task_id="t", command=["echo", "test"], workspace_path=str(tmp_path),
+    )
+    forged = OperatorIdentity(
+        operator_id="operator_lead@enterprise.internal", role="security_lead",
+        channel="webauthn", auth_token="forged-string",
+    )
+    with pytest.raises(PermissionError, match="not been authenticated"):
+        boundary.resolve_by_operator(req.action_id, decision=decision, operator=forged)
+    assert boundary.get_request(req.action_id).state == ApprovalState.BLOCKED
+
+
+def test_verifier_failure_does_not_mutate_approval(tmp_path: Path, operator: OperatorIdentity):
+    def unavailable(_: OperatorIdentity) -> bool:
+        raise ConnectionError("identity provider unavailable")
+
+    boundary = IndependentOperatorApprovalBoundary(operator_verifier=unavailable)
+    req = boundary.create_request(
+        session_id="w", task_id="t", command=["echo", "test"], workspace_path=str(tmp_path),
+    )
+    with pytest.raises(PermissionError, match="verification failed"):
+        boundary.resolve_by_operator(req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator)
+    assert boundary.get_request(req.action_id).state == ApprovalState.BLOCKED
