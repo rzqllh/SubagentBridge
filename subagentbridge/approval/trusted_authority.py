@@ -65,6 +65,11 @@ class TrustedApprovalAuthority:
             reason=reason,
         )
 
+    def is_action_consumed(self, action_id: str) -> bool:
+        """Return whether an approval has already issued an execution ticket."""
+        with self._lock:
+            return action_id in self._consumed_actions
+
     def verify_and_consume(
         self,
         action_id: str,

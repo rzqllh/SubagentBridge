@@ -141,6 +141,7 @@ class WorkerProcessController:
         branch_name: str | None = None,
     ) -> WorkerProcessRecord:
         """Spawns a real child OS process running worker_runtime_entrypoint."""
+        worktree_path = worktree_path or config.working_dir
         session_secret = token_hex(32)
         cmd = [
             sys.executable,
