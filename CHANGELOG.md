@@ -7,9 +7,17 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.1.2 P0 approval-gate security correction
+## [Unreleased] — v1.1.3 supervised worker identity hardening
 
-This security patch is not published until CI/review and a SHA-gated release pass.
+**Candidate, not published.** Publish only after combined v1.1.2+v1.1.3 tree tests and SHA-gated release.
+- Worker subprocess environments use strict allowlisting; keys like OPENAI_API_KEY, GITHUB_TOKEN, cloud credentials, SSH_AUTH_SOCK and untrusted PYTHONPATH are not inherited.
+- Trusted entrypoint retains Python -P safe-path; deliberately approved workspace Python commands may still import their own generated modules.
+- Opt-in Linux dedicated-user UID/GID drop with OS identity validation and fail-closed prerequisites; Windows remains in inherited mode without E18 privilege separation.
+- New negative credential-leak and unsupported-isolation tests. E18 and independent human operator identity are **not** enterprise-certified.
+
+## [1.1.2] - 2026-10-27 P0 approval-gate security correction
+
+Published as [v1.1.2](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.2), main SHA `a6d85a8fe6fe23086afdbd45f1703a2013bb6dc3` with 4/4 CI PASS and successful SHA-gated release workflow.
 
 - Remove `approve_command` from the MCP tool registry: model callers cannot grant their own privileged command approval.
 - Preserve the legacy Python callable only as an unconditional `BLOCKED` response; `approver` and `auth_token` parameters are never trusted.
