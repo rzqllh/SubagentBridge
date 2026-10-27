@@ -52,7 +52,7 @@ def assign_windows_job_restrictions(process_handle: int) -> int:
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = getattr(ctypes, "windll").kernel32
 
     class JOBOBJECT_BASIC_UI_RESTRICTIONS(ctypes.Structure):
         _fields_ = [("UIRestrictionsClass", wintypes.DWORD)]

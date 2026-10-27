@@ -575,10 +575,11 @@ class WorkerProcessController:
         self._processes.pop(worker_id, None)
         self._readers.pop(worker_id, None)
         job_handle = self._job_handles.pop(worker_id, None)
-        if job_handle:
+        if job_handle and sys.platform == "win32":
             try:
                 import ctypes
-                ctypes.windll.kernel32.CloseHandle(job_handle)
+
+                getattr(ctypes, "windll").kernel32.CloseHandle(job_handle)
             except Exception:
                 pass
         return True
