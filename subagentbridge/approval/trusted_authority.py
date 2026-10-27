@@ -6,7 +6,7 @@ Binds approval strictly to:
 3. Exact command and arguments
 4. Exact workspace path
 5. Single-use replay protection
-6. Authenticated out-of-band human resolution (rejecting spoofed in-payload booleans)
+6. Token-gated in-process resolution; NOT independent human authentication
 """
 from __future__ import annotations
 
@@ -115,7 +115,7 @@ class TrustedApprovalAuthority:
         ttl_seconds: float = 60.0,
     ) -> tuple[bool, str, dict[str, Any] | None]:
         """Verifies human approval, consumes it, and issues an HMAC execution ticket for IPC."""
-        if not isinstance(ttl_seconds, (int, float)) or not math.isfinite(ttl_seconds) or not 0 < ttl_seconds <= 60:
+        if type(ttl_seconds) not in (int, float) or not math.isfinite(ttl_seconds) or not 0 < ttl_seconds <= 60:
             return False, "DENIED: ticket TTL must be a finite number in (0, 60] seconds", None
         valid, reason = self.verify_and_consume(action_id, worker_id, task_id, command, workspace_path)
         if not valid:
