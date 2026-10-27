@@ -1,10 +1,16 @@
 # Security and responsible operation
 
-**Status: [published v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1), supervised operation; not an isolation or enterprise-security certification.** E18 same-user confinement is `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
+**Status: [published v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3), supervised operation; not an enterprise or isolation certification.** E18 remains `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
 
 ## v1.1.1 security correction
 
 The child process now uses Python `-P` safe-path, so a workspace-local `subagentbridge` module cannot replace the real worker entrypoint. SQLite reads/writes share an internal lock. Recovery preflights all human approvals and refuses stale or consumed execution tickets; unverified side effects require operator reconciliation. These controls are defense in depth and **do not remove E18**.
+
+## v1.1.2–v1.1.3 approval security updates
+
+v1.1.2 removes unauthenticated MCP self-approval. v1.1.3 expires all pending/approved broker actions (900-second default), refuses expired decisions and malformed execution ticket expiries, and binds tickets to a finite maximum 60-second lifetime. An expired action must be requested and explicitly approved again.
+
+The broker remains **in-process and credential-gated**; fixture token tests do not demonstrate independently authenticated human identity, durable identity policy, or hostile-worker OS isolation. See [Enterprise Readiness](../ENTERPRISE_READINESS.md).
 
 ## Trust boundaries
 

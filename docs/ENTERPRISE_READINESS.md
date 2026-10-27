@@ -1,6 +1,6 @@
 # Enterprise-readiness evidence and release gates
 
-**Status:** NOT ENTERPRISE-CERTIFIED (27 October 2026). The latest published release is [Simpul v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1), from merge commit `861f040dc12c33da681331e454ef41299f2dc70b`. This is **supervised runtime-hardening**, not an enterprise-GA certification; review of privileged-worker confinement and independent human identity remains outstanding.
+**Status:** NOT ENTERPRISE-CERTIFIED (27 October 2026). The latest published release is [Simpul v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3), from merge commit `a47473edf4ff9ef9e59d2dd5f5d682941d0e1826`. The v1.1.2 and v1.1.3 patches harden MCP self-approval default-deny and action/ticket expiration; they do NOT implement independent human authentication or OS worker isolation.
 
 Simpul is a local-first supervised MCP subagent orchestrator, not a multi-tenant secure agent execution service. The meaning of "enterprise-ready" is evidence-based: operational resilience, provable human authorization, isolation, auditability, reproducible releases, and recoverability are separate gates.
 
@@ -16,6 +16,12 @@ Simpul is a local-first supervised MCP subagent orchestrator, not a multi-tenant
 | Artifact integrity and verified handoff | VERIFIED (bounded) | File existence, SHA-256, task binding and transaction-protected receipts under documented trust boundary |
 | Supply-chain/release provenance | PARTIAL | Pinned QA analyzers, immutable release SHA, wheel/sdist/checksum are present; signature/SBOM/provenance attestation and documented incident rollback remain unverified |
 | Operational SLO/load/chaos | NOT VERIFIED | No claimed long-duration soak, restore drill, large-scale task-queue load test or production incident exercise |
+
+## Post-v1.1.1 security delta
+
+- **v1.1.2:** removed model-callable unauthenticated approval route; default-deny preserved for legacy callers.
+- **v1.1.3:** action expiry (default 900s), fresh approval on expiration, finite 60s maximum issued IPC execution tickets, malformed expiry rejection, and constant-time local credential comparison.
+- **Unresolved:** [E18 OS confinement](https://github.com/rzqllh/SubagentBridge/issues/21), [production out-of-band identity](https://github.com/rzqllh/SubagentBridge/issues/22), and [operational recovery/attestation](https://github.com/rzqllh/SubagentBridge/issues/23).
 
 ## Policy and permitted claim
 
