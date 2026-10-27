@@ -1,10 +1,16 @@
 # Simpul — Project Status
 
 **As of:** 27 October 2026  
-**Latest published:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1)  
+**Latest published:** [v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3)
 **Package:** `subagentbridge` · **Repository:** [rzqllh/SubagentBridge](https://github.com/rzqllh/SubagentBridge)  
-**Release merge SHA:** `861f040dc12c33da681331e454ef41299f2dc70b`  
-**Release workflow:** [40444832484](https://github.com/rzqllh/SubagentBridge/actions/runs/40444832484) — SUCCESS
+**Release merge SHA:** `a47473edf4ff9ef9e59d2dd5f5d682941d0e1826`
+**Release workflow:** [40452532343](https://github.com/rzqllh/SubagentBridge/actions/runs/40452532343) — SUCCESS
+
+## Latest security improvements (v1.1.2–1.1.3)
+
+- v1.1.2: unauthenticated MCP self-approval removed/default-denied (PR #25).
+- v1.1.3: approval actions have finite expiration; stale authorizations are rejected and must be renewed; one-time IPC ticket TTL is bounded and malformed expiry fails closed (PR #28).
+- E18 OS worker identity separation and independent authenticated human approval remain BLOCKED. In-process fixture credentials are not a security proof.
 
 ## Delivery and verified scope
 

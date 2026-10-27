@@ -1,5 +1,19 @@
 # Simpul release notes
 
+## Version 1.1.3 — published 27 October 2026
+
+[GitHub Release v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3) was published from merged SHA `a47473edf4ff9ef9e59d2dd5f5d682941d0e1826`; [release workflow 40452532343](https://github.com/rzqllh/SubagentBridge/actions/runs/40452532343) succeeded and published wheel, source archive and `SHA256SUMS.txt`. PR #28 passed Ubuntu and Windows with Python 3.11 and 3.13 (4/4 CI PASS); merged source tree matched tested PR tree.
+
+**Changes:** expiry of blocked and approved actions (15-minute default), permanent stale-action rejection, fresh human decision after expiration, constant-time token comparison, strict finite execution ticket TTL up to 60 seconds, and malformed-ticket rejection. Existing v1.1.2 self-approval default-deny remains intact.
+
+**Limitations:** The local approval broker is not independently authenticated human identity; worker processes remain within the invoking OS identity (E18). v1.1.3 is *supervised hardening*, not certified hostile-worker isolation or multi-tenant enterprise GA.
+
+## Version 1.1.2 — published 27 October 2026
+
+[GitHub Release v1.1.2](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.2) removed unauthenticated MCP `approve_command` and default-denied legacy calls (PR #25), retaining human-gated semantics.
+
+---
+
 ## Version 1.1.1 — published 27 October 2026
 
 [GitHub Release v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) was published from commit `861f040dc12c33da681331e454ef41299f2dc70b` after PR #19 passed Ubuntu/Windows Python 3.11/3.13 (4/4 PASS). Git tree of merged `main` equals the tested PR head tree. Release workflow [40444832484](https://github.com/rzqllh/SubagentBridge/actions/runs/40444832484) re-ran QA, built wheel and source distribution, and published the SHA256 checksum manifest.

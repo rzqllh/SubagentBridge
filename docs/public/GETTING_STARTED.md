@@ -11,7 +11,7 @@ Python 3.11–3.13, Git, and a compatible MCP stdio client (for example, a devel
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.1
+git checkout v1.1.3
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m pytest tests artifacts/bootstrap/v3_1/tests -rs
@@ -23,7 +23,7 @@ python -m venv .venv
 ```bash
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.1
+git checkout v1.1.3
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/python -m pytest tests artifacts/bootstrap/v3_1/tests -rs

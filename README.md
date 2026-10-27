@@ -2,7 +2,7 @@
 
 **Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
-> **Published:** [Simpul v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1), 27 October 2026, merge SHA `861f040dc12c33da681331e454ef41299f2dc70b`. 4/4 CI PASS; release workflow [40444832484](https://github.com/rzqllh/SubagentBridge/actions/runs/40444832484) SUCCESS. Supervised runtime patch, **not** enterprise OS isolation certification.
+> **Published:** [Simpul v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3) on 27 October 2026 (SHA `a47473edf4ff9ef9e59d2dd5f5d682941d0e1826`); GitHub Actions run 40452532343 SUCCESS. Bounded approval TTL hardening, not an enterprise identity or isolation certification.
 
 ## What is implemented in Simpul
 
