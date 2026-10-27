@@ -78,7 +78,6 @@ def worker_launch_configuration(
     # Never accept a model/user-injected PYTHONPATH. Only trusted package path.
     env["PYTHONPATH"] = str(code_root.resolve(strict=True))
     env["PYTHONNOUSERSITE"] = "1"
-    env["PYTHONSAFEPATH"] = "1"
     if policy.mode == "inherited":
         return env, {}
 
@@ -106,7 +105,6 @@ def worker_launch_configuration(
         "LOGNAME": account.pw_name,
         "PYTHONPATH": str(code_root.resolve(strict=True)),
         "PYTHONNOUSERSITE": "1",
-        "PYTHONSAFEPATH": "1",
     }
     for key in ("LANG", "LC_ALL", "LC_CTYPE"):
         if key in os.environ:
