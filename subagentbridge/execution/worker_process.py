@@ -145,6 +145,7 @@ class WorkerProcessController:
         session_secret = token_hex(32)
         cmd = [
             sys.executable,
+            "-P",  # Python 3.11+ safe-path: never import shadow modules from worker cwd
             "-m",
             "subagentbridge.execution.worker_runtime_entrypoint",
             "--worker-id",
