@@ -2,6 +2,8 @@
 
 # Simpul — Development source of truth
 
+For released user-facing documentation, start with **[Simpul public guides](../public/README.md)** and the [v1.1.0 GitHub release](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0).
+
 **Snapshot:** 2026-10-23 · **Product:** Simpul (formerly SubagentBridge) · **Repository:** [rzqllh/SubagentBridge](https://github.com/rzqllh/SubagentBridge) · **Development branch:** `integrate/roadmap-v4-verified` / [PR #3](https://github.com/rzqllh/SubagentBridge/pull/3).
 
 This is the next-developer handoff compiled from the project's governing Plan v3.1, repository source, GitHub CI/PR review and historical Simpul conversations. It is **a plan and evidence index, not a claim that pending work is complete**. Baseline examined: `a9840e5af80f18c43db88a01f7a2413fc559f891` before this documentation packet. Any new source commit invalidates earlier SHA-bound QA results.

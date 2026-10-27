@@ -85,6 +85,8 @@ For architecture and the exact implementation/verification distinction see [core
 
 ## Documentation
 
+- **[Start here: public user documentation](docs/public/README.md)** — installation, MCP integration, architecture, migration, security and release notes.
+
 - [Developer roadmap, backlog, acceptance gates and next-session handoff](docs/simpul/README.md)
 
 - [Project status and evidence boundaries](docs/SIMPUL_STATUS.md)
