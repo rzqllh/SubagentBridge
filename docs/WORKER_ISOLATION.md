@@ -4,7 +4,7 @@
 
 ## Supervised default: `inherited`
 
-The trusted `WorkerProcessController` launches a Python child under the caller's same OS account. It now passes only an explicit allowlist of noncredential OS environment variables and the trusted Simpul package directory, with Python `-P` safe-path and `PYTHONNOUSERSITE=1`. Variables such as `OPENAI_API_KEY`, `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `SSH_AUTH_SOCK` and arbitrary `PYTHONPATH` are not propagated. This prevents accidental *environment inheritance*, **not** file-system access by a same-user child: a child with the supervisor's OS permissions can still open readable files, other processes, sockets and secrets.
+The trusted `WorkerProcessController` launches a Python child under the caller's same OS account. It now passes only an explicit allowlist of noncredential OS environment variables and the trusted Simpul package directory, with Python `-P` safe-path specifically for the trusted entrypoint and `PYTHONNOUSERSITE=1`. Variables such as `OPENAI_API_KEY`, `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `SSH_AUTH_SOCK` and arbitrary `PYTHONPATH` are not propagated. This prevents accidental *environment inheritance*, **not** file-system access by a same-user child: a child with the supervisor's OS permissions can still open readable files, other processes, sockets and secrets.
 
 An external harness relying on a provider token in its environment must NOT turn on unfiltered inheritance as a workaround. Provision scoped credentials through an independently mediated service/token broker with explicit audit, access policy and rotation.
 
@@ -39,3 +39,5 @@ On Windows this mode is intentionally **unsupported and fail-closed** pending ve
 `tests/test_worker_isolation_boundary.py` covers allowlisted environment construction, actual worker execution proving credential env values are not inherited, unprivileged/non-Linux fail-closed policy behavior, permission checks, and the default governance mode.
 
 Passing these tests is **not** proof of hostile-worker confinement. Track the remaining security work in [E18 Issue #21](https://github.com/rzqllh/SubagentBridge/issues/21), [Human Approval Issue #22](https://github.com/rzqllh/SubagentBridge/issues/22), and [Enterprise Readiness](ENTERPRISE_READINESS.md).
+
+**Execution compatibility:** `PYTHONSAFEPATH=1` is intentionally not forced on every descendant command. The trusted worker entrypoint itself runs with `python -P`, but an explicitly authorized `python -c` or test subprocess may need the declared workspace on Python's module search path (e.g. importing a freshly generated local test module). This is not a hostile-code isolation guarantee; OS identity and workspace policy must carry that burden.
