@@ -855,3 +855,59 @@ def test_c05_worktree_cleanup_rejects_force_true():
 
 
 
+
+
+def test_c05_resume_blocks_live_but_unattached_worker(store_and_service):
+    """A persisted live PID is not sufficient evidence of IPC ownership."""
+    store, service, _ = store_and_service
+    team = service.create_team(lead_session_id="lead-orphan", title="Orphan")
+    worker = service.register_worker(
+        WorkerConfig(worker_id="w-orphan", team_id=team.team_id, role="coder", harness="native")
+    )
+    owner = WorkerProcessController(store=store)
+    observer = WorkerProcessController(store=store)
+    try:
+        owner.spawn_worker(worker.config)
+        item = service.dispatch_task(team.lead_session_id, worker.session_id, "orphan-task",
+                                     {"steps": [{"name": "step", "instruction": "noop"}]})
+        assert observer.is_worker_alive(worker.session_id)
+        assert not observer.is_worker_dispatchable(worker.session_id)
+        result = resume_task_from_checkpoint(item.dispatch_id, store, observer)
+        assert result["status"] == "RECOVERY_BLOCKED"
+        assert "IPC" in result["reason"]
+        assert owner.is_worker_dispatchable(worker.session_id)
+        assert store.load_queue_item(item.dispatch_id).status == QueueTaskStatus.PENDING
+    finally:
+        owner.terminate_all()
+        observer.terminate_all()
+
+
+def test_c05_resume_waits_for_explicit_human_approval(store_and_service):
+    """An approval request does not grant execution; approved request is reused."""
+    import sys
+    store, service, _ = store_and_service
+    team = service.create_team(lead_session_id="lead-approval-resume", title="Approvals")
+    worker = service.register_worker(
+        WorkerConfig(worker_id="w-approval-resume", team_id=team.team_id,
+                     role="coder", harness="native")
+    )
+    controller = WorkerProcessController(store=store)
+    try:
+        controller.spawn_worker(worker.config)
+        item = service.dispatch_task(
+            team.lead_session_id, worker.session_id, "approved-cmd",
+            {"steps": [{"name": "cmd", "command": [sys.executable, "-c", "print('ok')"]}]},
+        )
+        authority = controller.approval_authority
+        first = resume_task_from_checkpoint(item.dispatch_id, store, controller,
+                                            approval_authority=authority)
+        assert first["status"] == "AWAITING_APPROVAL"
+        action_id = first["action_id"]
+        assert store.load_queue_item(item.dispatch_id).status == QueueTaskStatus.DISPATCHED
+        authority.approve_by_human(action_id, auth_token=authority.broker._secret)
+        second = resume_task_from_checkpoint(item.dispatch_id, store, controller,
+                                             approval_authority=authority)
+        assert second["status"] == "COMPLETED"
+        assert store.load_queue_item(item.dispatch_id).status == QueueTaskStatus.COMPLETED
+    finally:
+        controller.terminate_all()
