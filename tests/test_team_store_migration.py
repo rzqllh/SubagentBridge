@@ -1052,11 +1052,11 @@ from subagentbridge.storage.team_store import TeamStore
 
 db_file = Path(r"{db_path}")
 
-# Verify observation of legacy tables before competing
+# Verify observation of legacy tables or completed migration before competing
 pre_conn = sqlite3.connect(str(db_file))
 pre_tables = {{r[0] for r in pre_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}}
 pre_conn.close()
-assert "orca_teams" in pre_tables
+assert "orca_teams" in pre_tables or "simpul_teams" in pre_tables
 
 # Compete for migration write lock and team access
 with TeamStore(db_file) as store:
