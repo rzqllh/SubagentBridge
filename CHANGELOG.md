@@ -7,9 +7,9 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — C00–C07 orchestration parity candidate
+## [1.1.0] - 2026-10-27
 
-**Not yet published.** The existing `v1.0.0` tag does not contain these changes.
+**Published:** [v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) from `a29f0d9`. The `v1.0.0` tag does not contain these changes.
 
 ### Added
 - Native Simpul `AgentTeam`, `AgentSession`, `TeamStore`, `TeamManager` contracts.
@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`, and the E18 same-user isolation limitation remain.
 - Older `Orca*` Python aliases and read-only compatibility views remain temporarily supported.
 - Cindy attribution is retained in `THIRD_PARTY_NOTICES.md`. This is an independent implementation, not a fork.
-- The publication version and release date must be inserted **only after** merged-main CI, code review and release authorization.
+- Release v1.1.0 includes wheel, sdist and SHA256 checksum manifest.
 
 ## [1.0.0] - 2026-10-23
 

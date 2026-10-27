@@ -1,3 +1,5 @@
+> **Release verified — 27 October 2026:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is published from merge commit `a29f0d98957651e482fbae989a906bb09873f329`; candidate CI ran 4/4 successfully, release workflow [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542) succeeded. Historical candidate notes below are not current status. E18 remains BLOCKED (RISK_ACCEPTED_SAME_IDENTITY).
+
 # Simpul — Compatibility and limitations
 
 Public name: **Simpul**. Repository and technical identifiers remain `rzqllh/SubagentBridge`, `subagentbridge` and `SUBAGENTBRIDGE_*`.

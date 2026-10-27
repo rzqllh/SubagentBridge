@@ -1,3 +1,5 @@
+> **Release verified — 27 October 2026:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is published from merge commit `a29f0d98957651e482fbae989a906bb09873f329`; candidate CI ran 4/4 successfully, release workflow [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542) succeeded. Historical candidate notes below are not current status. E18 remains BLOCKED (RISK_ACCEPTED_SAME_IDENTITY).
+
 ## C07 security posture (27 October 2026)
 
 Authorization is **default-deny**. A model-originated approval boolean or QA claim is not trusted provenance. Worker commands require a cryptographically bound, single-use ticket from an authenticated approval authority; automated test fixtures do not constitute a production human interface. Task resume must return `AWAITING_APPROVAL` when the human decision is still blocked, not dispatch a command. Alive OS PIDs without owned IPC streams must be treated as unattached. E18 same-user OS confinement remains `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`; never describe it as kernel isolation. See [release readiness](simpul/RELEASE_READINESS.md).

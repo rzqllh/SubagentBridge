@@ -944,3 +944,17 @@ All 5 concurrency requirements are verified in `tests/test_team_store_migration.
 
 
 
+
+
+---
+
+## Release v1.1.0 — verified integration receipt (27 October 2026)
+
+- **Published release:** [v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) (public, not draft/prerelease).
+- **Integration:** PR #16 merged C04–C07 and corrective fixes into `main` at `a29f0d98957651e482fbae989a906bb09873f329`. PR #12 was individually merged. PR #13–#15 were closed as **superseded**, not individually merged; their HEADs were checked as ancestors of this merge.
+- **CI evidence:** candidate commit `fb9bc1c78efb066ecbbc1341e5f2c84aee1733bc`, Actions run `40440192101` (4/4 SUCCESS). Tested source tree `36551fe8faa25bd4c2886db0c41c8d4cab7bd39c` was identical to the merge commit tree.
+- **Release:** workflow [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542) SUCCESS at the exact merged `main` SHA. Published wheel, source archive and `SHA256SUMS.txt` after test/static security/build gates.
+- **Corrections:** independent optional-column SQLite queue migration with static parameterized SQL; cross-connection atomic active dispatch dedup; terminal-safe cancellation; fail-closed unattached worker PID; explicit `AWAITING_APPROVAL` for recovered command steps.
+- **Attribution:** Cindy Apache-2.0 and research provenance retained in `THIRD_PARTY_NOTICES.md`; independent Python implementation, not a source fork.
+- **Residual:** E18 same-user process isolation remains `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`; automated test fixtures do not substitute for actual interactive human confirmation. Historical PR review threads remain at their actual GitHub states.
+- **Cleanup:** user-local Windows worktrees and backups were not accessible and were not removed; only PR closures and repo source changes were performed remotely.

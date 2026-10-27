@@ -1,3 +1,5 @@
+> **Published update (27 Oct 2026):** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is released from merge SHA `a29f0d9` and passed a full CI matrix. Prior candidate and v1.0.0 references in this document are historical, not current status. E18 remains BLOCKED. See [release readiness](simpul/RELEASE_READINESS.md).
+
 ## 27 October 2026 — Candidate API additions
 
 The newer C07 branch exposes **Python-library** constructs `subagentbridge.domain.team_contracts.AgentTeam`, `AgentSession`, `AgentRole`, `WorkerConfig`, `QueueItem`, `WorkerCheckpoint`; `subagentbridge.storage.team_store.TeamStore`; `subagentbridge.team.team_manager.TeamManager`; and `subagentbridge.execution.integration_adapter.IntegrationProbe`. These are not automatically added MCP tools: do not confuse a Python method with an exposed model-callable MCP endpoint. Legacy `Orca*` symbols are maintained for migration, with read-only legacy SQL views. Verified completion needs real execution evidence, artifact integrity and authenticated authorization. Refer to [release readiness](simpul/RELEASE_READINESS.md). These changes remain unreleased as of 27 October.

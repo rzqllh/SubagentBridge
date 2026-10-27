@@ -8,12 +8,12 @@ The C00–C07 stacked change set brings native Python Lead/Worker orchestration 
 
 The full development history is in [the parity audit](SIMPUL_CINDY_PARITY_REPORT.md). The current PR stack is [#9](https://github.com/rzqllh/SubagentBridge/pull/9) through [#16](https://github.com/rzqllh/SubagentBridge/pull/16), each stacked on its predecessor. This is **not the same as eight independently merged releases**.
 
-## Install the published baseline
+## Install v1.1.0
 
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.0.0
+git checkout v1.1.0
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m subagentbridge.server
@@ -56,3 +56,12 @@ Before deleting local worktrees, inspect their individual Git status, ignored fi
 ## Attribution
 
 Simpul is independently implemented in Python and does not bundle Cindy source code. Cindy's architecture was studied for its multi-worker coordination patterns. See [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md), including the upstream project and pinned research revision. The release must preserve the notice. 
+
+## Publication receipt
+
+- GitHub Release [v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0), published 27 October 2026.
+- Main merge commit: `a29f0d98957651e482fbae989a906bb09873f329`.
+- Candidate CI: 40440192101, 4/4 PASS; tested tree SHA `36551fe8faa25bd4c2886db0c41c8d4cab7bd39c` matches main merge tree.
+- Release workflow: [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542), SUCCESS.
+- Assets: wheel, source archive, SHA256SUMS.txt.
+- E18 same-user OS confinement remains BLOCKED (accepted risk), not a kernel sandbox.
