@@ -615,18 +615,21 @@ class CodexP1P2RegressionTests(unittest.TestCase):
         )
         self.assertEqual(res_pending_recheck["status"], "BLOCKED")
 
-        # 6. Granted human approval authorizes execution
+        # 6. A model-callable "human" string or supplied token is never proof
+        # of independently authenticated human approval.
         app_res = approve_command(action_id, approver="security_officer")
-        self.assertEqual(app_res["status"], "APPROVED")
+        self.assertEqual(app_res["status"], "BLOCKED")
+        self.assertEqual(
+            approve_command(action_id, approver="human", auth_token="attacker-chosen")["status"],
+            "BLOCKED",
+        )
 
-        # Now re-running with exact approved parameters proceeds past gate
-        res_approved = execute_run(
+        # 7. No caller can use legacy approval to move past the gate, even once.
+        res_still_blocked = execute_run(
             run_id=run_id,
             commands={"default": ["echo", "harmless hello"]},
         )
-        self.assertNotEqual(res_approved["status"], "BLOCKED")
-
-        # 7. Replay protection: approval token is single-use consumed
+        self.assertEqual(res_still_blocked["status"], "BLOCKED")
         res_replay = execute_run(
             run_id=run_id,
             commands={"default": ["echo", "harmless hello"]},

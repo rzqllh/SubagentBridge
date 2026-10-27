@@ -26,3 +26,7 @@ Data migration takes a consistent SQLite online backup before changing a legacy 
 E18 same-user co-process confinement remains blocked. Per-host external CLI integrations and out-of-band approval interactions require environment-specific end-to-end validation. CI passing does not certify malicious-worker confinement. No release may claim zero residual vulnerabilities or production safety solely from lint/static scanners.
 
 For responsibly disclosed security concerns, use GitHub's repository security reporting feature if enabled or open an issue without posting secrets, exploit credentials or sensitive logs.
+
+## Important v1.1.2 approval-gate correction (candidate)
+
+The `v1.1.1` MCP implementation inadvertently exposed `approve_command` as a model-callable tool and did not authenticate the supplied `auth_token`. The security-corrective v1.1.2 branch removes this tool from the MCP registry and turns the legacy Python function into unconditional `BLOCKED`. Privileged commands cannot be approved by a model, chat string, or caller-provided token. A genuine independently authenticated human-operator approval channel remains to be implemented. This is a deliberate fail-closed compatibility restriction and must not be treated as full E18 or enterprise approval assurance. See [Issue #22](https://github.com/rzqllh/SubagentBridge/issues/22).
