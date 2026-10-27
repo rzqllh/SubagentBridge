@@ -12,6 +12,7 @@ Verifies:
 from __future__ import annotations
 
 import time
+import sqlite3
 from pathlib import Path
 from secrets import compare_digest
 
@@ -364,3 +365,60 @@ def test_verifier_failure_does_not_mutate_approval(tmp_path: Path, operator: Ope
     with pytest.raises(PermissionError, match="verification failed"):
         boundary.resolve_by_operator(req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator)
     assert boundary.get_request(req.action_id).state == ApprovalState.BLOCKED
+
+
+def test_public_request_objects_cannot_modify_trusted_decision_state(tmp_path: Path):
+    boundary = fixture_boundary()
+    req = boundary.create_request(
+        session_id="w", task_id="t", command=["echo", "test"], workspace_path=str(tmp_path),
+    )
+    req.state = ApprovalState.APPROVED
+    req.operator_verified = True
+    from_lookup = boundary.get_request(req.action_id)
+    assert from_lookup is not None
+    from_lookup.state = ApprovalState.APPROVED
+    from_lookup.operator_verified = True
+    from_pending = boundary.list_pending()[0]
+    from_pending.state = ApprovalState.APPROVED
+    from_pending.operator_verified = True
+    assert boundary.get_request(req.action_id).state == ApprovalState.BLOCKED
+    ok, reason, ticket = boundary.consume_for_execution(
+        req.action_id, session_id="w", task_id="t", command=["echo", "test"],
+        workspace_path=str(tmp_path),
+    )
+    assert not ok and ticket is None and "not APPROVED" in reason
+
+
+def test_pre_upgrade_persisted_approved_action_without_verification_is_denied(tmp_path: Path):
+    db = tmp_path / "legacy.db"
+    before = fixture_boundary(db_path=db)
+    req = before.create_request(
+        session_id="w", task_id="t", command=["echo", "test"], workspace_path=str(tmp_path),
+    )
+    # Simulates an APPROVED row from the previous self-asserted operator code.
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE operator_approvals SET state='APPROVED' WHERE action_id=?", (req.action_id,))
+    after = fixture_boundary(db_path=db)
+    assert after.rehydrate_from_disk() == 1
+    ok, reason, ticket = after.consume_for_execution(
+        req.action_id, session_id="w", task_id="t", command=["echo", "test"],
+        workspace_path=str(tmp_path),
+    )
+    assert not ok and ticket is None and "no verified operator provenance" in reason
+
+
+def test_old_schema_migrates_with_unverified_default(tmp_path: Path):
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("""CREATE TABLE operator_approvals (
+            action_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, task_id TEXT NOT NULL,
+            command_json TEXT NOT NULL, workspace_path TEXT NOT NULL,
+            nonce TEXT NOT NULL UNIQUE, created_at REAL NOT NULL,
+            expires_at REAL NOT NULL, state TEXT NOT NULL, decision TEXT,
+            operator_id TEXT, operator_role TEXT, operator_channel TEXT,
+            operator_notes TEXT, questions_json TEXT, answers_json TEXT
+        )""")
+    fixture_boundary(db_path=db)
+    with sqlite3.connect(db) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")}
+    assert "operator_verified" in columns
