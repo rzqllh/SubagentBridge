@@ -1,8 +1,6 @@
 """Approval lifetime & renewal regressions; fixture secret is NOT human identity."""
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from subagentbridge.approval.broker import ApprovalBroker, ApprovalState
