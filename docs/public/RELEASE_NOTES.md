@@ -2,7 +2,7 @@
 
 ## Version 1.1.0 — supervised beta release candidate
 
-Status on this document's initial publication: **candidate pending successful combined-stack review, merge and release tag**. The GitHub release page, not this document, is authoritative for whether 1.1.0 has actually shipped.
+The 1.1.0 release is published only when GitHub Actions has verified the exact final `main` commit and created the corresponding GitHub prerelease. Check the [Releases page](https://github.com/rzqllh/SubagentBridge/releases) for the actual tag and publication status.
 
 ### Highlights
 
