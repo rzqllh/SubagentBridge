@@ -2,7 +2,7 @@
 
 **Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
-> **Published:** [Simpul v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1), 27 October 2026, merge SHA `861f040dc12c33da681331e454ef41299f2dc70b`. 4/4 CI PASS; release workflow [40444832484](https://github.com/rzqllh/SubagentBridge/actions/runs/40444832484) SUCCESS. Supervised runtime patch, **not** enterprise OS isolation certification.
+> **Published:** [Simpul v1.1.2](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.2), 27 October 2026, merge SHA `a6d85a8fe6fe23086afdbd45f1703a2013bb6dc3`. 4/4 CI PASS; release workflow [40449725712](https://github.com/rzqllh/SubagentBridge/actions/runs/40444832484) SUCCESS. Supervised runtime patch, **not** enterprise OS isolation certification.
 
 ## What is implemented in Simpul
 
@@ -17,6 +17,8 @@
 - Native multi-worker team coordination: Lead/Worker distinct sessions, durable priority dispatch queue, status lifecycles, SQLite transactional persistence, worktree isolation, and crash recovery (architecturally inspired by Cindy research, independently implemented in Python).
 
 **Execution Lifecycle:** `submit_goal(..., execute=True)` or `execute_run(run_id, commands=...)` executes the complete supervised PM → Developer → QA lifecycle. Under SIM-403 strict fail-closed enforcement, tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status.
+
+Worker environment credential scrubbing and an optional Linux dedicated-user launch are under review for v1.1.3; see [Worker Identity Security](docs/WORKER_ISOLATION.md). E18 remains BLOCKED.
 
 ## Safety and evidence status
 
@@ -39,7 +41,7 @@ Requires Python 3.11–3.13 and Git. Example for PowerShell:
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.1
+git checkout v1.1.2
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
