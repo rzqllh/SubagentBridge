@@ -6,6 +6,10 @@
 
 The child process now uses Python `-P` safe-path, so a workspace-local `subagentbridge` module cannot replace the real worker entrypoint. SQLite reads/writes share an internal lock. Recovery preflights all human approvals and refuses stale or consumed execution tickets; unverified side effects require operator reconciliation. These controls are defense in depth and **do not remove E18**.
 
+## Worker environment security hardening (unreleased candidate)
+
+The latest development branch introduces a trusted-host worker environment allowlist that excludes API keys, GitHub/cloud tokens, and arbitrary `PYTHONPATH`, plus an optional Linux dedicated-user UID/GID drop that fails closed without required privileges. This reduces accidental credential inheritance but does not isolate a malicious same-user worker; Windows dedicated-user execution, network confinement, and adversarial validation are not yet supported. Details: [Worker Isolation Boundary](../WORKER_ISOLATION.md).
+
 ## Trust boundaries
 
 - An MCP tool caller or model output is **not** an authenticated human.
