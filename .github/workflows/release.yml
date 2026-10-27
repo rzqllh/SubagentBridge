@@ -74,5 +74,11 @@ jobs:
             echo "Release $TAG already exists; not replacing any published assets."
             exit 0
           fi
+          if existing_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha' 2>/dev/null); then
+            if [ "$existing_sha" != "$GITHUB_SHA" ]; then
+              echo "Refusing release: pre-existing tag $TAG points to $existing_sha, not $GITHUB_SHA" >&2
+              exit 1
+            fi
+          fi
           gh release create "$TAG" --target "$GITHUB_SHA" --title "Simpul $TAG — Supervised Beta" --prerelease --notes-file docs/public/RELEASE_NOTES.md
           gh release view "$TAG" --json tagName,isPrerelease,targetCommitish,url
