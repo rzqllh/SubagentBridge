@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass
 from secrets import token_hex
 from typing import Any, IO
@@ -26,6 +27,7 @@ from subagentbridge.domain.team_contracts import (
     WorkerConfig,
     AgentSession,
 )
+from subagentbridge.execution.worker_isolation import WorkerIsolationPolicy, worker_launch_configuration
 from subagentbridge.storage.team_store import TeamStore
 from subagentbridge.approval.trusted_authority import (
     TrustedApprovalAuthority,
@@ -118,6 +120,7 @@ class WorkerProcessRecord:
     worktree_path: str | None = None
     exit_code: int | None = None
     session_secret: str = ""
+    isolation_mode: str = "inherited"
 
 
 class WorkerProcessController:
@@ -127,7 +130,9 @@ class WorkerProcessController:
         self,
         store: TeamStore,
         approval_authority: TrustedApprovalAuthority | None = None,
+        isolation_policy: WorkerIsolationPolicy | None = None,
     ) -> None:
+        self.isolation_policy = isolation_policy or WorkerIsolationPolicy()
         self.store = store
         self.approval_authority = approval_authority or get_trusted_authority()
         self._processes: dict[str, subprocess.Popen[str]] = {}
@@ -168,10 +173,12 @@ class WorkerProcessController:
 
         cwd = worktree_path if worktree_path and os.path.isdir(worktree_path) else None
 
-        env = dict(os.environ)
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        existing_pp = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{existing_pp}" if existing_pp else repo_root
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        # Child environments are allowlisted even in compatibility mode.
+        # Dedicated-user mode fails closed: never fall back to inherited UID.
+        env, privilege_kwargs = worker_launch_configuration(
+            self.isolation_policy, code_root=repo_root
+        )
 
         proc = subprocess.Popen(
             cmd,
@@ -182,6 +189,7 @@ class WorkerProcessController:
             bufsize=1,
             cwd=cwd,
             env=env,
+            **privilege_kwargs,
         )
 
         if proc.stdout is None or proc.stdin is None:
@@ -207,6 +215,18 @@ class WorkerProcessController:
 
         init_event = json.loads(init_line.strip())
         child_pid = int(init_event.get("pid", proc.pid))
+        if child_pid != proc.pid:
+            kill_process_tree(proc.pid)
+            raise RuntimeError("Worker INIT PID mismatch with child process handle")
+        if self.isolation_policy.mode == "dedicated_user":
+            assert self.isolation_policy.uid is not None and self.isolation_policy.gid is not None
+            child_identity = psutil.Process(proc.pid)
+            if (
+                child_identity.uids().effective != self.isolation_policy.uid
+                or child_identity.gids().effective != self.isolation_policy.gid
+            ):
+                kill_process_tree(proc.pid)
+                raise PermissionError("Dedicated worker OS UID/GID verification failed")
         create_time = float(init_event.get("create_time", 0.0))
         if create_time <= 0:
             try:
@@ -226,6 +246,7 @@ class WorkerProcessController:
             tokens_consumed=config.tokens_consumed,
             worktree_path=worktree_path,
             session_secret=session_secret,
+            isolation_mode=self.isolation_policy.mode,
         )
 
         self._processes[config.worker_id] = proc
