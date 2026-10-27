@@ -1,3 +1,7 @@
+## 27 October 2026 — Active release candidate update
+
+The C00–C07 PR stack (#9–#16) adds team sessions, real subprocess IPC, authenticated handoffs, SQLite state/checkpoints, worktree continuity, native Simpul names and Cindy-attributed migration compatibility. This work is being developed and verified on `simpul/15-native-naming`, **not yet published from `main`**. Follow the exact PR head SHA, GitHub Actions matrix and unresolved review threads before describing it as released. The existing `v1.0.0` tag remains the documented published baseline. Safety boundary: `AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`, E18 `BLOCKED`. See [release readiness](simpul/RELEASE_READINESS.md) and [parity report](simpul/SIMPUL_CINDY_PARITY_REPORT.md).
+
 # Simpul — Project status and evidence boundaries
 
 **As of:** 23 October 2026  

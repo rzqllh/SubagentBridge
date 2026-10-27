@@ -1,3 +1,7 @@
+## 27 October 2026 — Candidate API additions
+
+The newer C07 branch exposes **Python-library** constructs `subagentbridge.domain.team_contracts.AgentTeam`, `AgentSession`, `AgentRole`, `WorkerConfig`, `QueueItem`, `WorkerCheckpoint`; `subagentbridge.storage.team_store.TeamStore`; `subagentbridge.team.team_manager.TeamManager`; and `subagentbridge.execution.integration_adapter.IntegrationProbe`. These are not automatically added MCP tools: do not confuse a Python method with an exposed model-callable MCP endpoint. Legacy `Orca*` symbols are maintained for migration, with read-only legacy SQL views. Verified completion needs real execution evidence, artifact integrity and authenticated authorization. Refer to [release readiness](simpul/RELEASE_READINESS.md). These changes remain unreleased as of 27 October.
+
 # Simpul — MCP API reference (development candidate)
 
 The public name is **Simpul**; the Python module and MCP server name remain `subagentbridge`. This reference describes signatures found in `subagentbridge/server.py` on the `integrate/roadmap-v4-verified` branch as reviewed 23 October 2026, **not** the older default-branch implementation.

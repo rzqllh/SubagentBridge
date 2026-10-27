@@ -1,3 +1,7 @@
+## Candidate versus published installation (27 October 2026)
+
+`v1.0.0` is the last documented published release. Install it from its tag for stable reproduction. C00–C07 features are still reviewed on `simpul/15-native-naming`; they are **not available on v1.0.0**. To test that candidate, explicitly checkout that branch and run the four-platform CI-equivalent commands shown in [release readiness](simpul/RELEASE_READINESS.md). Back up any legacy SQLite database before testing an upgrade; migration creates a logical pre-migration backup. The MCP stdio entrypoint remains `python -m subagentbridge.server`, not a standalone chat application.
+
 # Simpul — Installation and candidate quick start
 
 Simpul is the public name. The Python distribution and import package remain `subagentbridge`. **The default GitHub branch still contains an older baseline**; this guide applies to the PR #3 development candidate and is not a general-availability release guide.
