@@ -97,6 +97,12 @@ def resume_worker_from_checkpoint(
         if wt_path.exists() and wt_path.is_dir():
             worktree_path = str(wt_path)
             session.config = replace(session.config, working_dir=worktree_path)
+    elif session.config.working_dir:
+        # Standalone workers still need a consistent exact workspace binding
+        # for their human approval and HMAC tickets.
+        configured = Path(session.config.working_dir)
+        if configured.is_dir():
+            worktree_path = str(configured)
 
     if controller:
         record = controller.spawn_worker(session.config, worktree_path=worktree_path)
@@ -292,7 +298,10 @@ def resume_task_from_checkpoint(
                     raise ValueError("Invalid approval action mapping")
                 action_id = action_ids.get(step_name)
                 action = approval_authority.broker.get_action(action_id) if action_id else None
-                if action is None:
+                if action is None or (
+                    action.state == ApprovalState.APPROVED
+                    and approval_authority.is_action_consumed(action.action_id)
+                ):
                     command = step_payload["command"]
                     action = approval_authority.request_command_approval(
                         worker_id=worker_id,
@@ -392,7 +401,10 @@ def resume_task_from_checkpoint(
     if "command" in payload and approval_authority:
         action_id = item.payload.get("_atomic_approval_action_id")
         action = approval_authority.broker.get_action(action_id) if action_id else None
-        if action is None:
+        if action is None or (
+            action.state == ApprovalState.APPROVED
+            and approval_authority.is_action_consumed(action.action_id)
+        ):
             command = payload["command"]
             action = approval_authority.request_command_approval(
                 worker_id=worker_id, task_id=item.task_id,
