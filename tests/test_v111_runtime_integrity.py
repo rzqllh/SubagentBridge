@@ -6,8 +6,6 @@ import tempfile
 import threading
 from pathlib import Path
 
-import pytest
-
 from subagentbridge.approval.broker import ApprovalBroker
 from subagentbridge.approval.trusted_authority import TrustedApprovalAuthority
 from subagentbridge.domain.team_contracts import QueueTaskStatus, WorkerConfig
