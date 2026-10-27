@@ -1,56 +1,33 @@
 # Simpul
 
-**Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
+**Simpul** (formerly SubagentBridge) is a supervised, native-first [Model Context Protocol](https://modelcontextprotocol.io/) subagent supervisor. It provides a local MCP stdio endpoint, a lead/worker coordination layer and evidence-aware task execution for development workflows.
 
-> **Production reality & release status — October 2026:** Simpul v1.0.0 is published on GitHub Releases (commit `953c0f5`, tag `v1.0.0`). All roadmap phases P00–P06 (PRs #2–#8) are merged into `main`. Current governance strictly operates under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`. In accordance with genuine adversarial evidence (E18), same-user OS process isolation is recognized as a documented residual boundary (`RISK_ACCEPTED_SAME_IDENTITY`), not OS-level containerization. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md).
+**Release track:** `v1.0.0` is the previously published baseline. This branch prepares **v1.1.0 (supervised beta)**; a proposed version in `pyproject.toml` or a passing PR is **not** a published release. Check [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) for the actual published versions and matching tags.
 
-## What is implemented in Simpul
+## What Simpul does
 
-- Typed `Run`, `Task`, `Dispatch`, `Evidence` and approval contracts.
-- SQLite-backed audit events, message bus and budget reservations with transaction controls.
-- Policy classification, operation-bound approval broker and replay checks.
-- Supervised read-only executor, bounded output and worker lifecycle components.
-- PM → Developer → QA coordinator and evidence/receipt interfaces.
-- Locally pinned skills registry with path and hash checking.
-- Local-loopback 9Router text-client interface with explicit model discovery and budget bounds.
-- MCP stdio server with run submission, readback, cancellation, and supervised execution tools (`submit_goal`, `execute_run`, `execute_task`).
-- Native multi-worker team coordination: Lead/Worker distinct sessions, durable priority dispatch queue, status lifecycles, SQLite transactional persistence, worktree isolation, and crash recovery (architecturally inspired by Cindy research, independently implemented in Python).
+- Runs a supervised PM → Developer → QA lifecycle with command admission, evidence and result verification.
+- Exposes an MCP stdio server to a compatible client; it does not provide a standalone chat UI.
+- Coordinates multiple native worker subprocesses, each with a separate PID, stdio IPC and bounded lifecycle.
+- Persists teams, sessions, queue, messages, handoffs and checkpoints in SQLite WAL.
+- Supports dispatch deduplication, steering, interruption, audited recovery and per-worker Git worktrees.
+- Validates physical completion artifacts, SHA-256 digests and execution receipts before successful handoff.
+- Registers capability-scoped host adapters; adapter presence is not proof of a completed live external-host workflow.
 
-**Execution Lifecycle:** `submit_goal(..., execute=True)` or `execute_run(run_id, commands=...)` executes the complete supervised PM → Developer → QA lifecycle. Under SIM-403 strict fail-closed enforcement, tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status.
+## Installation
 
-## Safety and evidence status
+Requires Git and Python 3.11–3.13. A release checkout should use a **published** GitHub tag. For current source checkout:
 
-| Area | Current boundary |
-| --- | --- |
-| Autonomy | `AUTONOMY: OFF`; unattended privileged changes are prohibited |
-| Worker containment | D-01 `RISK_ACCEPTED_SAME_IDENTITY`; **not** OS-level isolation (E18 classified as **BLOCKED**) |
-| Human decisions | D-03 `CHAT_APPROVAL`; an LLM is not an authenticated human approver |
-| Model transport | D-02 local literal IP loopback with verified Bearer token authentication |
-| Verification | 23 October Post-Release Corrective Audit: 330 passed, 4 skipped across Windows test discovery |
-| Confinement Status | E18 is **BLOCKED**; standard OS user permissions cannot isolate workers under same UID; autonomy strictly forbidden |
-| Host Integration | Antigravity MCP stdio subprocess communication and host acceptance fully verified |
-
-See [project status](docs/SIMPUL_STATUS.md), [acceptance gates](docs/simpul/ACCEPTANCE_GATES.md), and [security limitations](docs/COMPATIBILITY_LIMITATIONS.md).
-
-## Quick start — candidate branch
-
-Requires Python 3.11–3.13 and Git. Example for PowerShell:
-
-```powershell
+```bash
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.0.0
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
-.\.venv\Scripts\python.exe -m subagentbridge.server
+python -m pip install -e .
+python -m subagentbridge.server
 ```
 
-The last command runs an MCP stdio server and expects an MCP client; it does not open an interactive chat. Installing dependencies may access package indexes. Consult the [installation guide](docs/INSTALLATION_QUICKSTART.md) for Linux and configuration considerations.
+The last command starts an MCP **stdio** server, not an interactive chat. For virtual environments, platform-specific commands, tests and host configuration, see the [public getting-started guide](docs/public/GETTING_STARTED.md).
 
-### MCP host entry
-
-Use the venv's Python interpreter, or launch your MCP host with that venv on `PATH`:
+Generic MCP client entry (point `command` to your virtual environment's Python when necessary):
 
 ```json
 {
@@ -63,27 +40,25 @@ Use the venv's Python interpreter, or launch your MCP host with that venv on `PA
 }
 ```
 
-The display name is **Simpul**, but the MCP tool namespace, Python module, distribution, and `SUBAGENTBRIDGE_*` settings intentionally keep their existing technical identifiers. No mandatory migration/renaming is implied.
+## Safety boundary
 
-### Exposed production-oriented MCP operations
+**Supervised beta, not a malicious-worker sandbox.** `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL` remain operational requirements. E18 same-user OS worker confinement is **BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)**. Separate worker processes are not separate OS security principals. A production out-of-band authenticated human approval UI is not yet integrated. Never treat the in-memory broker fixture or an MCP model message as authenticated human approval.
 
-`submit_goal(goal, workspace_path=None, model=None)`, `get_run(run_id)`, `list_tasks(run_id)`, `get_task_evidence(run_id, task_id)`, `get_pending_approvals()`, `reject_approval(action_id, reason="")`, `get_model_usage()`, and `cancel_run(run_id, reason="")`.
+Git worktrees isolate working copies, not credentials; run unknown code only under an appropriately restricted OS identity and in disposable workspaces.
 
-The legacy session inspection endpoints remain available in this candidate, but legacy raw-runner execution paths are locked down. `approve_action` and `apply_code_fix` are **not model-callable MCP tools**; their compatibility functions deny privileged operations.
+## Public documentation
 
-## Documentation
+- [Documentation index](docs/public/README.md)
+- [Get started](docs/public/GETTING_STARTED.md)
+- [Architecture](docs/public/ARCHITECTURE.md)
+- [Security and limitations](docs/public/SECURITY.md)
+- [Legacy SQLite migration](docs/public/MIGRATION.md)
+- [Release notes](docs/public/RELEASE_NOTES.md)
+- [Existing API reference](docs/API_REFERENCE.md)
+- [Historical Cindy/Orca parity engineering report](docs/simpul/SIMPUL_CINDY_PARITY_REPORT.md)
 
-- [Developer roadmap, backlog, acceptance gates and next-session handoff](docs/simpul/README.md)
+## License and credit
 
-- [Project status and evidence boundaries](docs/SIMPUL_STATUS.md)
-- [Installation](docs/INSTALLATION_QUICKSTART.md)
-- [MCP integration](docs/MCP_INTEGRATION.md) · [API reference](docs/API_REFERENCE.md)
-- [Architecture](docs/ARCHITECTURE.md) · [Configuration](docs/CONFIGURATION.md)
-- [Security / HITL](docs/SECURITY_APPROVAL_MODEL.md) · [Confinement](docs/TOOL_EXECUTOR_CONFINEMENT.md)
-- [9Router](docs/NINE_ROUTER_SETUP.md) · [Skills registry](docs/SKILLS_REGISTRY.md)
-- [Compatibility and limitations](docs/COMPATIBILITY_LIMITATIONS.md)
-- [Historical candidate test evidence](docs/ACCEPTANCE_MATRIX_E01_E21_EVIDENCE.md)
+Simpul is MIT licensed; see [LICENSE](LICENSE). The multi-worker architecture was informed by studying [Cindy](https://github.com/makecindy/cindy) by XD Inc. (Apache-2.0). Simpul's Python implementation is independent, not a Cindy fork. See [Third-party notices](THIRD_PARTY_NOTICES.md) for upstream license and pinned research provenance.
 
-## License and attribution
-
-[MIT](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) (including Cindy/Orca architectural attribution under Apache-2.0). Technical identity retains `SubagentBridge` identifiers for compatibility.
+The Python distribution, import module, executable and MCP identifier intentionally retain `subagentbridge` for compatibility.
