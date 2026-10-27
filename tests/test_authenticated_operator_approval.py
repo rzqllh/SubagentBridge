@@ -422,3 +422,32 @@ def test_old_schema_migrates_with_unverified_default(tmp_path: Path):
     with sqlite3.connect(db) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")}
     assert "operator_verified" in columns
+
+
+def test_ledger_failure_cannot_leave_operator_action_approved(tmp_path: Path, operator: OperatorIdentity, monkeypatch):
+    ledger = AuditLedger(tmp_path / "audit_failure.db")
+    boundary = fixture_boundary(db_path=tmp_path / "decisions.db", ledger=ledger)
+    req = boundary.create_request(
+        session_id="w", task_id="t", command=["echo", "test"], workspace_path=str(tmp_path),
+    )
+    original_append = ledger.append
+
+    def fail_decision_audit(**kwargs):
+        if kwargs.get("event_type") == "OPERATOR_DECISION":
+            raise OSError("audit disk unavailable")
+        return original_append(**kwargs)
+
+    monkeypatch.setattr(ledger, "append", fail_decision_audit)
+    with pytest.raises(OSError, match="audit disk unavailable"):
+        boundary.resolve_by_operator(req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator)
+    after = boundary.get_request(req.action_id)
+    assert after is not None and after.state == ApprovalState.BLOCKED
+    assert not after.operator_verified
+    ok, reason, ticket = boundary.consume_for_execution(
+        req.action_id, session_id="w", task_id="t",
+        command=["echo", "test"], workspace_path=str(tmp_path),
+    )
+    assert not ok and ticket is None and "not APPROVED" in reason
+    revived = fixture_boundary(db_path=tmp_path / "decisions.db")
+    assert revived.rehydrate_from_disk() == 1
+    assert revived.get_request(req.action_id).state == ApprovalState.BLOCKED
