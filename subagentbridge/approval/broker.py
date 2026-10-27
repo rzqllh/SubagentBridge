@@ -1,4 +1,7 @@
-"""subagentbridge/approval/broker.py — Out-of-band human approval broker (D-03, INV-04, INV-08).
+"""In-process credential-gated approval broker (D-03, INV-04, INV-08).
+
+This is NOT independently authenticated out-of-band human approval. Its secret is
+accessible to trusted in-process code, so it must not be exposed to a model/worker.
 
 Enforces:
 1. Separated human identity: untrusted workers have no access to approval secrets.
@@ -36,7 +39,7 @@ class ApprovalAction:
 
 
 class ApprovalBroker:
-    """Out-of-band authenticated human approval broker."""
+    """Local approval-state broker. Production human identity is not verified here."""
 
     def __init__(self, *, broker_secret: str | None = None, approval_ttl_seconds: float = 900.0) -> None:
         if not 0 < approval_ttl_seconds <= 86400:
