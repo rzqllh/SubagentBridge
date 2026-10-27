@@ -428,7 +428,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                 dedup_expr = legacy_expr("dedup_key")
                 priority_expr = legacy_expr("priority")
                 steering_expr = legacy_expr("steering_json")
-                conflicts = conn.execute(f"""
+                conflicts = conn.execute(f"""  # nosec B608 - SQL fragments are fixed local identifiers from a closed allowlist
                     SELECT o.dispatch_id FROM orca_queue o
                     INNER JOIN simpul_queue s ON o.dispatch_id = s.dispatch_id
                     WHERE o.team_id IS NOT s.team_id
@@ -447,7 +447,7 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
                     raise MigrationConflictError(
                         f"Conflicting primary keys between legacy orca_queue and simpul_queue: {[c[0] for c in conflicts]}"
                     )
-                conn.execute(f"""
+                conn.execute(f"""  # nosec B608 - expressions selected solely from fixed schema-column allowlist
                     INSERT INTO simpul_queue (
                         dispatch_id, team_id, from_session_id, to_session_id,
                         task_id, payload_json, status, dedup_key, priority, steering_json,
