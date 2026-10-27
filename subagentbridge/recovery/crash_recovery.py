@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from subagentbridge.approval.broker import ApprovalState
 from subagentbridge.domain.team_contracts import (
     AgentRole,
     AgentSession,
@@ -128,13 +129,30 @@ def resume_task_from_checkpoint(
     item = store.mark_task_resuming(dispatch_id)
 
     worker_id = item.to_session_id
-    if not controller.is_worker_alive(worker_id):
+    # An OS-live PID without an owned Popen/reader is NOT dispatchable after restart.
+    if not controller.has_attached_worker(worker_id):
+        if controller.is_worker_alive(worker_id):
+            item.status = QueueTaskStatus.DISPATCHED
+            item.updated_at = time.time()
+            store.save_queue_item(item)
+            return {
+                "status": "BLOCKED",
+                "reason": "ORPHANED_WORKER_IPC",
+                "worker_id": worker_id,
+                "action": "Reconcile or terminate the validated orphan process before resuming",
+            }
         session = resume_worker_from_checkpoint(worker_id, store=store, controller=controller)
     else:
         loaded = store.load_session(worker_id)
         if not loaded:
             raise KeyError(f"worker session {worker_id!r} not found")
         session = loaded
+
+    if approval_authority is not None and controller.approval_authority is not approval_authority:
+        item.status = QueueTaskStatus.DISPATCHED
+        item.updated_at = time.time()
+        store.save_queue_item(item)
+        return {"status": "BLOCKED", "reason": "APPROVAL_AUTHORITY_MISMATCH"}
 
     # Verify worktree ownership and exact commit identity
     wt = store.load_worktree(worker_id)
@@ -266,14 +284,33 @@ def resume_task_from_checkpoint(
             if worktree_path:
                 step_payload["workspace_path"] = worktree_path
 
-            # Revalidate approval ticket if step is a command
+            # Request once, persist action ID, and never dispatch until an actual
+            # out-of-band authenticated human has approved the bound action.
             if "command" in step_payload and approval_authority:
-                action = approval_authority.request_command_approval(
-                    worker_id=worker_id,
-                    task_id=f"{item.task_id}-{step_name}",
-                    command=step_payload["command"] if isinstance(step_payload["command"], list) else [step_payload["command"]],
-                    workspace_path=worktree_path or "",
-                )
+                action_ids = item.payload.setdefault("_approval_action_ids", {})
+                if not isinstance(action_ids, dict):
+                    raise ValueError("Invalid approval action mapping")
+                action_id = action_ids.get(step_name)
+                action = approval_authority.broker.get_action(action_id) if action_id else None
+                if action is None:
+                    command = step_payload["command"]
+                    action = approval_authority.request_command_approval(
+                        worker_id=worker_id,
+                        task_id=f"{item.task_id}-{step_name}",
+                        command=command if isinstance(command, list) else [command],
+                        workspace_path=worktree_path or "",
+                    )
+                    action_ids[step_name] = action.action_id
+                    store.save_queue_item(item)
+                if action.state != ApprovalState.APPROVED:
+                    item.status = QueueTaskStatus.DISPATCHED
+                    item.updated_at = time.time()
+                    store.save_queue_item(item)
+                    return {
+                        "status": "BLOCKED", "reason": "HUMAN_APPROVAL_REQUIRED",
+                        "action_id": action.action_id, "approval_state": action.state.value,
+                        "pending_step": step_name, "completed_steps": completed_steps,
+                    }
                 step_payload["approval_action_id"] = action.action_id
 
             res = controller.dispatch_task_to_worker(worker_id, f"{item.task_id}-{step_name}", step_payload)
@@ -351,6 +388,28 @@ def resume_task_from_checkpoint(
 
     if worktree_path:
         payload["workspace_path"] = worktree_path
+
+    if "command" in payload and approval_authority:
+        action_id = item.payload.get("_atomic_approval_action_id")
+        action = approval_authority.broker.get_action(action_id) if action_id else None
+        if action is None:
+            command = payload["command"]
+            action = approval_authority.request_command_approval(
+                worker_id=worker_id, task_id=item.task_id,
+                command=command if isinstance(command, list) else [command],
+                workspace_path=worktree_path or "",
+            )
+            item.payload["_atomic_approval_action_id"] = action.action_id
+            store.save_queue_item(item)
+        if action.state != ApprovalState.APPROVED:
+            item.status = QueueTaskStatus.DISPATCHED
+            item.updated_at = time.time()
+            store.save_queue_item(item)
+            return {
+                "status": "BLOCKED", "reason": "HUMAN_APPROVAL_REQUIRED",
+                "action_id": action.action_id, "approval_state": action.state.value,
+            }
+        payload["approval_action_id"] = action.action_id
 
     res = controller.dispatch_task_to_worker(worker_id, item.task_id, payload)
     if res.get("status") == "COMPLETED":
