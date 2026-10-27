@@ -18,6 +18,8 @@
 
 **Execution Lifecycle:** `submit_goal(..., execute=True)` or `execute_run(run_id, commands=...)` executes the complete supervised PM → Developer → QA lifecycle. Under SIM-403 strict fail-closed enforcement, tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status.
 
+See [Worker Isolation & Environment Security](docs/WORKER_ISOLATION.md) for credential-environment scrubbing and the experimental Linux dedicated-user policy. The E18 operating-system security boundary remains **BLOCKED**.
+
 ## Safety and evidence status
 
 | Area | Current boundary |
