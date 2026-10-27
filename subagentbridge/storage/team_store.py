@@ -865,9 +865,90 @@ class TeamStore:
             return None
         return self._row_to_queue_item(row)
 
+    def insert_queue_item_once(self, item: QueueItem) -> QueueItem:
+        """Atomically deduplicate active/finished work across SQLite connections.
+
+        Failed and cancelled attempts are retryable; completed work is not.
+        BEGIN IMMEDIATE serializes competing writers across processes.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if item.dedup_key:
+                    row = self._conn.execute(
+                        """SELECT * FROM simpul_queue
+                           WHERE team_id = ? AND dedup_key = ?
+                             AND status NOT IN (?, ?)
+                           ORDER BY created_at DESC LIMIT 1""",
+                        (item.team_id, item.dedup_key,
+                         QueueTaskStatus.FAILED.value, QueueTaskStatus.CANCELLED.value),
+                    ).fetchone()
+                    if row is not None:
+                        self._conn.execute("COMMIT")
+                        return self._row_to_queue_item(row)
+                self._conn.execute(
+                    """INSERT INTO simpul_queue
+                       (dispatch_id, team_id, from_session_id, to_session_id,
+                        task_id, payload_json, status, dedup_key, priority,
+                        steering_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (item.dispatch_id, item.team_id, item.from_session_id,
+                     item.to_session_id, item.task_id, json.dumps(item.payload),
+                     item.status.value, item.dedup_key, item.priority,
+                     json.dumps(item.steering_instructions),
+                     item.created_at, item.updated_at),
+                )
+                self._conn.execute("COMMIT")
+                return item
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+
+    def cancel_active_queue_item(self, dispatch_id: str, lead_session_id: str, reason: str) -> QueueItem:
+        """Do not rewrite terminal completion, even if cancellation races handoff."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM simpul_queue WHERE dispatch_id = ?", (dispatch_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(dispatch_id)
+                item = self._row_to_queue_item(row)
+                if item.status not in (
+                    QueueTaskStatus.PENDING, QueueTaskStatus.DISPATCHED,
+                    QueueTaskStatus.RUNNING,
+                ):
+                    raise ValueError(f"Task cannot be cancelled from {item.status.value}")
+                if reason:
+                    item.steering_instructions.append({
+                        "cancellation_reason": reason, "cancelled_by": lead_session_id,
+                        "timestamp": time.time(),
+                    })
+                item.status = QueueTaskStatus.CANCELLED
+                item.updated_at = time.time()
+                cur = self._conn.execute(
+                    """UPDATE simpul_queue SET status = ?, steering_json = ?, updated_at = ?
+                       WHERE dispatch_id = ? AND status IN (?, ?, ?)""",
+                    (item.status.value, json.dumps(item.steering_instructions),
+                     item.updated_at, dispatch_id, QueueTaskStatus.PENDING.value,
+                     QueueTaskStatus.DISPATCHED.value, QueueTaskStatus.RUNNING.value),
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError("Concurrent task finalization prevented cancellation")
+                self._conn.execute("COMMIT")
+                return item
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+
     def find_queue_item_by_dedup(self, team_id: str, dedup_key: str) -> QueueItem | None:
         cur = self._conn.execute(
-            "SELECT * FROM simpul_queue WHERE team_id = ? AND dedup_key = ?", (team_id, dedup_key)
+            """SELECT * FROM simpul_queue WHERE team_id = ? AND dedup_key = ?
+               AND status NOT IN (?, ?) ORDER BY created_at DESC LIMIT 1""",
+            (team_id, dedup_key, QueueTaskStatus.FAILED.value, QueueTaskStatus.CANCELLED.value)
         )
         row = cur.fetchone()
         if not row:
