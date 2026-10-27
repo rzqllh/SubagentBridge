@@ -171,7 +171,17 @@ class WorkerProcessController:
         if worktree_path:
             cmd.extend(["--worktree-path", worktree_path])
 
-        cwd = worktree_path if worktree_path and os.path.isdir(worktree_path) else None
+        if self.isolation_policy.mode == "dedicated_user":
+            # Never fall back to supervisor cwd when a configured isolated
+            # workspace is missing, inaccessible, or not a directory.
+            if not worktree_path:
+                raise ValueError("Dedicated worker requires an explicit working directory")
+            workspace = Path(worktree_path).resolve(strict=True)
+            if not workspace.is_dir():
+                raise NotADirectoryError(f"Dedicated worker workspace is not a directory: {workspace}")
+            cwd = str(workspace)
+        else:
+            cwd = worktree_path if worktree_path and os.path.isdir(worktree_path) else None
 
         repo_root = Path(__file__).resolve().parent.parent.parent
         # Child environments are allowlisted even in compatibility mode.
