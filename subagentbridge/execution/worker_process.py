@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass
 from secrets import token_hex
 from typing import Any, IO
@@ -26,6 +27,7 @@ from subagentbridge.domain.team_contracts import (
     WorkerConfig,
     AgentSession,
 )
+from subagentbridge.execution.worker_isolation import WorkerIsolationPolicy, worker_launch_configuration
 from subagentbridge.storage.team_store import TeamStore
 from subagentbridge.approval.trusted_authority import (
     TrustedApprovalAuthority,
@@ -118,6 +120,7 @@ class WorkerProcessRecord:
     worktree_path: str | None = None
     exit_code: int | None = None
     session_secret: str = ""
+    isolation_mode: str = "inherited"
 
 
 class WorkerProcessController:
@@ -127,12 +130,15 @@ class WorkerProcessController:
         self,
         store: TeamStore,
         approval_authority: TrustedApprovalAuthority | None = None,
+        isolation_policy: WorkerIsolationPolicy | None = None,
     ) -> None:
+        self.isolation_policy = isolation_policy or WorkerIsolationPolicy()
         self.store = store
         self.approval_authority = approval_authority or get_trusted_authority()
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._readers: dict[str, TimedStreamReader] = {}
         self._records: dict[str, WorkerProcessRecord] = {}
+        self._job_handles: dict[str, Any] = {}
 
     def spawn_worker(
         self,
@@ -154,8 +160,6 @@ class WorkerProcessController:
             config.team_id,
             "--role",
             config.role,
-            "--session-secret",
-            session_secret,
         ]
         if config.budget_tokens is not None:
             cmd.extend(["--budget-tokens", str(config.budget_tokens)])
@@ -166,12 +170,25 @@ class WorkerProcessController:
         if worktree_path:
             cmd.extend(["--worktree-path", worktree_path])
 
-        cwd = worktree_path if worktree_path and os.path.isdir(worktree_path) else None
+        cwd: str | None
+        if self.isolation_policy.mode == "dedicated_user":
+            # Never fall back to supervisor cwd when a configured isolated
+            # workspace is missing, inaccessible, or not a directory.
+            if not worktree_path:
+                raise ValueError("Dedicated worker requires an explicit working directory")
+            workspace = Path(worktree_path).resolve(strict=True)
+            if not workspace.is_dir():
+                raise NotADirectoryError(f"Dedicated worker workspace is not a directory: {workspace}")
+            cwd = str(workspace)
+        else:
+            cwd = worktree_path if worktree_path and os.path.isdir(worktree_path) else None
 
-        env = dict(os.environ)
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        existing_pp = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{existing_pp}" if existing_pp else repo_root
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        # Child environments are allowlisted even in compatibility mode.
+        # Dedicated-user mode fails closed: never fall back to inherited UID.
+        env, privilege_kwargs = worker_launch_configuration(
+            self.isolation_policy, code_root=repo_root
+        )
 
         proc = subprocess.Popen(
             cmd,
@@ -182,11 +199,25 @@ class WorkerProcessController:
             bufsize=1,
             cwd=cwd,
             env=env,
+            **privilege_kwargs,
         )
 
         if proc.stdout is None or proc.stdin is None:
             proc.kill()
             raise RuntimeError(f"failed to initialize IPC pipes for worker {config.worker_id}")
+
+        if self.isolation_policy.mode == "windows_job_restricted":
+            if sys.platform != "win32":
+                kill_process_tree(proc.pid)
+                raise RuntimeError("WINDOWS_JOB_RESTRICTED_UNAVAILABLE: mode is only supported on Windows")
+            try:
+                from .worker_isolation import assign_windows_job_restrictions
+
+                job_handle = assign_windows_job_restrictions(int(proc._handle))  # type: ignore[attr-defined]
+                self._job_handles[config.worker_id] = job_handle
+            except Exception as exc:
+                kill_process_tree(proc.pid)
+                raise RuntimeError(f"Failed to apply Windows Job Object restrictions: {exc}") from exc
 
         reader = TimedStreamReader(proc.stdout)
         self._readers[config.worker_id] = reader
@@ -207,6 +238,27 @@ class WorkerProcessController:
 
         init_event = json.loads(init_line.strip())
         child_pid = int(init_event.get("pid", proc.pid))
+        if child_pid != proc.pid:
+            kill_process_tree(proc.pid)
+            raise RuntimeError("Worker INIT PID mismatch with child process handle")
+        if self.isolation_policy.mode == "dedicated_user":
+            assert self.isolation_policy.uid is not None and self.isolation_policy.gid is not None
+            child_identity = psutil.Process(proc.pid)
+            if (
+                child_identity.uids().effective != self.isolation_policy.uid
+                or child_identity.gids().effective != self.isolation_policy.gid
+            ):
+                kill_process_tree(proc.pid)
+                raise PermissionError("Dedicated worker OS UID/GID verification failed")
+
+        # Send INIT_ACK with session secret over private stdin pipe (no CLI exposure)
+        try:
+            proc.stdin.write(json.dumps({"command": "INIT_ACK", "session_secret": session_secret}) + "\n")
+            proc.stdin.flush()
+        except OSError as exc:
+            kill_process_tree(proc.pid)
+            raise RuntimeError(f"failed to send INIT_ACK to worker {config.worker_id}: {exc}") from exc
+
         create_time = float(init_event.get("create_time", 0.0))
         if create_time <= 0:
             try:
@@ -226,6 +278,7 @@ class WorkerProcessController:
             tokens_consumed=config.tokens_consumed,
             worktree_path=worktree_path,
             session_secret=session_secret,
+            isolation_mode=self.isolation_policy.mode,
         )
 
         self._processes[config.worker_id] = proc
@@ -521,6 +574,14 @@ class WorkerProcessController:
 
         self._processes.pop(worker_id, None)
         self._readers.pop(worker_id, None)
+        job_handle = self._job_handles.pop(worker_id, None)
+        if job_handle and sys.platform == "win32":
+            try:
+                import ctypes
+
+                getattr(ctypes, "windll").kernel32.CloseHandle(job_handle)
+            except Exception:
+                pass
         return True
 
     def terminate_all(self, timeout: float = 3.0) -> None:

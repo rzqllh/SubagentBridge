@@ -11,7 +11,7 @@ Simpul is a local-first supervised MCP subagent orchestrator, not a multi-tenant
 | Shared-connection reader/writer concurrency | VERIFIED (bounded) | v1.1.1 serializes 13 reads and 10 writers via RLock; BEGIN IMMEDIATE protects cross-process resume; concurrency regressions PASS on Ubuntu/Windows Python 3.11/3.13 |
 | Recovery of in-flight commands | PARTIAL | Trusted checkpoint identity and observable artifact validation; crash before checkpoint may leave ambiguous external side effects; automatic exactly-once is not claimed |
 | Approval provenance | BLOCKED FOR ENTERPRISE (P0 hardened candidate) | HMAC-bound tickets and replay protection exist; `ApprovalBroker` uses a test/in-process credential, not an independent production human identity provider and out-of-band interface |
-| E18 hostile worker isolation | BLOCKED | Workers share same operating-system user and can reach that user's resources; requires OS-enforced least-privilege separation, identity isolation and adversarial cross-process tests |
+| E18 hostile worker isolation | BLOCKED (unreleased partial hardening) | Default workers retain same-user privileges. The development branch adds child environment scrubbing and opt-in Linux dedicated UID/GID with protected runtime path checks. Windows privilege separation, ACL/network/process limits and adversarial host tests remain missing |
 | Independent host integration coverage | PARTIAL | Adapters and MCP subprocess tests do not imply true end-to-end certification for every Antigravity/Codex/Claude/Pi build |
 | Artifact integrity and verified handoff | VERIFIED (bounded) | File existence, SHA-256, task binding and transaction-protected receipts under documented trust boundary |
 | Supply-chain/release provenance | PARTIAL | Pinned QA analyzers, immutable release SHA, wheel/sdist/checksum are present; signature/SBOM/provenance attestation and documented incident rollback remain unverified |
@@ -34,6 +34,6 @@ Simpul is a local-first supervised MCP subagent orchestrator, not a multi-tenant
 
 See [Security Model](SECURITY_APPROVAL_MODEL.md), [Public Security Guide](public/SECURITY.md) and [Compatibility Limitations](COMPATIBILITY_LIMITATIONS.md).
 
-## P0 approval-gate correction under review (v1.1.2 candidate)
+## P0 approval-gate correction published in v1.1.2
 
-A source audit of the previous v1.1.1 MCP server found that `approve_command(action_id, approver, auth_token)` ignored `auth_token` and marked pending actions as approved, despite being model-callable. The corrective branch removes that tool from MCP registration, makes the legacy function always `BLOCKED`, and adds regression coverage. This does **not** provide an authenticated human approval system; it shuts down the unsafe shortcut until an independently authenticated external channel can be reviewed. Track [issue #22](https://github.com/rzqllh/SubagentBridge/issues/22). Do not describe the change as published until v1.1.2 is released.
+A source audit of v1.1.1 found that model-callable `approve_command(action_id, approver, auth_token)` could grant approvals without authenticating the caller. Published v1.1.2 removes MCP registration and makes the compatibility callable unconditionally `BLOCKED`. **This does not provide authenticated human approval.** Follow the remaining integration in [issue #22](https://github.com/rzqllh/SubagentBridge/issues/22) and the experimental worker boundary in [Worker Isolation](WORKER_ISOLATION.md).

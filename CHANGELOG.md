@@ -7,15 +7,12 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.1.2 P0 approval-gate security correction
+## [Unreleased] — worker privilege-boundary hardening candidate
 
-This security patch is not published until CI/review and a SHA-gated release pass.
-
-- Remove `approve_command` from the MCP tool registry: model callers cannot grant their own privileged command approval.
-- Preserve the legacy Python callable only as an unconditional `BLOCKED` response; `approver` and `auth_token` parameters are never trusted.
-- Add tests that enumerate actual registered MCP tools, inspect decorator removal, and prove forged approvals cannot mutate pending states or the execution gate.
-- Breaking safety restriction: privileged commands remain BLOCKED until an independently authenticated operator approval channel is deployed. **Do not substitute chat/model text for human identity.**
-- E18 worker OS confinement and production out-of-band human approval remain BLOCKED; this patch is an emergency default-deny correction, not enterprise certification.
+- Explicit allowlist of worker environment variables excludes AI/cloud credentials and untrusted `PYTHONPATH` inheritance.
+- Optional Linux dedicated-worker UID/GID startup fails closed on missing privileges, mismatched identity or writable/symlinked runtime source. Windows dedicated identity is not implemented.
+- Negative tests cover inherited credential leakage, world-writable modules and symlinked code paths.
+- **E18 and production human identity remain BLOCKED**; these are partial supervised defenses, not enterprise signoff.
 
 ## [1.1.3] - 2026-10-27
 
@@ -26,7 +23,17 @@ This security patch is not published until CI/review and a SHA-gated release pas
 - Recovery requires a fresh human decision when an action expires rather than reusing stale approvals.
 - Execution tickets enforce finite TTL within (0, 60] seconds before consuming an approval; malformed IPC expiries are rejected without exceptions.
 - Dedicated expiry tests cover pending, already-approved, token mismatch, lifetime bounds, malformed tickets and irreversible expiration.
-- **Not enterprise-certified:** in-process broker test credentials do not prove out-of-band identity; E18 OS user isolation remains BLOCKED. No public release until 4/4 CI and review.
+- **Not enterprise-certified:** in-process broker test credentials do not prove out-of-band identity; E18 OS user isolation remains BLOCKED. The v1.1.3 release was published after its SHA-gated QA workflow succeeded.
+
+## [1.1.2] - 2026-10-27
+
+**Published:** [v1.1.2](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.2) from `a6d85a8fe6fe23086afdbd45f1703a2013bb6dc3`.
+
+- Remove `approve_command` from the MCP tool registry: model callers cannot grant their own privileged command approval.
+- Preserve the legacy Python callable only as an unconditional `BLOCKED` response; `approver` and `auth_token` parameters are never trusted.
+- Add tests that enumerate actual registered MCP tools, inspect decorator removal, and prove forged approvals cannot mutate pending states or the execution gate.
+- Breaking safety restriction: privileged commands remain BLOCKED until an independently authenticated operator approval channel is deployed. **Do not substitute chat/model text for human identity.**
+- E18 worker OS confinement and production out-of-band human approval remain BLOCKED; this patch is an emergency default-deny correction, not enterprise certification.
 
 ## [1.1.1] - 2026-10-27
 
