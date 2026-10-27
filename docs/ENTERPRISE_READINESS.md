@@ -11,11 +11,13 @@ Simpul is a local-first supervised MCP subagent orchestrator, not a multi-tenant
 | Shared-connection reader/writer concurrency | VERIFIED (bounded) | v1.1.1 serializes 13 reads and 10 writers via RLock; BEGIN IMMEDIATE protects cross-process resume; concurrency regressions PASS on Ubuntu/Windows Python 3.11/3.13 |
 | Recovery of in-flight commands | PARTIAL | Trusted checkpoint identity and observable artifact validation; crash before checkpoint may leave ambiguous external side effects; automatic exactly-once is not claimed |
 | Approval provenance | BLOCKED FOR ENTERPRISE | HMAC-bound tickets and replay protection exist; `ApprovalBroker` uses a test/in-process credential, not an independent production human identity provider and out-of-band interface |
-| E18 hostile worker isolation | BLOCKED | Workers share same operating-system user and can reach that user's resources; requires OS-enforced least-privilege separation, identity isolation and adversarial cross-process tests |
+| E18 hostile worker isolation | BLOCKED (PARTIAL hardening) | Child environment now scrubbed by default; optional Linux dedicated-user UID/GID drop fails closed and verifies OS identity. Windows restricted identities, network/process isolation, hostile-worker E2E and independent assessment remain missing |
 | Independent host integration coverage | PARTIAL | Adapters and MCP subprocess tests do not imply true end-to-end certification for every Antigravity/Codex/Claude/Pi build |
 | Artifact integrity and verified handoff | VERIFIED (bounded) | File existence, SHA-256, task binding and transaction-protected receipts under documented trust boundary |
 | Supply-chain/release provenance | PARTIAL | Pinned QA analyzers, immutable release SHA, wheel/sdist/checksum are present; signature/SBOM/provenance attestation and documented incident rollback remain unverified |
 | Operational SLO/load/chaos | NOT VERIFIED | No claimed long-duration soak, restore drill, large-scale task-queue load test or production incident exercise |
+
+See [Worker Identity and Environment Boundary](WORKER_ISOLATION.md) for the new partial control and its fail-closed prerequisites. This does not resolve E18.
 
 ## Policy and permitted claim
 
