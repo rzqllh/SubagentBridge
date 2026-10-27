@@ -21,6 +21,8 @@ from typing import Any
 import psutil
 
 from subagentbridge.approval.trusted_authority import verify_ticket_binding
+from subagentbridge.domain.orca_contracts import WorkerConfig
+from subagentbridge.runners.harness_adapters import get_harness_registry
 
 
 def send_event(event: dict[str, Any]) -> None:
@@ -36,6 +38,7 @@ def main() -> int:
     parser.add_argument("--budget-tokens", type=int, default=None, help="Token budget ceiling")
     parser.add_argument("--session-secret", default=None, help="Session secret for ticket verification")
     parser.add_argument("--worktree-path", default=None, help="Assigned worktree directory path")
+    parser.add_argument("--harness", default="native", help="Configured worker harness adapter")
     args = parser.parse_args()
 
     worker_id: str = args.worker_id
@@ -44,6 +47,7 @@ def main() -> int:
     budget_tokens: int | None = args.budget_tokens
     session_secret: str = args.session_secret or os.environ.get("SIMPUL_WORKER_SECRET", "")
     worktree_path: str | None = args.worktree_path
+    harness_name: str = args.harness
 
     # Process identity metadata
     current_pid = os.getpid()
@@ -381,13 +385,39 @@ def main() -> int:
                     })
                 continue
 
-            # Abstract instruction without real runner/command
+            # Instruction execution via configured harness adapter
+            instruction = payload.get("instruction")
+            if instruction:
+                try:
+                    registry = get_harness_registry()
+                    adapter = registry.get(harness_name)
+                    cfg_obj = WorkerConfig(worker_id=worker_id, team_id=team_id, role=role, harness=harness_name)
+                    eff_ws = payload.get("workspace_path") or worktree_path or ""
+                    res = adapter.execute(task_id, str(instruction), cfg_obj, workspace_path=eff_ws)
+                    if "metered_tokens" in res:
+                        total_tokens_consumed += int(res["metered_tokens"])
+                        res["tokens_consumed"] = total_tokens_consumed
+                        if budget_tokens is not None:
+                            res["remaining_tokens"] = max(0, budget_tokens - total_tokens_consumed)
+                    send_event(res)
+                    continue
+                except KeyError as exc:
+                    send_event({
+                        "type": "RESULT",
+                        "task_id": task_id,
+                        "status": "UNSUPPORTED_HOST",
+                        "error": str(exc),
+                        "timestamp": time.time(),
+                    })
+                    continue
+
+            # Fallback for missing instruction or unsupported payload
             send_event({
                 "type": "RESULT",
                 "task_id": task_id,
                 "status": "NOT_IMPLEMENTED",
-                "reason": "Abstract instruction execution without harness/tool runner is not implemented in C02 (real authorized command required)",
-                "error": "Abstract instruction execution without harness/tool runner is not implemented in C02 (real authorized command required)",
+                "reason": "Task without command or instruction cannot be executed",
+                "error": "Task without command or instruction cannot be executed",
                 "timestamp": time.time(),
             })
 

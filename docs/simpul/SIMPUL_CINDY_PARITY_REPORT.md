@@ -200,11 +200,48 @@
 
 ---
 
-## C03 through C06 - Pending
+## Phase C03: Multi-Harness Adapters & Host Routing (COMPLETE)
+
+- **Target Branch**: `simpul/11-multi-harness` (stacked on `simpul/10-worker-sessions`)
+- **Key Modules Implemented**:
+  - `subagentbridge/runners/harness_adapters.py`:
+    - `HarnessCapability` enum and `HarnessCapabilities` contract: declaring `file_read`, `file_write`, `terminal_exec`, `web_search`, `subagents`, `streaming`, and `token_metering`.
+    - Capability matrix for all Cindy / Orca supported harnesses:
+      - `native`: Local stdlib runner with default command-line tools.
+      - `antigravity`: Antigravity IDE agent runner (supports subagents, web search, token metering).
+      - `codex`: OpenAI Codex / workspace tool runner.
+      - `claude_code`: Anthropic Claude Code runner with tool-use hooks.
+      - `pi`: Inflection Pi lightweight conversational harness (no terminal exec).
+    - `HarnessRegistry`: Thread-safe registry with dynamic discovery and fallback error handling.
+    - Model & Provider selection validation: ensures model/provider pairings comply with capability constraints.
+    - Unsupported Host handling: Gracefully returns diagnostic error response (`status="UNSUPPORTED_HOST"`) instead of crashing or misreporting completion.
+  - `subagentbridge/execution/worker_process.py`:
+    - `spawn_worker()` propagates `--harness <name>` to worker child process.
+    - Propagates workspace `PYTHONPATH` to child OS process environment.
+    - Captures child process `stderr` during handshake timeouts for diagnostic reporting.
+  - `subagentbridge/execution/worker_runtime_entrypoint.py`:
+    - Integrates `get_harness_registry()` to dynamically route instruction tasks to configured harness adapter.
+    - Cumulative metered token budget enforcement updated from harness execution results.
+- **Verification Suite**:
+  - `tests/test_c03_multi_harness.py`:
+    1. `test_c03_harness_registry_and_discovery`: Tests registry discovery, registration, and built-in harnesses.
+    2. `test_c03_harness_capability_contracts`: Verifies declared capabilities across native, antigravity, codex, claude_code, and pi.
+    3. `test_c03_model_and_provider_selection`: Validates model/provider selection semantics.
+    4. `test_c03_unsupported_host_graceful_handling`: Validates unknown harness raises `KeyError` and reports `UNSUPPORTED_HOST`.
+    5. `test_c03_capability_mismatch_rejection`: Rejects tasks requiring missing capabilities (e.g. terminal exec on Pi).
+    6. `test_c03_native_harness_real_execution`: Validates real instruction execution and metered tokens on native harness.
+    7. `test_c03_worker_process_harness_routing`: Proves full end-to-end child process IPC instruction routing to harness.
+  - Full Test Suite: 369 passed, 5 skipped (Windows symlink limitations), 135 subtests passed.
+  - Static Analysis: Ruff clean (0 errors), Mypy clean (54 source files checked), Bandit clean (0 findings).
+  - MCP Server Import Smoke Test: PASS.
+
+---
+
+## C04 through C06 - Pending
 
 Sections will be appended after each phase completes.
 
-## Feature Parity Matrix (Post-C02 State)
+## Feature Parity Matrix (Post-C03 State)
 
 Distinguishes:
 - **SCHEMA**: Data models and contracts defined and type-checked
@@ -230,7 +267,7 @@ Distinguishes:
 | **Worktree** | Per-worker isolated worktree path & branch | `WorktreeManager` / `create_worker working_dir` | `subagentbridge/domain/orca_contracts.py` (`WorktreeAssignment`) | **WORKING (Mapping & Tracking)** | C01 (Done) |
 | **Worktree** | Automated git worktree creation & tear down | `WorktreeManager.createWorktree` | Scheduled for `subagentbridge/workspaces/worktree_manager.py` | **SCHEDULED** | **C05** |
 | **Crash Recovery** | Rehydrate sessions, teams, and queues across crash | SQLite WAL persistence / session resume | `subagentbridge/storage/orca_store.py` (`OrcaStore`) | **WORKING (SQLite Rehydration)** | C01 (Done) |
-| **Multi-Harness** | Host adapters (Antigravity, Codex, Claude Code, Pi) | Host specific adapter IPC | Scheduled for `subagentbridge/runners/harness_adapters.py` | **SCHEDULED** | **C03** |
+| **Multi-Harness** | Host adapters (Antigravity, Codex, Claude Code, Pi) | Host specific adapter IPC | `subagentbridge/runners/harness_adapters.py` | **WORKING (Capability-Checked Host Registry)** | **C03 (Done)** |
 | **Security & Safety** | Default-deny command authorization | N/A (Simpul-specific hardening) | `subagentbridge/team/orca_team.py` (`execute_worker_command`) | **WORKING (Fail-Closed)** | C01 (Done) |
 | **Security & Safety** | E18 Same-user co-process confinement | Accepted risk boundary | Documented as `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)` | **VERIFIED BOUNDARY** | Ongoing |
 
