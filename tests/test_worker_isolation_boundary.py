@@ -148,3 +148,16 @@ def test_dedicated_identity_rejects_symlinked_python_module(tmp_path):
     linked.symlink_to(external)
     with pytest.raises(PermissionError, match="symlink"):
         _verify_trusted_code_path(runtime, worker_uid=65431, worker_gid=65431)
+
+
+def test_dedicated_identity_rejects_missing_workspace_without_spawning(tmp_path):
+    with TeamStore(tmp_path / "state.db") as store:
+        policy = WorkerIsolationPolicy(mode="dedicated_user", uid=65431, gid=65431)
+        controller = WorkerProcessController(store, isolation_policy=policy)
+        cfg = WorkerConfig(
+            worker_id="isolated-test", team_id="isolated-team",
+            role="worker", working_dir=str(tmp_path / "missing-workspace"),
+        )
+        with pytest.raises(FileNotFoundError):
+            controller.spawn_worker(cfg)
+        assert not controller._processes
