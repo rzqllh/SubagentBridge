@@ -2,7 +2,7 @@
 
 **Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
-> **Production reality & release status — October 2026:** Simpul v1.0.0 is published on GitHub Releases (commit `953c0f5`, tag `v1.0.0`). All roadmap phases P00–P06 (PRs #2–#8) are merged into `main`. Current governance strictly operates under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`. In accordance with genuine adversarial evidence (E18), same-user OS process isolation is recognized as a documented residual boundary (`RISK_ACCEPTED_SAME_IDENTITY`), not OS-level containerization. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md).
+> **Publication status:** Simpul v1.0.0 was published on GitHub Releases (commit `953c0f5`, tag `v1.0.0`). The C07 stack targets **v1.1.0**; check [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) for the actually published version. All roadmap phases P00–P06 (PRs #2–#8) are merged into `main`. Current governance strictly operates under `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL`. In accordance with genuine adversarial evidence (E18), same-user OS process isolation is recognized as a documented residual boundary (`RISK_ACCEPTED_SAME_IDENTITY`), not OS-level containerization. See [SIMPUL_STATUS.md](docs/SIMPUL_STATUS.md).
 
 ## What is implemented in Simpul
 
@@ -73,7 +73,7 @@ The legacy session inspection endpoints remain available in this candidate, but 
 
 ## Multi-worker coordination (C01–C07 candidate)
 
-The current [C07 pull request](https://github.com/rzqllh/SubagentBridge/pull/16) extends the released v1.0.0 baseline. **These changes are not part of v1.0.0** until a new release is actually published.
+The current [C07 pull request](https://github.com/rzqllh/SubagentBridge/pull/16) extends the released v1.0.0 baseline. **These changes are not part of the v1.0.0 tag**. Consult [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) to verify whether v1.1.0 has been published.
 
 Simpul now maintains separate Lead and Worker session identities, OS subprocess IPC, a durable SQLite task queue, step-indexed checkpoints, authenticated message and artifact handoffs, per-worker Git worktrees, and capability-checked host adapters. The core is Python-based and does not require running Cindy.
 
