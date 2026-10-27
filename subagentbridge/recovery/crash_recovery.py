@@ -205,7 +205,7 @@ def resume_task_from_checkpoint(
             command_list = [str(x) for x in cmd] if isinstance(cmd, list) else [str(cmd)]
             action_id = owner.get("approval_action_id")
             action = approval_authority.broker.get_action(action_id) if action_id else None
-            if action is None or (
+            if action is None or action.state.value == "EXPIRED" or (
                 action.state.value == "APPROVED" and approval_authority.is_action_consumed(action.action_id)
             ):
                 action = approval_authority.request_command_approval(
