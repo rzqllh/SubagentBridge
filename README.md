@@ -2,7 +2,7 @@
 
 **Simpul** (formerly SubagentBridge) is a supervised, native-first [Model Context Protocol](https://modelcontextprotocol.io/) subagent supervisor. It provides a local MCP stdio endpoint, a lead/worker coordination layer and evidence-aware task execution for development workflows.
 
-**Release track:** `v1.0.0` is the previously published baseline. This branch prepares **v1.1.0 (supervised beta)**; a proposed version in `pyproject.toml` or a passing PR is **not** a published release. Check [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) for the actual published versions and matching tags.
+**Release track:** `v1.0.0` is the historical baseline. `v1.1.0` adds supervised beta features; the [GitHub Releases page](https://github.com/rzqllh/SubagentBridge/releases) is authoritative for actual publication. A version in `pyproject.toml` or passing PR is not itself a published release.
 
 ## What Simpul does
 
