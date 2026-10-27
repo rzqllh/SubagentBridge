@@ -1,10 +1,8 @@
 # Simpul — MCP stdio integration
 
-Simpul keeps the technical server/module name `subagentbridge`. This guide applies to the open PR #3 candidate, **not** the default-branch prototype.
+The Python module and MCP server identifier remain `subagentbridge` for compatibility.
 
-## Connect a compatible MCP host
-
-Create a Python virtual environment and install the candidate following [Installation](INSTALLATION_QUICKSTART.md). Configure the host's MCP servers with the **actual venv Python executable**. If `python` already resolves to that venv in the host process, this minimal entry is sufficient:
+After installing with the [current guide](public/GETTING_STARTED.md), add this generic entry to a compatible MCP client:
 
 ```json
 {
@@ -17,16 +15,8 @@ Create a Python virtual environment and install the candidate following [Install
 }
 ```
 
-If your IDE launches a different Python environment, replace `command` with an absolute path to the venv's `python.exe` on Windows or `bin/python` on Linux. MCP configuration file locations and exact UI steps vary by host version; confirm them within your installed host.
+Replace `python` with your virtual environment's Python interpreter if required. Configuration file locations and exact schemas are host-specific. No server secret should be embedded in this example. Keep diagnostic output away from MCP protocol stdout.
 
-No production credentials should appear in an example configuration. The server uses stdio; ordinary terminal text printed to stdout can corrupt the MCP protocol.
+The MCP API includes `submit_goal`, `get_run`, `list_tasks`, `get_task_evidence`, `get_pending_approvals`, `reject_approval`, `get_model_usage`, `cancel_run` and gated execution operations. A stored goal is not proof that code ran; inspect actual execution, evidence and QA states.
 
-## Current MCP tool contract
-
-The source exposes `submit_goal(goal, workspace_path=None, model=None)`, `get_run(run_id)`, `list_tasks(run_id)`, `get_task_evidence(run_id, task_id)`, `get_pending_approvals()`, `reject_approval(action_id, reason="")`, `cancel_run(run_id, reason="")` and `get_model_usage()`.
-
-`submit_goal` currently stores a `SUBMITTED` run and a `PENDING` task; it is **not** proof of an executing PM/Developer/QA flow. Live Antigravity MCP acceptance is still pending. See [API reference](API_REFERENCE.md) for exact behavior and legacy diagnostics.
-
-## Security
-
-`approve_action` is deliberately **not** an MCP tool. No model self-approvals, Always Allow, or unattended changes. `AUTONOMY: OFF` and Phase-A `RISK_ACCEPTED_SAME_IDENTITY` are active constraints; same-user isolation has not been demonstrated. See [Project Status](SIMPUL_STATUS.md).
+**Security:** `approve_action` is not model-callable. E18 same-user confinement remains BLOCKED; no autonomous privileged execution. See [public security guide](public/SECURITY.md) and [API reference](API_REFERENCE.md).
