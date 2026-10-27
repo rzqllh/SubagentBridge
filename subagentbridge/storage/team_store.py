@@ -668,7 +668,8 @@ class TeamStore:
             migrate_schema(self._conn, db_path=self.db_path)
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def __enter__(self) -> TeamStore:
         return self
@@ -679,7 +680,7 @@ class TeamStore:
     # ---- Teams -----------------------------------------------------------
 
     def save_team(self, team: AgentTeam) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_teams (team_id, lead_session_id, title, created_at)
@@ -721,7 +722,7 @@ class TeamStore:
             "process_create_time": session.config.process_create_time,
             "tokens_consumed": session.config.tokens_consumed,
         }
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_sessions (session_id, role, team_id, status, config_json, created_at, updated_at)
@@ -814,7 +815,7 @@ class TeamStore:
         )
 
     def save_queue_item(self, item: QueueItem) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_queue (
@@ -966,36 +967,44 @@ class TeamStore:
         return [self._row_to_queue_item(row) for row in cur.fetchall()]
 
     def mark_task_resuming(self, dispatch_id: str) -> QueueItem:
-        with self._conn:
-            cur = self._conn.execute(
-                "SELECT * FROM simpul_queue WHERE dispatch_id = ?",
-                (dispatch_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise KeyError(f"queue item {dispatch_id!r} not found")
-            status = row["status"]
-            if status == QueueTaskStatus.RUNNING.value:
-                raise RuntimeError(f"Concurrent resume rejected: task {dispatch_id!r} is already RUNNING")
-            if status == QueueTaskStatus.COMPLETED.value:
-                raise RuntimeError(f"Duplicate resume rejected: task {dispatch_id!r} is already COMPLETED")
-            if status == QueueTaskStatus.CANCELLED.value:
-                raise RuntimeError(f"Resume rejected: task {dispatch_id!r} is CANCELLED")
-
-            now = time.time()
-            self._conn.execute(
-                "UPDATE simpul_queue SET status = ?, updated_at = ? WHERE dispatch_id = ?",
-                (QueueTaskStatus.RUNNING.value, now, dispatch_id),
-            )
-            item = self._row_to_queue_item(row)
-            item.status = QueueTaskStatus.RUNNING
-            item.updated_at = now
-            return item
+        """Claim one resume in a BEGIN IMMEDIATE transaction across OS processes."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM simpul_queue WHERE dispatch_id = ?", (dispatch_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"queue item {dispatch_id!r} not found")
+                status = row["status"]
+                if status == QueueTaskStatus.RUNNING.value:
+                    raise RuntimeError(f"Concurrent resume rejected: task {dispatch_id!r} is already RUNNING")
+                if status == QueueTaskStatus.COMPLETED.value:
+                    raise RuntimeError(f"Duplicate resume rejected: task {dispatch_id!r} is already COMPLETED")
+                if status == QueueTaskStatus.CANCELLED.value:
+                    raise RuntimeError(f"Resume rejected: task {dispatch_id!r} is CANCELLED")
+                now = time.time()
+                cur = self._conn.execute(
+                    """UPDATE simpul_queue SET status = ?, updated_at = ?
+                       WHERE dispatch_id = ? AND status = ?""",
+                    (QueueTaskStatus.RUNNING.value, now, dispatch_id, status),
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"Concurrent resume claim lost for {dispatch_id!r}")
+                self._conn.execute("COMMIT")
+                item = self._row_to_queue_item(row)
+                item.status = QueueTaskStatus.RUNNING
+                item.updated_at = now
+                return item
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
 
     # ---- Channel Messages ------------------------------------------------
 
     def save_channel_message(self, msg: ChannelMessage) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_channel_messages (
@@ -1044,7 +1053,7 @@ class TeamStore:
     # ---- Worktrees -------------------------------------------------------
 
     def save_worktree(self, assignment: WorktreeAssignment) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_worktrees (worker_id, team_id, worktree_path, branch_name, created_at)
@@ -1078,7 +1087,7 @@ class TeamStore:
     # ---- Handoffs --------------------------------------------------------
 
     def save_handoff(self, team_id: str, evidence: HandoffEvidence) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_handoffs (
@@ -1116,7 +1125,7 @@ class TeamStore:
 
         Guarantees transactional integrity and prevents duplicate finalization or replay across processes.
         """
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "SELECT status, to_session_id FROM simpul_queue WHERE dispatch_id = ?",
                 (evidence.dispatch_id,),
@@ -1195,13 +1204,13 @@ class TeamStore:
         return handoffs
 
     def delete_worktree(self, worker_id: str) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM simpul_worktrees WHERE worker_id = ?", (worker_id,))
 
     # ---- Checkpoints -----------------------------------------------------
 
     def save_checkpoint(self, checkpoint: WorkerCheckpoint) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_checkpoints (
