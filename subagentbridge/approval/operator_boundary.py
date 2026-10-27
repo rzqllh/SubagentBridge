@@ -332,25 +332,28 @@ class IndependentOperatorApprovalBoundary:
             if req.nonce in self._consumed_nonces:
                 raise PermissionError("Action nonce already consumed (replay prevented)")
 
-            req.decision = decision
-            req.operator_id = operator.operator_id
-            req.operator_role = operator.role
-            req.operator_channel = operator.channel
-            req.operator_notes = notes
-            req.operator_verified = True
+            # Copy-on-write: never expose APPROVED in memory before both the
+            # audit append and durable state persistence succeed. These stores
+            # are not atomically coupled, so a failed later step stays BLOCKED.
+            updated = deepcopy(req)
+            updated.decision = decision
+            updated.operator_id = operator.operator_id
+            updated.operator_role = operator.role
+            updated.operator_channel = operator.channel
+            updated.operator_notes = notes
+            updated.operator_verified = True
 
             if decision == OperatorDecision.ALLOW_ONCE:
-                req.state = ApprovalState.APPROVED
+                updated.state = ApprovalState.APPROVED
             elif decision == OperatorDecision.DENY:
-                req.state = ApprovalState.DENIED
+                updated.state = ApprovalState.DENIED
             elif decision == OperatorDecision.ANSWER_QUESTIONS:
-                req.state = ApprovalState.QUESTION_PENDING
+                updated.state = ApprovalState.QUESTION_PENDING
                 if answers:
-                    req.answers.update(dict(answers))
+                    updated.answers.update(dict(answers))
 
             if self.ledger:
-                # Distinct idempotency key per decision transition allows ANSWER_QUESTIONS followed by ALLOW_ONCE/DENY
-                idemp_key = f"{action_id}:decision:{decision.value}:{len(req.answers)}"
+                idemp_key = f"{action_id}:decision:{decision.value}:{len(updated.answers)}"
                 self.ledger.append(
                     stream="operator_approvals",
                     idempotency_key=idemp_key,
@@ -361,15 +364,16 @@ class IndependentOperatorApprovalBoundary:
                         "operator_id": operator.operator_id,
                         "operator_role": operator.role,
                         "operator_channel": operator.channel,
-                        "state": req.state.value,
+                        "state": updated.state.value,
                         "notes": notes,
-                        "answers": dict(req.answers),
+                        "answers": dict(updated.answers),
                     },
                 )
 
-            self._persist_request(req)
+            self._persist_request(updated)
+            self._requests[action_id] = updated
 
-        return deepcopy(req)
+        return deepcopy(updated)
 
     def consume_for_execution(
         self,
