@@ -132,6 +132,10 @@ class IndependentOperatorApprovalBoundary:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            # Serialize schema inspection + ALTER across independent processes.
+            # The test for a missing column must run under the same write lock
+            # as the migration itself, or concurrent startups can both ALTER.
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS operator_approvals (
                     action_id TEXT PRIMARY KEY,
