@@ -115,7 +115,7 @@ class TrustedApprovalAuthority:
         ttl_seconds: float = 60.0,
     ) -> tuple[bool, str, dict[str, Any] | None]:
         """Verifies human approval, consumes it, and issues an HMAC execution ticket for IPC."""
-        if type(ttl_seconds) not in (int, float) or not math.isfinite(ttl_seconds) or not 0 < ttl_seconds <= 60:
+        if type(ttl_seconds) not in (int, float) or not 0 < ttl_seconds <= 60 or not math.isfinite(ttl_seconds):
             return False, "DENIED: ticket TTL must be a finite number in (0, 60] seconds", None
         valid, reason = self.verify_and_consume(action_id, worker_id, task_id, command, workspace_path)
         if not valid:
@@ -162,12 +162,17 @@ def verify_ticket_binding(
         return False, f"DENIED: ticket worker {t_worker!r} mismatch with {worker_id!r}"
     if t_task != task_id:
         return False, f"DENIED: ticket task {t_task!r} mismatch with {task_id!r}"
-    if not isinstance(t_expiry, (float, int)) or not math.isfinite(t_expiry):
+    if type(t_expiry) not in (float, int):
         return False, "DENIED: ticket expiry malformed"
-    if not isinstance(sig, str):
+    if not isinstance(sig, str) or len(sig) != 64 or not sig.isascii():
         return False, "DENIED: ticket signature malformed"
-    if time.time() >= t_expiry:
-        return False, "DENIED: ticket expired"
+    now = time.time()
+    # Type-checked numeric comparisons reject NaN, infinity and arbitrarily large
+    # JSON integers without triggering int-to-float OverflowError in math.isfinite.
+    if not (now < t_expiry <= now + 60.0):
+        if t_expiry <= now:
+            return False, "DENIED: ticket expired"
+        return False, "DENIED: ticket expiry malformed or exceeds maximum TTL"
 
     expected_resource = compute_action_resource(command, workspace_path, task_id)
     if t_resource != expected_resource:
