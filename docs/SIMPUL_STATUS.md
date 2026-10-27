@@ -1,42 +1,25 @@
-# Simpul — Project status and evidence boundaries
+# Simpul — project status and evidence boundaries
 
-**As of:** 23 October 2026  
-**Public name:** Simpul (formerly SubagentBridge)  
-**Repository:** `rzqllh/SubagentBridge` (repository has not been renamed)  
-**Compatibility:** `subagentbridge` imports/distribution/CLI, `SUBAGENTBRIDGE_*` variable namespace
+**Updated:** 27 October 2026. Simpul 1.1.0 is a supervised beta release candidate until an actual GitHub release/tag is published. The existing published baseline is v1.0.0. See [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases).
 
-## Source, branch and publication
+## Implemented candidate capabilities
 
-- `main` contains the fully integrated and hardened release commit `953c0f5a34c7ae8917d8febde92354eb8ed8a4ef`.
-- PRs #2 through #8 covering phases P00 through P06 have all been sequentially merged into `main` on 2026-10-23.
-- Release `v1.0.0` is published on GitHub Releases (`https://github.com/rzqllh/SubagentBridge/releases/tag/v1.0.0`) with verified SHA-256 asset checksums.
-- Active development and sprint verification occurs on dedicated sprint branches (e.g. `simpul/08-sprint1-verification`), never directly on `main`.
+MCP stdio server, supervised native execution, real worker subprocess/IPC, SQLite-backed multiworker team/dispatch, steering, cancellation, evidence-based handoff, Git worktrees, checkpoint recovery and backward-compatible schema migration.
 
-## What the code actually provides
+The public product name is Simpul. Existing `subagentbridge` technical identifiers remain supported; historical `Orca*` symbols are isolated compatibility aliases rather than product branding. Attribution to Cindy is retained in [third-party notices](../THIRD_PARTY_NOTICES.md).
 
-A Python composition root wires SQLite audit and budget layers, a message bus, skill registry, policy classifier, supervised read-only executor, identity and receipt registries, QA evidence gate and local 9Router client. The server exposes production MCP stdio tools. Its execution lifecycle coordinator (`SupervisedNativeLifecycle`) executes the complete PM → Developer → QA workflow under strict fail-closed enforcement: tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status. `get_task_evidence` reads independently issued receipts and evidence records.
+## Verification and release gating
 
-## Verification scope and corrective audit status
+The feature stack is developed through reviewed pull requests. A PR CI success does not certify combined merged code, production isolation or release readiness by itself. Merge and release require checking the final Git SHA, CI matrix, integrity regressions and actual GitHub review status. The repository's current status must be verified on GitHub, not inferred from old candidate reports.
 
-The 23 October Post-Release Corrective Audit executed 334 tests (330 passed, 4 skipped, 0 warnings) across the full Windows test matrix:
+## Residual boundaries
 
-- **E18:** Proved via genuine red-team assessment (`tests/test_same_user_adversarial_assessment.py`) that same-OS-user isolation is impossible under standard OS permissions. Formally classified as **BLOCKED**; `AUTONOMY: OFF` strictly retained under `RISK_ACCEPTED_SAME_IDENTITY`.
-- **E22:** Checkout-root containment verified in `artifacts/bootstrap/v3_1/tests/test_bve_checkout_containment.py` (6/6 PASS).
-- **E23:** Remote pinned Git clone and branch-movement rejection verified against `https://github.com/rzqllh/SubagentBridge.git` at exact commit `953c0f5` in `tests/test_remote_pinned_checkout_e23.py` (2/2 PASS).
-- **9Router:** Authenticated local completion proved with real request/response evidence in `tests/test_nine_router_authenticated_completion.py` (HTTP 401 on invalid token, HTTP 200 on valid token, ledger token accounting, D-02 fail-closed enforcement; 4/4 PASS).
-- **Integration:** Real end-to-end Antigravity MCP PM/Developer/QA workflow verified over genuine stdio subprocess (`tests/test_antigravity_mcp_subprocess_client.py`) and Antigravity IDE host acceptance (`tests/test_antigravity_host_acceptance.py`).
-- **Release:** Corrective audit completed; decision packet prepared. Human approval required before merge or publication.
+- `AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`.
+- E18 same-OS-user confinement is **BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)**. A separate PID is not a security sandbox.
+- Human approval in unit tests is a trusted fixture; a separately authenticated out-of-band production UI remains unimplemented.
+- Checkpoint recovery is at-least-once under ambiguous crash windows, not guaranteed exactly-once.
+- External harness support requires host-specific end-to-end confirmation.
 
-## Security posture
+See [public docs](public/README.md), [security limits](public/SECURITY.md) and [release notes](public/RELEASE_NOTES.md).
 
-`AUTONOMY: OFF`. Decision D-01 `RISK_ACCEPTED_SAME_IDENTITY` is risk acceptance, **not container/VM isolation**. Decision D-03 `CHAT_APPROVAL` is an operational gate mode, **not proof of human identity** against same-user workers. No Always Allow or agent self-approval. Decision D-02 restricts the client to literal HTTP loopback addresses; an upstream proxy may have separate provider/network obligations.
-
-Tests that execute project source are not safe merely because their command lines are allowlisted. Local SQLite entries and Git hashes do not make receipts tamper-proof against a privileged local attacker. Do not enable unattended execution based on the present candidate evidence.
-
-## Historical evidence
-
-The [candidate acceptance matrix](ACCEPTANCE_MATRIX_E01_E21_EVIDENCE.md) and [release candidate report](RELEASE_CANDIDATE_V1_0_0.md) are retained as historical reports; more stringent independent checks supersede their unconditional readiness language. The display-name change does not rename Python imports, env vars, or existing repository URLs.
-
-## Next-development source of truth
-
-See [Simpul developer roadmap and handoff](simpul/README.md). Its task list and staged release gates describe proposed work, not independently verified completion.
+Historical candidate matrices, pinned upstream comparisons and earlier test receipts remain in `docs/simpul/` for traceability; they must not be represented as the latest production proof.
