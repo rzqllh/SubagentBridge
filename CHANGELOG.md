@@ -12,11 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The release is valid only after exact-head CI, independent review and SHA-gated publication; verify the published tag and assets on GitHub.
 
 ### Fixed
-- Serialize all SQLite TeamStore writers sharing one connection; acquire an immediate database write reservation before cross-process resume claims.
+- Serialize all SQLite TeamStore readers and writers sharing one connection; acquire an immediate database write reservation before cross-process resume claims.
 - Require the effective worker workspace to match both execution-ticket and human-approval action binding, including workers without Git worktrees.
 - Obtain approval for all outstanding multi-step commands before beginning any side effects; reuse pending actions but request a new human approval after a ticket is consumed.
 - Fail closed when previously observed side effects cannot be reconciled against a trusted checkpoint instead of promising exactly-once execution.
-- Add runtime regressions for concurrent writers, competing resume claims, workspace binding, approval renewal, preflight and default-deny behavior.
+- Launch child workers with Python `-P` safe-path, preventing workspace-local `subagentbridge` package shadowing of the trusted worker entrypoint.
+- Add runtime regressions for concurrent readers/writers, competing resume claims, workspace binding, approval renewal, preflight, default-deny and malicious package shadowing.
 
 ### Security limitations
 - E18 same-user process confinement remains **BLOCKED**. Worker subprocesses are not an adversarial OS security sandbox.
