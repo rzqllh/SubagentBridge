@@ -276,6 +276,49 @@ def resume_task_from_checkpoint(
                     "execution_classification": classification,
                 }
 
+        # Preflight approvals for ALL remaining command steps before performing
+        # any side effects. Otherwise a pause for step B after executing step A
+        # can replay A on the next resume when no Git commit-bound checkpoint exists.
+        if approval_authority:
+            action_ids = item.payload.setdefault("_approval_action_ids", {})
+            if not isinstance(action_ids, dict):
+                raise ValueError("Invalid approval action mapping")
+            pending_approvals: list[dict[str, str]] = []
+            for approval_step in remaining_steps:
+                if "command" not in approval_step:
+                    continue
+                approval_name = approval_step.get("name", "")
+                command = approval_step["command"]
+                existing_id = action_ids.get(approval_name)
+                action = approval_authority.broker.get_action(existing_id) if existing_id else None
+                if action is None or (
+                    action.state == ApprovalState.APPROVED
+                    and approval_authority.is_action_consumed(action.action_id)
+                ):
+                    action = approval_authority.request_command_approval(
+                        worker_id=worker_id,
+                        task_id=f"{item.task_id}-{approval_name}",
+                        command=command if isinstance(command, list) else [command],
+                        workspace_path=worktree_path or "",
+                    )
+                    action_ids[approval_name] = action.action_id
+                if action.state != ApprovalState.APPROVED:
+                    pending_approvals.append({
+                        "action_id": action.action_id, "step": approval_name,
+                        "approval_state": action.state.value,
+                    })
+            if pending_approvals:
+                item.status = QueueTaskStatus.DISPATCHED
+                item.updated_at = time.time()
+                store.save_queue_item(item)
+                return {
+                    "status": "BLOCKED", "reason": "HUMAN_APPROVAL_REQUIRED",
+                    "action_id": pending_approvals[0]["action_id"],
+                    "pending_actions": pending_approvals,
+                    "completed_steps": completed_steps,
+                }
+            store.save_queue_item(item)
+
         item.status = QueueTaskStatus.RUNNING
         item.updated_at = time.time()
         store.save_queue_item(item)
