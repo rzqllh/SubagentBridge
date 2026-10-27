@@ -130,8 +130,8 @@ class IndependentOperatorApprovalBoundary:
     def _init_db(self) -> None:
         assert self.db_path is not None
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA journal_mode=WAL")
             # Serialize schema inspection + ALTER across independent processes.
             # The test for a missing column must run under the same write lock
             # as the migration itself, or concurrent startups can both ALTER.
