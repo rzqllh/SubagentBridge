@@ -258,6 +258,17 @@ class WorkerProcessController:
 
         return record
 
+    def is_worker_dispatchable(self, worker_id: str) -> bool:
+        """Require owned live process and IPC streams, not only an OS PID record."""
+        proc = self._processes.get(worker_id)
+        reader = self._readers.get(worker_id)
+        record = self._records.get(worker_id)
+        return bool(
+            proc is not None and proc.poll() is None and proc.stdin is not None
+            and not proc.stdin.closed and reader is not None and record is not None
+            and is_process_identically_alive(proc.pid, record.create_time)
+        )
+
     def is_worker_alive(self, worker_id: str) -> bool:
         proc = self._processes.get(worker_id)
         record = self._records.get(worker_id)
