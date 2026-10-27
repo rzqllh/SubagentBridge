@@ -6,13 +6,14 @@ Binds approval strictly to:
 3. Exact command and arguments
 4. Exact workspace path
 5. Single-use replay protection
-6. Authenticated out-of-band human resolution (rejecting spoofed in-payload booleans)
+6. Token-gated in-process resolution; NOT independent human authentication
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
 import json
+import math
 import time
 from threading import Lock
 from typing import Any
@@ -114,6 +115,8 @@ class TrustedApprovalAuthority:
         ttl_seconds: float = 60.0,
     ) -> tuple[bool, str, dict[str, Any] | None]:
         """Verifies human approval, consumes it, and issues an HMAC execution ticket for IPC."""
+        if type(ttl_seconds) not in (int, float) or not math.isfinite(ttl_seconds) or not 0 < ttl_seconds <= 60:
+            return False, "DENIED: ticket TTL must be a finite number in (0, 60] seconds", None
         valid, reason = self.verify_and_consume(action_id, worker_id, task_id, command, workspace_path)
         if not valid:
             return False, reason, None
@@ -159,7 +162,11 @@ def verify_ticket_binding(
         return False, f"DENIED: ticket worker {t_worker!r} mismatch with {worker_id!r}"
     if t_task != task_id:
         return False, f"DENIED: ticket task {t_task!r} mismatch with {task_id!r}"
-    if time.time() > t_expiry:
+    if not isinstance(t_expiry, (float, int)) or not math.isfinite(t_expiry):
+        return False, "DENIED: ticket expiry malformed"
+    if not isinstance(sig, str):
+        return False, "DENIED: ticket signature malformed"
+    if time.time() >= t_expiry:
         return False, "DENIED: ticket expired"
 
     expected_resource = compute_action_resource(command, workspace_path, task_id)

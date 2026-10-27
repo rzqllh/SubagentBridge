@@ -1,4 +1,7 @@
-"""subagentbridge/approval/broker.py — Out-of-band human approval broker (D-03, INV-04, INV-08).
+"""In-process credential-gated approval broker (D-03, INV-04, INV-08).
+
+This is NOT independently authenticated out-of-band human approval. Its secret is
+accessible to trusted in-process code, so it must not be exposed to a model/worker.
 
 Enforces:
 1. Separated human identity: untrusted workers have no access to approval secrets.
@@ -7,11 +10,12 @@ Enforces:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from hashlib import sha256
-from secrets import token_hex
+from secrets import token_hex, compare_digest
 from threading import Lock
+import time
 from typing import Any, Mapping
 
 
@@ -31,12 +35,16 @@ class ApprovalAction:
     fingerprint: str
     state: ApprovalState = ApprovalState.BLOCKED
     reason: str = ""
+    expires_at: float = 0.0
 
 
 class ApprovalBroker:
-    """Out-of-band authenticated human approval broker."""
+    """Local approval-state broker. Production human identity is not verified here."""
 
-    def __init__(self, *, broker_secret: str | None = None) -> None:
+    def __init__(self, *, broker_secret: str | None = None, approval_ttl_seconds: float = 900.0) -> None:
+        if not 0 < approval_ttl_seconds <= 86400:
+            raise ValueError("approval_ttl_seconds must be within (0, 86400]")
+        self._ttl_seconds = approval_ttl_seconds
         self._secret = broker_secret or token_hex(32)
         self._actions: dict[str, ApprovalAction] = {}
         self._consumed_fingerprints: set[str] = set()
@@ -56,9 +64,17 @@ class ApprovalBroker:
             resource=resource,
             fingerprint=fp,
             state=ApprovalState.BLOCKED,
+            expires_at=time.time() + self._ttl_seconds,
         )
         with self._lock:
             self._actions[action_id] = action
+        return action
+
+    def _expire_if_needed(self, action: ApprovalAction) -> ApprovalAction:
+        if action.state in (ApprovalState.BLOCKED, ApprovalState.APPROVED) and time.time() >= action.expires_at:
+            expired = replace(action, state=ApprovalState.EXPIRED, reason="Approval deadline expired")
+            self._actions[action.action_id] = expired
+            return expired
         return action
 
     def resolve_by_human(self, action_id: str, *, approved: bool, auth_token: str, reason: str = "") -> ApprovalAction:
@@ -66,11 +82,12 @@ class ApprovalBroker:
         if type(approved) is not bool:
             raise TypeError("approved parameter must be an explicit boolean")
         with self._lock:
-            if auth_token != self._secret:
+            if not isinstance(auth_token, str) or not compare_digest(auth_token, self._secret):
                 raise PermissionError("unauthorized caller cannot resolve human approval")
             action = self._actions.get(action_id)
             if action is None:
                 raise KeyError(f"unknown action {action_id!r}")
+            action = self._expire_if_needed(action)
             if action.state != ApprovalState.BLOCKED:
                 raise PermissionError(f"action {action_id!r} is already resolved to {action.state.value} and cannot be modified")
             if action.fingerprint in self._consumed_fingerprints:
@@ -85,6 +102,7 @@ class ApprovalBroker:
                 fingerprint=action.fingerprint,
                 state=new_state,
                 reason=reason,
+                expires_at=action.expires_at,
             )
             self._actions[action_id] = updated
             self._consumed_fingerprints.add(action.fingerprint)
@@ -92,8 +110,10 @@ class ApprovalBroker:
 
     def get_action(self, action_id: str) -> ApprovalAction | None:
         with self._lock:
-            return self._actions.get(action_id)
+            action = self._actions.get(action_id)
+            return self._expire_if_needed(action) if action is not None else None
 
     def list_blocked(self) -> list[ApprovalAction]:
         with self._lock:
-            return [a for a in self._actions.values() if a.state == ApprovalState.BLOCKED]
+            return [a for a in (self._expire_if_needed(action) for action in self._actions.values())
+                    if a.state == ApprovalState.BLOCKED]
