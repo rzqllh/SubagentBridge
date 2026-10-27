@@ -718,7 +718,7 @@ class TeamStore:
     # ---- Teams -----------------------------------------------------------
 
     def save_team(self, team: AgentTeam) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_teams (team_id, lead_session_id, title, created_at)
@@ -760,7 +760,7 @@ class TeamStore:
             "process_create_time": session.config.process_create_time,
             "tokens_consumed": session.config.tokens_consumed,
         }
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_sessions (session_id, role, team_id, status, config_json, created_at, updated_at)
@@ -853,7 +853,7 @@ class TeamStore:
         )
 
     def save_queue_item(self, item: QueueItem) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_queue (
@@ -991,7 +991,7 @@ class TeamStore:
         return [self._row_to_queue_item(row) for row in cur.fetchall()]
 
     def mark_task_resuming(self, dispatch_id: str) -> QueueItem:
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "SELECT * FROM simpul_queue WHERE dispatch_id = ?",
                 (dispatch_id,),
@@ -1020,7 +1020,7 @@ class TeamStore:
     # ---- Channel Messages ------------------------------------------------
 
     def save_channel_message(self, msg: ChannelMessage) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_channel_messages (
@@ -1069,7 +1069,7 @@ class TeamStore:
     # ---- Worktrees -------------------------------------------------------
 
     def save_worktree(self, assignment: WorktreeAssignment) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_worktrees (worker_id, team_id, worktree_path, branch_name, created_at)
@@ -1103,7 +1103,7 @@ class TeamStore:
     # ---- Handoffs --------------------------------------------------------
 
     def save_handoff(self, team_id: str, evidence: HandoffEvidence) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_handoffs (
@@ -1224,13 +1224,13 @@ class TeamStore:
         return handoffs
 
     def delete_worktree(self, worker_id: str) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM simpul_worktrees WHERE worker_id = ?", (worker_id,))
 
     # ---- Checkpoints -----------------------------------------------------
 
     def save_checkpoint(self, checkpoint: WorkerCheckpoint) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO simpul_checkpoints (
