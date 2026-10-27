@@ -174,3 +174,60 @@ def test_c08_resume_does_not_replace_existing_pending_human_approval():
             assert resumed["status"] == "COMPLETED"
         finally:
             controller.terminate_all()
+
+
+def test_c08_retry_after_consumed_approval_requests_new_action():
+    with tempfile.TemporaryDirectory() as root, TeamStore(Path(root) / "reapprove.db") as store:
+        manager, lead, worker = make_team(store)
+        command = [sys.executable, "-c", "print('will-not-run')"]
+        item = manager.dispatch_task(lead, worker, "again", {
+            "steps": [{"name": "step-1", "command": command}],
+        })
+        broker = ApprovalBroker()
+        authority = TrustedApprovalAuthority(broker)
+        controller = WorkerProcessController(store, approval_authority=authority)
+        try:
+            first = resume_task_from_checkpoint(item.dispatch_id, store, controller, authority)
+            assert first["status"] == "BLOCKED"
+            authority.approve_by_human(first["action_id"], auth_token=broker._secret)
+            valid, _ = authority.verify_and_consume(
+                first["action_id"], worker, "again-step-1", command, "",
+            )
+            assert valid
+            retry = resume_task_from_checkpoint(item.dispatch_id, store, controller, authority)
+            assert retry["status"] == "BLOCKED"
+            assert retry["reason"] == "HUMAN_APPROVAL_REQUIRED"
+            assert retry["action_id"] != first["action_id"]
+            assert store.load_queue_item(item.dispatch_id).status == QueueTaskStatus.DISPATCHED
+        finally:
+            controller.terminate_all()
+
+
+def test_c08_atomic_resume_approval_uses_real_configured_workspace():
+    with tempfile.TemporaryDirectory() as root, TeamStore(Path(root) / "atomic.db") as store:
+        manager = TeamManager(store)
+        team = manager.create_team(lead_session_id="lead-atomic", title="Atomic Team")
+        cfg = WorkerConfig(
+            worker_id="worker-atomic", team_id=team.team_id, role="worker",
+            harness="native", working_dir=root,
+        )
+        manager.register_worker(cfg)
+        item = manager.dispatch_task(
+            team.lead_session_id, "worker-atomic", "atomic-resume",
+            {"command": [sys.executable, "-c", "print('approved')"]},
+        )
+        broker = ApprovalBroker()
+        authority = TrustedApprovalAuthority(broker)
+        controller = WorkerProcessController(store, approval_authority=authority)
+        try:
+            first = resume_task_from_checkpoint(item.dispatch_id, store, controller, authority)
+            assert first["status"] == "BLOCKED"
+            record = controller._records["worker-atomic"]
+            assert record.worktree_path == root
+            action = broker.get_action(first["action_id"])
+            assert action is not None
+            authority.approve_by_human(action.action_id, auth_token=broker._secret)
+            resumed = resume_task_from_checkpoint(item.dispatch_id, store, controller, authority)
+            assert resumed["status"] == "COMPLETED", resumed
+        finally:
+            controller.terminate_all()
