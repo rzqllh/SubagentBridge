@@ -11,7 +11,7 @@ Python 3.11–3.13, Git, and a compatible MCP stdio client (for example, a devel
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.0
+git checkout v1.1.1
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m pytest tests artifacts/bootstrap/v3_1/tests -rs
@@ -23,14 +23,14 @@ python -m venv .venv
 ```bash
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.0
+git checkout v1.1.1
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/python -m pytest tests artifacts/bootstrap/v3_1/tests -rs
 .venv/bin/python -m subagentbridge.server
 ```
 
-The commands above check out the [published v1.1.0 tag](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) for reproducible installation; do not substitute a moving development branch.
+The commands above check out the [published v1.1.1 tag](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) for reproducible installation; do not substitute a moving development branch.
 
 The server waits for a client on MCP stdio; it does not print a chat prompt. Keep ordinary logging off protocol stdout.
 

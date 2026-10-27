@@ -1,12 +1,20 @@
+> **Latest release:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) — `861f040dc12c33da681331e454ef41299f2dc70b` (27 October 2026); all earlier candidate-era notes below are historical. E18 remains BLOCKED.
+
 > **Release verified — 27 October 2026:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is published from merge commit `a29f0d98957651e482fbae989a906bb09873f329`; candidate CI ran 4/4 successfully, release workflow [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542) succeeded. Historical candidate notes below are not current status. E18 remains BLOCKED (RISK_ACCEPTED_SAME_IDENTITY).
 
-## Candidate versus published installation (27 October 2026)
+## Install the verified v1.1.1 release (27 October 2026)
 
-`v1.0.0` is the last documented published release. Install it from its tag for stable reproduction. C00–C07 features are still reviewed on `simpul/15-native-naming`; they are **not available on v1.0.0**. To test that candidate, explicitly checkout that branch and run the four-platform CI-equivalent commands shown in [release readiness](simpul/RELEASE_READINESS.md). Back up any legacy SQLite database before testing an upgrade; migration creates a logical pre-migration backup. The MCP stdio entrypoint remains `python -m subagentbridge.server`, not a standalone chat application.
+[Release v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) is published from commit `861f040dc12c33da681331e454ef41299f2dc70b`. For reproducibility, clone the repository and checkout `v1.1.1` explicitly instead of a moving branch. For native SQLite upgrades, preserve generated logical pre-migration backups and verify their integrity before cleanup. Python 3.11–3.13 supported; the MCP stdio entrypoint remains `python -m subagentbridge.server`. E18 OS isolation remains BLOCKED.
 
-# Simpul — Installation and candidate quick start
+```powershell
+git clone https://github.com/rzqllh/SubagentBridge.git
+cd SubagentBridge
+git checkout v1.1.1
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m subagentbridge.server
+```
 
-Simpul is the public name. The Python distribution and import package remain `subagentbridge`. **The default GitHub branch now contains v1.1.0 code**; this guide applies to the PR #3 development candidate and is not a general-availability release guide.
 
 ## Prerequisites
 

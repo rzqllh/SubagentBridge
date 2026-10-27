@@ -1,6 +1,8 @@
+> **Latest published:** [Simpul v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) — 27 Oct 2026, merge `861f040dc12c33da681331e454ef41299f2dc70b`, CI 4/4 PASS, release workflow `40444832484` SUCCESS. Production certification is **not** implied; E18 same-user OS confinement and production human-approval identity remain BLOCKED. Historical project snapshots below are archival.
+
 > **Release verified — 27 October 2026:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is published from merge commit `a29f0d98957651e482fbae989a906bb09873f329`; candidate CI ran 4/4 successfully, release workflow [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542) succeeded. Historical candidate notes below are not current status. E18 remains BLOCKED (RISK_ACCEPTED_SAME_IDENTITY).
 
-## 27 October 2026 — Active release candidate update
+## Historical snapshot — pre-v1.1.0 release candidate (superseded)
 
 The C00–C07 PR stack (#9–#16) adds team sessions, real subprocess IPC, authenticated handoffs, SQLite state/checkpoints, worktree continuity, native Simpul names and Cindy-attributed migration compatibility. This work is being developed and verified on `simpul/15-native-naming`, **not yet published from `main`**. Follow the exact PR head SHA, GitHub Actions matrix and unresolved review threads before describing it as released. The existing `v1.0.0` tag remains the documented published baseline. Safety boundary: `AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`, E18 `BLOCKED`. See [release readiness](simpul/RELEASE_READINESS.md) and [parity report](simpul/SIMPUL_CINDY_PARITY_REPORT.md).
 

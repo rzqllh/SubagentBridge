@@ -1,6 +1,6 @@
 # Simpul documentation
 
-**Latest verified release:** [v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) (27 October 2026).
+**Latest verified release:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) (27 October 2026) · supervised runtime/security hardening; E18 remains BLOCKED.
 
 Simpul is a **supervised, native-first MCP subagent supervisor**. The public name is Simpul; the Python package and MCP server identifier remain `subagentbridge` for compatibility.
 
