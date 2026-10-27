@@ -415,52 +415,41 @@ def migrate_schema(conn: sqlite3.Connection, db_path: str | Path | None = None) 
             # 3. Queue (Comparing ALL columns: dispatch_id, team_id, from_session_id, to_session_id, task_id, payload_json, status, dedup_key, priority, steering_json, created_at, updated_at)
             if "orca_queue" in active_legacy_tables:
                 cols = {r["name"] for r in conn.execute("PRAGMA table_info(orca_queue)").fetchall()}
-                # Each optional column is handled independently; never discard a populated
-                # legacy value merely because a different optional column is missing.
-                optional_defaults = {
-                    "dedup_key": "NULL",
-                    "priority": "0",
-                    "steering_json": "'[]'",
-                }
-                def legacy_expr(column: str) -> str:
-                    return f"o.{column}" if column in cols else optional_defaults[column]
-
-                dedup_expr = legacy_expr("dedup_key")
-                priority_expr = legacy_expr("priority")
-                steering_expr = legacy_expr("steering_json")
-                conflicts = conn.execute(f"""  # nosec B608 - SQL fragments are fixed local identifiers from a closed allowlist
-                    SELECT o.dispatch_id FROM orca_queue o
-                    INNER JOIN simpul_queue s ON o.dispatch_id = s.dispatch_id
-                    WHERE o.team_id IS NOT s.team_id
-                       OR o.from_session_id IS NOT s.from_session_id
-                       OR o.to_session_id IS NOT s.to_session_id
-                       OR o.task_id IS NOT s.task_id
-                       OR o.payload_json IS NOT s.payload_json
-                       OR o.status IS NOT s.status
-                       OR ({dedup_expr}) IS NOT s.dedup_key
-                       OR ({priority_expr}) IS NOT s.priority
-                       OR ({steering_expr}) IS NOT s.steering_json
-                       OR o.created_at IS NOT s.created_at
-                       OR o.updated_at IS NOT s.updated_at
-                """).fetchall()
-                if conflicts:
-                    raise MigrationConflictError(
-                        f"Conflicting primary keys between legacy orca_queue and simpul_queue: {[c[0] for c in conflicts]}"
+                # Work with values rather than constructing SQL from schema names.
+                # Missing legacy columns receive defaults individually; present ones
+                # retain their exact original values in the destination table.
+                for legacy in conn.execute("SELECT * FROM orca_queue").fetchall():
+                    values = (
+                        legacy["dispatch_id"], legacy["team_id"],
+                        legacy["from_session_id"], legacy["to_session_id"],
+                        legacy["task_id"], legacy["payload_json"], legacy["status"],
+                        legacy["dedup_key"] if "dedup_key" in cols else None,
+                        legacy["priority"] if "priority" in cols else 0,
+                        legacy["steering_json"] if "steering_json" in cols else "[]",
+                        legacy["created_at"], legacy["updated_at"],
                     )
-                conn.execute(f"""  # nosec B608 - expressions selected solely from fixed schema-column allowlist
-                    INSERT INTO simpul_queue (
-                        dispatch_id, team_id, from_session_id, to_session_id,
-                        task_id, payload_json, status, dedup_key, priority, steering_json,
-                        created_at, updated_at
+                    current = conn.execute(
+                        """SELECT dispatch_id, team_id, from_session_id, to_session_id,
+                                  task_id, payload_json, status, dedup_key, priority,
+                                  steering_json, created_at, updated_at
+                           FROM simpul_queue WHERE dispatch_id = ?""",
+                        (legacy["dispatch_id"],),
+                    ).fetchone()
+                    if current is not None:
+                        if tuple(current) != values:
+                            raise MigrationConflictError(
+                                f"Conflicting primary keys between legacy orca_queue and "
+                                f"simpul_queue: {legacy['dispatch_id']}"
+                            )
+                        continue
+                    conn.execute(
+                        """INSERT INTO simpul_queue (
+                              dispatch_id, team_id, from_session_id, to_session_id,
+                              task_id, payload_json, status, dedup_key, priority,
+                              steering_json, created_at, updated_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        values,
                     )
-                    SELECT
-                        o.dispatch_id, o.team_id, o.from_session_id, o.to_session_id,
-                        o.task_id, o.payload_json, o.status,
-                        {dedup_expr}, {priority_expr}, {steering_expr},
-                        o.created_at, o.updated_at
-                    FROM orca_queue o
-                    WHERE o.dispatch_id NOT IN (SELECT dispatch_id FROM simpul_queue)
-                """)
                 for r in conn.execute("SELECT * FROM orca_queue").fetchall():
                     nr = conn.execute("SELECT * FROM simpul_queue WHERE dispatch_id = ?", (r["dispatch_id"],)).fetchone()
                     if nr is None:
