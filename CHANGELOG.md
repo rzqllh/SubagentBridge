@@ -17,6 +17,14 @@ This security patch is not published until CI/review and a SHA-gated release pas
 - Breaking safety restriction: privileged commands remain BLOCKED until an independently authenticated operator approval channel is deployed. **Do not substitute chat/model text for human identity.**
 - E18 worker OS confinement and production out-of-band human approval remain BLOCKED; this patch is an emergency default-deny correction, not enterprise certification.
 
+## [Unreleased] — v1.1.2 approval lifetime hardening candidate
+
+- Approval actions now carry an absolute deadline (15-minute default, bounded to 24 hours) and transition permanently to EXPIRED. Pending/approved expired decisions cannot create new execution tickets.
+- Operator credential comparison uses constant-time comparison.
+- Recovery requires a fresh human decision when an action expires rather than reusing stale approvals.
+- Dedicated expiry tests cover pending, already-approved, token mismatch, lifetime bounds and irreversible expiration.
+- **Not enterprise-certified:** in-process broker test credentials do not prove out-of-band identity; E18 OS user isolation remains BLOCKED. No public release until 4/4 CI and review.
+
 ## [1.1.1] - 2026-10-27
 
 **Published:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) from `861f040dc12c33da681331e454ef41299f2dc70b`. PR #19 CI 4/4 PASS, release workflow 40444832484 SUCCESS. Contains wheel, source archive and SHA256 checksum manifest. Independent enterprise security certification remains outstanding.
