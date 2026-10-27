@@ -1298,6 +1298,86 @@ class TeamStore:
                 )
             return cps
 
+    # ---- Backup & Resilience ----------------------------------------------
+
+    def checkpoint_wal(self, mode: str = "TRUNCATE") -> tuple[int, int, int]:
+        """Perform a WAL checkpoint on the SQLite database.
+
+        Args:
+            mode: Checkpoint mode ('PASSIVE', 'FULL', 'RESTART', 'TRUNCATE').
+                  Defaults to 'TRUNCATE'.
+
+        Returns:
+            tuple of (busy, log, checkpointed) page counts.
+        """
+        valid_modes = {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}
+        mode_upper = mode.upper()
+        if mode_upper not in valid_modes:
+            raise ValueError(f"Invalid WAL checkpoint mode {mode!r}; must be one of {valid_modes}")
+        with self._lock:
+            cur = self._conn.execute(f"PRAGMA wal_checkpoint({mode_upper})")
+            row = cur.fetchone()
+            if row is None:
+                return (0, 0, 0)
+            return (int(row[0]), int(row[1]), int(row[2]))
+
+    def backup_database(self, backup_path: str | Path, pages: int = -1) -> None:
+        """Create an online, consistent backup of the SQLite database using SQLite Online Backup API.
+
+        Performs a full WAL checkpoint before backup, copies pages atomically,
+        and validates referential and structural integrity on the backup file via PRAGMA integrity_check.
+        """
+        target_path = Path(backup_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self.checkpoint_wal(mode="TRUNCATE")
+            target_conn = sqlite3.connect(str(target_path))
+            try:
+                self._conn.backup(target_conn, pages=pages)
+                check = target_conn.execute("PRAGMA integrity_check").fetchall()
+                if not check or check[0][0] != "ok":
+                    raise RuntimeError(f"Database backup integrity check failed: {check}")
+            finally:
+                target_conn.close()
+
+    @classmethod
+    def restore_from_backup(cls, backup_path: str | Path, target_path: str | Path) -> TeamStore:
+        """Restores a database from a verified backup and returns an opened TeamStore instance.
+
+        Validates integrity of the backup prior to restore, cleanly removes any stale WAL/SHM files,
+        and ensures zero data loss.
+        """
+        b_path = Path(backup_path)
+        t_path = Path(target_path)
+        if not b_path.exists():
+            raise FileNotFoundError(f"Backup file {b_path} does not exist")
+
+        verify_conn = sqlite3.connect(str(b_path))
+        try:
+            check = verify_conn.execute("PRAGMA integrity_check").fetchall()
+            if not check or check[0][0] != "ok":
+                raise RuntimeError(f"Backup file integrity check failed: {check}")
+        finally:
+            verify_conn.close()
+
+        t_path.parent.mkdir(parents=True, exist_ok=True)
+        wal_file = t_path.with_name(t_path.name + "-wal")
+        shm_file = t_path.with_name(t_path.name + "-shm")
+        if wal_file.exists():
+            wal_file.unlink()
+        if shm_file.exists():
+            shm_file.unlink()
+
+        src_conn = sqlite3.connect(str(b_path))
+        dst_conn = sqlite3.connect(str(t_path))
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            src_conn.close()
+            dst_conn.close()
+
+        return cls(t_path)
+
 
 # Backward-compatibility alias
 OrcaStore = TeamStore

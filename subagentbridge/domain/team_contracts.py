@@ -38,6 +38,7 @@ class QueueTaskStatus(str, Enum):
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
     FAILED = "FAILED"
+    AMBIGUOUS = "AMBIGUOUS"
 
 
 @dataclass(frozen=True)
