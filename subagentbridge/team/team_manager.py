@@ -169,14 +169,8 @@ class TeamManager:
         if sender.team_id != receiver.team_id:
             raise ValueError("cross-team dispatch not permitted")
 
-        if dedup_key:
-            existing = self.store.find_queue_item_by_dedup(sender.team_id, dedup_key)
-            if existing and existing.status not in (
-                QueueTaskStatus.FAILED,
-                QueueTaskStatus.CANCELLED,
-            ):
-                return existing
-
+        # The store performs lookup and insertion in one BEGIN IMMEDIATE transaction.
+        # An in-memory preflight lookup here would race across orchestrator processes.
         dispatch_id = f"dsp-{uuid.uuid4().hex[:12]}"
         item = QueueItem(
             dispatch_id=dispatch_id,
@@ -192,8 +186,7 @@ class TeamManager:
             created_at=time.time(),
             updated_at=time.time(),
         )
-        self.store.save_queue_item(item)
-        return item
+        return self.store.dispatch_or_get_existing(item)
 
     def get_queue_item(self, dispatch_id: str) -> QueueItem | None:
         return self.store.load_queue_item(dispatch_id)
@@ -255,16 +248,7 @@ class TeamManager:
         if lead.team_id != item.team_id:
             raise PermissionError("cross-team task cancellation not permitted")
 
-        item.status = QueueTaskStatus.CANCELLED
-        if reason:
-            item.steering_instructions.append({
-                "cancellation_reason": reason,
-                "cancelled_by": lead_session_id,
-                "timestamp": time.time(),
-            })
-        item.updated_at = time.time()
-        self.store.save_queue_item(item)
-        return item
+        return self.store.cancel_queue_if_active(dispatch_id, lead.team_id, lead_session_id, reason)
 
     def list_team_queue(self, team_id: str) -> list[QueueItem]:
         return self.store.list_queue_by_team(team_id)
