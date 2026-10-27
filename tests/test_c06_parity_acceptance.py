@@ -659,10 +659,12 @@ def test_c06_pinned_cindy_parity_contract_verification():
     simpul_extensions = simpul_actual_statuses - mapped_simpul
     assert simpul_extensions == {WorkerStatus.PAUSED.value}
 
-    # 2. Seven queue statuses matching Cindy orca queue states
-    expected_queue_states = {"PENDING", "DISPATCHED", "RUNNING", "INTERRUPTED", "COMPLETED", "CANCELLED", "FAILED"}
+    # 2. Seven base queue statuses matching Cindy orca queue states plus Simpul AMBIGUOUS resilience extension
+    cindy_queue_states = {"PENDING", "DISPATCHED", "RUNNING", "INTERRUPTED", "COMPLETED", "CANCELLED", "FAILED"}
     actual_queue_states = {q.value for q in QueueTaskStatus}
-    assert expected_queue_states == actual_queue_states
+    assert cindy_queue_states.issubset(actual_queue_states)
+    simpul_queue_extensions = actual_queue_states - cindy_queue_states
+    assert simpul_queue_extensions == {"AMBIGUOUS"}
 
     # 3. Lead and Worker roles matching sessions.role
     expected_roles = {"lead", "worker"}

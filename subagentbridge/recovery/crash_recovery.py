@@ -14,6 +14,7 @@ from typing import Any
 from subagentbridge.domain.team_contracts import (
     AgentRole,
     AgentSession,
+    QueueItem,
     QueueTaskStatus,
     WorkerCheckpoint,
     WorkerStatus,
@@ -25,15 +26,24 @@ from subagentbridge.execution.worker_process import (
 from subagentbridge.storage.team_store import TeamStore
 
 
-def reconcile_team_after_crash(team_id: str, store: TeamStore) -> dict[str, Any]:
+def reconcile_team_after_crash(
+    team_id: str,
+    store: TeamStore,
+    mark_in_flight_as_ambiguous: bool = False,
+) -> dict[str, Any]:
     """Reconciles worker session and queue states for a team following a crash.
 
     Audits all worker sessions against real OS process tables. Workers whose
-    processes have terminated are transitioned to FAILED, and any in-flight
-    queue items are transitioned to FAILED (never assumed COMPLETED).
+    processes have terminated are transitioned to FAILED.
+    For queue items assigned to dead workers:
+    - If mark_in_flight_as_ambiguous is True and item is DISPATCHED or RUNNING,
+      it is transitioned to AMBIGUOUS to protect non-idempotent side effects for human review.
+    - Otherwise transitioned to FAILED (never assumed COMPLETED).
     """
     sessions = store.list_sessions_by_team(team_id)
     dead_workers: list[str] = []
+    ambiguous_tasks: list[str] = []
+    failed_tasks: list[str] = []
 
     for session in sessions:
         if session.role != AgentRole.WORKER:
@@ -54,7 +64,7 @@ def reconcile_team_after_crash(team_id: str, store: TeamStore) -> dict[str, Any]
                 store.save_session(session)
                 dead_workers.append(session.session_id)
 
-                # Transition in-flight queue tasks assigned to this dead worker to FAILED
+                # Transition in-flight queue tasks assigned to this dead worker
                 items = store.list_queue_by_team(team_id)
                 for item in items:
                     if item.to_session_id == session.session_id and item.status in (
@@ -62,7 +72,15 @@ def reconcile_team_after_crash(team_id: str, store: TeamStore) -> dict[str, Any]
                         QueueTaskStatus.DISPATCHED,
                         QueueTaskStatus.RUNNING,
                     ):
-                        item.status = QueueTaskStatus.FAILED
+                        if mark_in_flight_as_ambiguous and item.status in (
+                            QueueTaskStatus.DISPATCHED,
+                            QueueTaskStatus.RUNNING,
+                        ):
+                            item.status = QueueTaskStatus.AMBIGUOUS
+                            ambiguous_tasks.append(item.dispatch_id)
+                        else:
+                            item.status = QueueTaskStatus.FAILED
+                            failed_tasks.append(item.dispatch_id)
                         item.updated_at = time.time()
                         store.save_queue_item(item)
 
@@ -70,7 +88,54 @@ def reconcile_team_after_crash(team_id: str, store: TeamStore) -> dict[str, Any]
         "team_id": team_id,
         "reconciled_workers": len(dead_workers),
         "dead_workers": dead_workers,
+        "ambiguous_tasks": ambiguous_tasks,
+        "failed_tasks": failed_tasks,
     }
+
+
+def reconcile_ambiguous_task(
+    dispatch_id: str,
+    store: TeamStore,
+    resolution: str,
+    operator_notes: str = "",
+) -> QueueItem:
+    """Explicit operator reconciliation for an ambiguous or interrupted in-flight task.
+
+    Resolutions:
+    - 'RETRY': Resets task status to PENDING so it can be re-dispatched cleanly.
+    - 'MARK_COMPLETED': Transitions task status to COMPLETED (operator verified side effects).
+    - 'MARK_FAILED': Transitions task status to FAILED (abandoned or unrecoverable).
+    """
+    valid_resolutions = {"RETRY", "MARK_COMPLETED", "MARK_FAILED"}
+    if resolution not in valid_resolutions:
+        raise ValueError(f"Invalid resolution {resolution!r}; must be one of {valid_resolutions}")
+
+    item = store.load_queue_item(dispatch_id)
+    if not item:
+        raise KeyError(f"Queue item {dispatch_id!r} not found")
+
+    if item.status not in (QueueTaskStatus.AMBIGUOUS, QueueTaskStatus.FAILED, QueueTaskStatus.DISPATCHED):
+        raise ValueError(f"Queue item {dispatch_id!r} has status {item.status}, not eligible for ambiguous reconciliation")
+
+    payload = dict(item.payload)
+    payload["_reconciliation"] = {
+        "resolved_at": time.time(),
+        "resolution": resolution,
+        "operator_notes": operator_notes,
+    }
+
+    if resolution == "RETRY":
+        new_status = QueueTaskStatus.PENDING
+    elif resolution == "MARK_COMPLETED":
+        new_status = QueueTaskStatus.COMPLETED
+    else:
+        new_status = QueueTaskStatus.FAILED
+
+    item.status = new_status
+    item.payload = payload
+    item.updated_at = time.time()
+    store.save_queue_item(item)
+    return item
 
 
 def resume_worker_from_checkpoint(
