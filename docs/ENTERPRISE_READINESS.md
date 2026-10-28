@@ -1,6 +1,12 @@
 # Enterprise-readiness evidence and release gates
 
-**Status:** NOT ENTERPRISE-CERTIFIED (27 October 2026). Main has merged PRs #30/#31/#33/#32 and exact-main CI 4/4 PASS, but latest published release remains v1.1.3. The latest published release is [Simpul v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3), from merge commit `a47473edf4ff9ef9e59d2dd5f5d682941d0e1826`. The v1.1.2 and v1.1.3 patches harden MCP self-approval default-deny and action/ticket expiration; they do NOT implement independent human authentication or OS worker isolation.
+**Status:** NOT ENTERPRISE-CERTIFIED (28 October 2026).
+The proposed **v1.1.4 supervised security release** contains merged PRs #30–#40,
+and the active `main` ruleset requires PRs and four Windows/Linux checks.
+The most recent published release *at preparation time* was v1.1.3; see
+[Releases](https://github.com/rzqllh/SubagentBridge/releases) for the actual
+published artifact. PR CI and source-tree features are not proof of WebAuthn
+identity, a hostile-worker sandbox, or production recovery acceptance.
 
 Simpul is a local-first supervised MCP subagent orchestrator, not a multi-tenant secure agent execution service. The meaning of "enterprise-ready" is evidence-based: operational resilience, provable human authorization, isolation, auditability, reproducible releases, and recoverability are separate gates.
 
@@ -10,12 +16,27 @@ Simpul is a local-first supervised MCP subagent orchestrator, not a multi-tenant
 | SQLite schema migration and backup consistency | VERIFIED (bounded) | WAL-aware online SQLite backup, schema mapping, rollback tests and racing initializer regressions |
 | Shared-connection reader/writer concurrency | VERIFIED (bounded) | v1.1.1 serializes 13 reads and 10 writers via RLock; BEGIN IMMEDIATE protects cross-process resume; concurrency regressions PASS on Ubuntu/Windows Python 3.11/3.13 |
 | Recovery of in-flight commands | PARTIAL | Trusted checkpoint identity and observable artifact validation; crash before checkpoint may leave ambiguous external side effects; automatic exactly-once is not claimed |
-| Approval provenance | BLOCKED FOR ENTERPRISE | PR #33 added a candidate SQLite operator decision store. OperatorIdentity is caller-supplied and has NO built-in OIDC/WebAuthn signature validation; production execution still uses TrustedApprovalAuthority. The corrective branch requires a trusted injected verifier and denies otherwise; no external IdP E2E evidence |
-| E18 hostile worker isolation | BLOCKED (merged partial hardening) | Default workers retain same-user privileges. PR #31 added credential environment scrubbing, optional Linux dedicated UID/GID and Windows Job Object UI limits; these are not Windows separate-user identity or complete filesystem/network/process confinement. Issue #21 remains OPEN |
+| Approval provenance | BLOCKED FOR ENTERPRISE | PRs #34/#35/#37/#39/#40 add opt-in verifier-injected approval, durable cross-process decision/consumption CAS, action-bound challenge and legacy provenance migration. Default TrustedApprovalAuthority remains; **no production WebAuthn/OIDC verifier or operator UI exists** |
+| E18 hostile worker isolation | BLOCKED (merged partial hardening) | Default workers retain same-user privileges. PRs #31/#38 add env scrubbing, opt-in Linux dedicated UID/GID, strict distinct-identity refusal and Windows Job Object UI limits. **No supported Windows hostile-worker sandbox** or verified Linux filesystem/network/process confinement. Issue #21 remains OPEN |
 | Independent host integration coverage | PARTIAL | Adapters and MCP subprocess tests do not imply true end-to-end certification for every Antigravity/Codex/Claude/Pi build |
 | Artifact integrity and verified handoff | VERIFIED (bounded) | File existence, SHA-256, task binding and transaction-protected receipts under documented trust boundary |
-| Supply-chain/release provenance | PARTIAL | Pinned QA analyzers, immutable release SHA, wheel/sdist/checksum are present; signature/SBOM/provenance attestation and documented incident rollback remain unverified |
+| Supply-chain/release provenance | PARTIAL | PR #36 adds SHA-pinned Sigstore/GitHub build attestation and verification before release, alongside exact-main QA, wheel/sdist and SHA256 sums. The actual v1.1.4 publication must pass and be independently validated; signed dependency SBOM and restore/rollback drills remain missing |
 | Operational SLO/load/chaos | NOT VERIFIED | No claimed long-duration soak, restore drill, large-scale task-queue load test or production incident exercise |
+
+## v1.1.4 supervised-release limitations
+
+The v1.1.4 release is permitted only as a **limited public supervised security
+hardening** patch; it MUST NOT be marketed as enterprise ready, sandboxed for
+hostile workers, or genuine independently authenticated human approvals.
+Required unresolved issue gates are
+[#21](https://github.com/rzqllh/SubagentBridge/issues/21) (OS isolation),
+[#22](https://github.com/rzqllh/SubagentBridge/issues/22) (real RP/IdP and
+operator UI), and [#23](https://github.com/rzqllh/SubagentBridge/issues/23)
+(SBOM, restore/rollback, long-duration adversarial/chaos evidence).
+
+The release flow must use an exact-main source commit with **4/4 main-push
+CI success**, verified SHA-pinned GitHub/Sigstore build attestations and
+checksums before publishing. This is build provenance, not safety certification.
 
 ## Post-v1.1.1 security delta
 
