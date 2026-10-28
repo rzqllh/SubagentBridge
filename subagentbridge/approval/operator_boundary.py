@@ -538,7 +538,7 @@ class IndependentOperatorApprovalBoundary:
         now = time.time()
         with self._lock:
             pending: list[OperatorApprovalRequest] = []
-            for req in self._requests.values():
+            for req in list(self._requests.values()):
                 current = self._expire_if_due(req, now)
                 if current.state in (ApprovalState.BLOCKED, ApprovalState.QUESTION_PENDING):
                     pending.append(deepcopy(current))
