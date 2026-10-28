@@ -4,7 +4,6 @@ Test-only identity verifier is not an actual WebAuthn or OIDC implementation.
 """
 from __future__ import annotations
 
-import hashlib
 import hmac
 import sys
 
