@@ -588,17 +588,23 @@ def test_stale_supervisor_cannot_reopen_terminal_consumed_grant(tmp_path: Path, 
     assert recovered.get_request(req.action_id).state == ApprovalState.CONSUMED
 
 
-def test_repeat_expired_consumption_never_raises_or_revives_terminal(tmp_path: Path, operator: OperatorIdentity):
+def test_repeat_expired_consumption_never_raises_or_revives_terminal(
+    tmp_path: Path, operator: OperatorIdentity, monkeypatch: pytest.MonkeyPatch,
+):
+    # Deterministic logical time: avoid racing a 25ms approval TTL against
+    # slow Windows filesystem and CI startup.
+    clock = [10000.0]
+    monkeypatch.setattr("subagentbridge.approval.operator_boundary.time.time", lambda: clock[0])
     db = tmp_path / "expired_terminal.db"
     boundary = fixture_boundary(db_path=db)
     req = boundary.create_request(
         session_id="w", task_id="t", command=["echo", "safe"],
-        workspace_path=str(tmp_path), ttl_seconds=0.025,
+        workspace_path=str(tmp_path), ttl_seconds=25.0,
     )
     boundary.resolve_by_operator(
         req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator,
     )
-    time.sleep(0.05)
+    clock[0] += 26.0
     for _ in range(3):
         ok, reason, ticket = boundary.consume_for_execution(
             req.action_id, session_id="w", task_id="t",
