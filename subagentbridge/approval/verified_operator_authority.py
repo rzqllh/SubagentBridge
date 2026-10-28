@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import math
 import time
+from pathlib import Path
 from typing import Any
 
 from subagentbridge.approval.operator_boundary import (
@@ -59,6 +60,26 @@ class VerifiedOperatorApprovalAuthority:
         raise PermissionError(
             "DENIED: legacy broker tokens cannot approve commands; "
             "use a trusted out-of-band operator identity verifier"
+        )
+
+    def get_action(self, action_id: str) -> OperatorApprovalRequest | None:
+        """Trusted recovery must never inspect a nonexistent legacy broker."""
+        return self.boundary.get_request(action_id) if action_id else None
+
+    def is_action_for_context(
+        self,
+        action: OperatorApprovalRequest,
+        worker_id: str,
+        task_id: str,
+        command: list[str],
+        workspace_path: str,
+    ) -> bool:
+        return (
+            action.session_id == worker_id
+            and action.task_id == task_id
+            and action.command == [str(part) for part in command]
+            and action.workspace_path == str(Path(workspace_path).resolve())
+            and (action.state != OperatorApprovalState.APPROVED or action.operator_verified)
         )
 
     def is_action_consumed(self, action_id: str) -> bool:
