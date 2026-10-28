@@ -15,6 +15,11 @@ The trusted host may explicitly construct an
 construction when the action-specific decision verifier is missing. A reusable
 identity token by itself is not transaction authorization.
 
+A migrated legacy approval row starts with `action_bound_verified=0` even if
+its previous identity-only state was `APPROVED`; the adapter refuses its
+consumption. A fresh external action-bound decision is required. The migration
+runs under the existing serialized SQLite schema transaction.
+
 The runtime adapter:
 - Creates exact worker/session/task/command/workspace approval requests.
 - Rejects legacy local broker-secret approval.
