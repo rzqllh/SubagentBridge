@@ -35,6 +35,8 @@ fi
 
 ## 2. Protected Branch & Independent Review Policy
 
+**NOT YET ENFORCED:** GitHub currently reports `main.protected=false`; the following are intended requirements, not automatically enforced repository settings. Independent review and signed-commit enforcement remain outstanding.
+
 1. **Direct Pushes Prohibited:** Pushing directly to `main` is disallowed.
 2. **Review Gates:** Every PR requires at least one independent review approval from an authorized security architect / principal maintainer.
 3. **Commit Signatures:** Commits must be cryptographically signed (GPG/SSH).
@@ -129,7 +131,7 @@ When an alert fires for `AMBIGUOUS` tasks:
 - **Worker Process Timeout:** Default 300 seconds per command step.
 - **Queue Task Backlog Ceiling:** Default max 10,000 items per team queue.
 - **Token Budget Ceilings:** Strictly enforced per session in `WorkerConfig.tokens_consumed`.
-- **Process Memory Limits:** Worker processes run under Windows Job Object UI limits or Linux cgroups/resource limits.
+- **Process Memory Limits:** NOT VERIFIED. Windows Job Object *UI* restrictions are not a proven memory ceiling. Linux cgroups and resource-enforced worker limits require separate implementation and host acceptance.
 
 ---
 
@@ -157,7 +159,7 @@ pip-audit --desc
 After installing a new release wheel or container:
 ```bash
 # 1. Run baseline sanity checks
-python -m pytest tests/test_smoke_runtime.py -v
+python -m pytest tests/test_mcp_production_server.py -v
 
 # 2. Run operational resilience drill
 python -m pytest tests/test_operational_resilience.py -v

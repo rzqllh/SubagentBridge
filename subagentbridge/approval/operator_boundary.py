@@ -1,7 +1,9 @@
 """Independent authenticated human operator approval boundary (P0 / Issue #22).
 
-Provides an out-of-band operator authorization plane completely separated
-from model-callable MCP tools and untrusted worker processes.
+Provides a **candidate** operator decision store; it does NOT itself authenticate
+OIDC/WebAuthn tokens or integrate into the production command dispatcher.
+The trusted host must supply an independently authenticated verifier, and the
+boundary denies all operator decisions until one is supplied.
 Decisions are cryptographically bound to:
 1. Authenticated operator identity (OIDC/WebAuthn/console assertion)
 2. Operator role (e.g. 'security_lead', 'operator', 'auditor')
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from copy import deepcopy
 import json
 from dataclasses import dataclass, field
 from enum import Enum
@@ -26,7 +29,7 @@ from secrets import token_hex
 import sqlite3
 import threading
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from subagentbridge.storage.audit_ledger import AuditLedger
 
@@ -48,12 +51,12 @@ class ApprovalState(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class OperatorIdentity:
-    """Independently authenticated operator credentials outside model trust boundary."""
+    """Unverified operator assertion. Construction does not prove authentication."""
 
     operator_id: str
     role: str
     channel: str  # e.g. "webauthn", "oidc", "operator_console"
-    auth_token: str  # Cryptographic proof or signed bearer token
+    auth_token: str  # UNVERIFIED caller-supplied assertion; must be checked by an external verifier
 
     def __post_init__(self) -> None:
         if not self.operator_id or not self.role or not self.channel or not self.auth_token:
@@ -80,6 +83,8 @@ class OperatorApprovalRequest:
     operator_notes: str = ""
     questions: list[str] = field(default_factory=list)
     answers: dict[str, str] = field(default_factory=dict)
+    # False for all legacy rows; only a trusted host verifier can set True.
+    operator_verified: bool = False
 
 
 def canonical_command_digest(command: list[str], workspace_path: str, task_id: str) -> str:
@@ -92,7 +97,7 @@ def canonical_command_digest(command: list[str], workspace_path: str, task_id: s
 
 
 class IndependentOperatorApprovalBoundary:
-    """Durable, tamper-evident operator approval gate."""
+    """Local decision store; requires externally verified operator assertions."""
 
     def __init__(
         self,
@@ -101,10 +106,15 @@ class IndependentOperatorApprovalBoundary:
         *,
         default_ttl_seconds: float = 900.0,
         signing_secret: str | None = None,
+        operator_verifier: Callable[[OperatorIdentity], bool] | None = None,
     ) -> None:
         if not 0 < default_ttl_seconds <= 86400:
             raise ValueError("default_ttl_seconds must be within (0, 86400]")
         self.default_ttl = default_ttl_seconds
+        # Production must inject a trusted out-of-process/OIDC/WebAuthn assertion
+        # verifier. A caller-constructed OperatorIdentity is never authentication.
+        # No verifier => ALLOW_ONCE, DENY and ANSWER_QUESTIONS all fail closed.
+        self._operator_verifier = operator_verifier
         self._secret = signing_secret or token_hex(32)
         self._lock = threading.RLock()
         self._requests: dict[str, OperatorApprovalRequest] = {}
@@ -120,8 +130,15 @@ class IndependentOperatorApprovalBoundary:
     def _init_db(self) -> None:
         assert self.db_path is not None
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            # Concurrent Windows SQLite startups may raise SQLITE_BUSY while
+            # another process switches journal mode. Journal mode is a
+            # performance choice, not a prerequisite for serialized DDL.
+            # A single-owner deployment may enable WAL separately.
+            # Serialize schema inspection + ALTER across independent processes.
+            # The test for a missing column must run under the same write lock
+            # as the migration itself, or concurrent startups can both ALTER.
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS operator_approvals (
                     action_id TEXT PRIMARY KEY,
@@ -139,9 +156,18 @@ class IndependentOperatorApprovalBoundary:
                     operator_channel TEXT,
                     operator_notes TEXT,
                     questions_json TEXT,
-                    answers_json TEXT
+                    answers_json TEXT,
+                    operator_verified INTEGER NOT NULL DEFAULT 0
                 )
             """)
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")}
+            if "operator_verified" not in existing:
+                # Existing approvals have no independent authentication evidence.
+                # A default of 0 means they cannot be consumed after upgrade.
+                conn.execute(
+                    "ALTER TABLE operator_approvals "
+                    "ADD COLUMN operator_verified INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _persist_request(self, req: OperatorApprovalRequest) -> None:
         if not self.db_path:
@@ -152,8 +178,8 @@ class IndependentOperatorApprovalBoundary:
                     action_id, session_id, task_id, command_json, workspace_path,
                     nonce, created_at, expires_at, state, decision,
                     operator_id, operator_role, operator_channel, operator_notes,
-                    questions_json, answers_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    questions_json, answers_json, operator_verified
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 req.action_id,
                 req.session_id,
@@ -171,6 +197,7 @@ class IndependentOperatorApprovalBoundary:
                 req.operator_notes,
                 json.dumps(req.questions),
                 json.dumps(req.answers),
+                int(req.operator_verified),
             ))
 
     def rehydrate_from_disk(self) -> int:
@@ -207,6 +234,7 @@ class IndependentOperatorApprovalBoundary:
                     operator_notes=r["operator_notes"] or "",
                     questions=json.loads(r["questions_json"] or "[]"),
                     answers=json.loads(r["answers_json"] or "{}"),
+                    operator_verified=bool(r["operator_verified"]),
                 )
                 self._requests[req.action_id] = req
                 if state == ApprovalState.CONSUMED:
@@ -269,7 +297,7 @@ class IndependentOperatorApprovalBoundary:
                 },
             )
 
-        return req
+        return deepcopy(req)
 
     def resolve_by_operator(
         self,
@@ -280,11 +308,21 @@ class IndependentOperatorApprovalBoundary:
         notes: str = "",
         answers: Mapping[str, str] | None = None,
     ) -> OperatorApprovalRequest:
-        """Resolves an approval strictly by an authenticated operator."""
+        """Resolve only after a trusted external verifier authenticates the assertion."""
         if not isinstance(decision, OperatorDecision):
             raise TypeError("decision must be an instance of OperatorDecision")
         if not isinstance(operator, OperatorIdentity):
             raise TypeError("operator must be an instance of OperatorIdentity")
+        if self._operator_verifier is None:
+            raise PermissionError("DENIED: independently authenticated operator verifier is not configured")
+        try:
+            verified = self._operator_verifier(operator)
+        except Exception as exc:
+            raise PermissionError("DENIED: operator identity verification failed") from exc
+        if verified is not True:
+            raise PermissionError("DENIED: operator identity has not been authenticated")
+        if operator.role not in ("security_lead", "security_admin", "operator"):
+            raise PermissionError("DENIED: authenticated operator role cannot resolve approvals")
 
         now = time.time()
         with self._lock:
@@ -303,24 +341,28 @@ class IndependentOperatorApprovalBoundary:
             if req.nonce in self._consumed_nonces:
                 raise PermissionError("Action nonce already consumed (replay prevented)")
 
-            req.decision = decision
-            req.operator_id = operator.operator_id
-            req.operator_role = operator.role
-            req.operator_channel = operator.channel
-            req.operator_notes = notes
+            # Copy-on-write: never expose APPROVED in memory before both the
+            # audit append and durable state persistence succeed. These stores
+            # are not atomically coupled, so a failed later step stays BLOCKED.
+            updated = deepcopy(req)
+            updated.decision = decision
+            updated.operator_id = operator.operator_id
+            updated.operator_role = operator.role
+            updated.operator_channel = operator.channel
+            updated.operator_notes = notes
+            updated.operator_verified = True
 
             if decision == OperatorDecision.ALLOW_ONCE:
-                req.state = ApprovalState.APPROVED
+                updated.state = ApprovalState.APPROVED
             elif decision == OperatorDecision.DENY:
-                req.state = ApprovalState.DENIED
+                updated.state = ApprovalState.DENIED
             elif decision == OperatorDecision.ANSWER_QUESTIONS:
-                req.state = ApprovalState.QUESTION_PENDING
+                updated.state = ApprovalState.QUESTION_PENDING
                 if answers:
-                    req.answers.update(dict(answers))
+                    updated.answers.update(dict(answers))
 
             if self.ledger:
-                # Distinct idempotency key per decision transition allows ANSWER_QUESTIONS followed by ALLOW_ONCE/DENY
-                idemp_key = f"{action_id}:decision:{decision.value}:{len(req.answers)}"
+                idemp_key = f"{action_id}:decision:{decision.value}:{len(updated.answers)}"
                 self.ledger.append(
                     stream="operator_approvals",
                     idempotency_key=idemp_key,
@@ -331,15 +373,16 @@ class IndependentOperatorApprovalBoundary:
                         "operator_id": operator.operator_id,
                         "operator_role": operator.role,
                         "operator_channel": operator.channel,
-                        "state": req.state.value,
+                        "state": updated.state.value,
                         "notes": notes,
-                        "answers": dict(req.answers),
+                        "answers": dict(updated.answers),
                     },
                 )
 
-            self._persist_request(req)
+            self._persist_request(updated)
+            self._requests[action_id] = updated
 
-        return req
+        return deepcopy(updated)
 
     def consume_for_execution(
         self,
@@ -368,6 +411,10 @@ class IndependentOperatorApprovalBoundary:
 
             if req.state != ApprovalState.APPROVED:
                 return False, f"DENIED: action is in state {req.state.value}, not APPROVED", None
+            if not req.operator_verified:
+                return False, "DENIED: approval has no verified operator provenance", None
+            if self._operator_verifier is None:
+                return False, "DENIED: operator authentication boundary is unavailable", None
 
             if req.nonce in self._consumed_nonces:
                 return False, "DENIED: approval already consumed (replay prevented)", None
@@ -425,7 +472,7 @@ class IndependentOperatorApprovalBoundary:
                 if time.time() >= req.expires_at:
                     req.state = ApprovalState.EXPIRED
                     self._persist_request(req)
-            return req
+            return deepcopy(req) if req is not None else None
 
     def list_pending(self) -> list[OperatorApprovalRequest]:
         now = time.time()
@@ -437,5 +484,5 @@ class IndependentOperatorApprovalBoundary:
                         req.state = ApprovalState.EXPIRED
                         self._persist_request(req)
                     else:
-                        pending.append(req)
+                        pending.append(deepcopy(req))
             return pending
