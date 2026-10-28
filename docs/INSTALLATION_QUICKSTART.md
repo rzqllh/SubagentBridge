@@ -1,6 +1,6 @@
 # Simpul — Installation and Quick Start
 
-**Current published release:** [v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) (27 October 2026). The Python package and executable namespace remain `subagentbridge`.
+**Current published release:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4) (28 October 2026). The Python package and executable namespace remain `subagentbridge`.
 
 ## Requirements
 
@@ -13,7 +13,7 @@
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.1
+git checkout v1.1.4
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m subagentbridge.server
@@ -24,13 +24,15 @@ py -3.11 -m venv .venv
 ```bash
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.1
+git checkout v1.1.4
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/python -m subagentbridge.server
 ```
 
 The last command starts an **MCP stdio server** and waits for a client. It is not a terminal chatbot; avoid writing diagnostics to MCP protocol stdout.
+
+**Antigravity IDE primary setup:** See [step-by-step Antigravity IDE installation, MCP menus, config JSON and first safe tool calls](public/GETTING_STARTED.md). The generic snippet below is not a substitute for setting the **absolute** venv interpreter path in the IDE. Simpul is an MCP subagent supervisor, **not** a stand-alone chat UI.
 
 ## MCP client configuration
 
@@ -72,4 +74,4 @@ Before migration, keep a separate known-good database backup. The v2 migration c
 
 ## Source and attribution
 
-The release tag is immutable for reproducibility; [GitHub Release v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) includes Python wheel, source distribution, and SHA256 manifest. Cindy's Apache-2.0 architectural research attribution is preserved in [Third-party Notices](../THIRD_PARTY_NOTICES.md). Simpul is an independent Python implementation.
+The release tag is immutable for reproducibility; [GitHub Release v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4) includes Python wheel, source distribution, and SHA256 manifest. Cindy's Apache-2.0 architectural research attribution is preserved in [Third-party Notices](../THIRD_PARTY_NOTICES.md). Simpul is an independent Python implementation.
