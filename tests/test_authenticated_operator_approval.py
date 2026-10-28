@@ -507,3 +507,82 @@ def test_concurrent_legacy_provenance_migration_uses_one_writer(tmp_path: Path):
     with sqlite3.connect(db) as conn:
         columns = [row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")]
     assert columns.count("operator_verified") == 1
+
+
+def test_two_independent_supervisors_can_consume_durable_grant_only_once(tmp_path: Path, operator: OperatorIdentity):
+    """P0: an RLock inside each supervisor is NOT cross-process replay protection."""
+    from threading import Barrier
+
+    db = tmp_path / "cross_process_approval.db"
+    first = fixture_boundary(db_path=db)
+    req = first.create_request(
+        session_id="worker-concurrent",
+        task_id="task-concurrent",
+        command=["echo", "safe"],
+        workspace_path=str(tmp_path),
+    )
+    first.resolve_by_operator(
+        req.action_id,
+        decision=OperatorDecision.ALLOW_ONCE,
+        operator=operator,
+    )
+    second = fixture_boundary(db_path=db)
+    assert second.rehydrate_from_disk() == 1
+
+    ready = Barrier(2)
+
+    def consume(boundary: IndependentOperatorApprovalBoundary):
+        ready.wait(timeout=5)
+        return boundary.consume_for_execution(
+            req.action_id,
+            session_id="worker-concurrent",
+            task_id="task-concurrent",
+            command=["echo", "safe"],
+            workspace_path=str(tmp_path),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = [
+            pool.submit(consume, first),
+            pool.submit(consume, second),
+        ]
+        result = [future.result(timeout=10) for future in pending]
+
+    assert sum(bool(allowed) for allowed, _, _ in result) == 1, result
+    assert sum(ticket is not None for _, _, ticket in result) == 1
+    denied = [reason for allowed, reason, _ in result if not allowed]
+    assert len(denied) == 1
+    assert "durable approval already consumed" in denied[0]
+
+    recovered = fixture_boundary(db_path=db)
+    assert recovered.rehydrate_from_disk() == 1
+    assert recovered.get_request(req.action_id).state == ApprovalState.CONSUMED
+
+
+def test_stale_supervisor_cannot_reopen_terminal_consumed_grant(tmp_path: Path, operator: OperatorIdentity):
+    db = tmp_path / "durable_terminal.db"
+    authorized = fixture_boundary(db_path=db)
+    req = authorized.create_request(
+        session_id="w", task_id="t",
+        command=["echo", "safe"], workspace_path=str(tmp_path),
+    )
+    authorized.resolve_by_operator(
+        req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator,
+    )
+    stale = fixture_boundary(db_path=db)
+    assert stale.rehydrate_from_disk() == 1
+    assert stale.get_request(req.action_id).state == ApprovalState.APPROVED
+
+    allowed, _, _ = authorized.consume_for_execution(
+        req.action_id, session_id="w", task_id="t",
+        command=["echo", "safe"], workspace_path=str(tmp_path),
+    )
+    assert allowed
+
+    # The previous INSERT OR REPLACE code could resurrect APPROVED here.
+    with pytest.raises(PermissionError, match="terminal"):
+        stale._persist_request(stale.get_request(req.action_id))
+
+    recovered = fixture_boundary(db_path=db)
+    assert recovered.rehydrate_from_disk() == 1
+    assert recovered.get_request(req.action_id).state == ApprovalState.CONSUMED
