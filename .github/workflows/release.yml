@@ -8,6 +8,8 @@ on:
 permissions:
   contents: write
   actions: read
+  id-token: write
+  attestations: write
 
 concurrency:
   group: simpul-publish-release
@@ -56,6 +58,21 @@ jobs:
           python -m mypy --ignore-missing-imports --check-untyped-defs subagentbridge
           python -m bandit -q -r -ll subagentbridge
           python -m build --wheel --sdist
+      # Sigstore certificate + SLSA provenance bind the released binaries to
+      # this source/workflow. Fail closed: publication never follows failure.
+      - name: Attest built wheel and sdist provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4 pinned commit
+        with:
+          subject-path: 'dist/*'
+      - name: Verify signed build attestations before publishing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for artifact in dist/*; do
+            gh attestation verify "$artifact" -R "$GITHUB_REPOSITORY" --format json > /dev/null
+          done
       - name: Publish GitHub release from verified main SHA
         env:
           GH_TOKEN: ${{ github.token }}
