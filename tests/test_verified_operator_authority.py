@@ -16,6 +16,8 @@ from subagentbridge.approval.trusted_authority import verify_ticket_binding
 from subagentbridge.approval.verified_operator_authority import VerifiedOperatorApprovalAuthority
 from subagentbridge.domain.team_contracts import WorkerConfig
 from subagentbridge.execution.worker_process import WorkerProcessController
+from subagentbridge.recovery.crash_recovery import resume_task_from_checkpoint
+from subagentbridge.team.team_manager import OrcaTeamService
 from subagentbridge.storage.team_store import TeamStore
 
 
@@ -143,3 +145,66 @@ def test_work_process_dispatch_requires_verified_operator(tmp_path):
             assert denied_replay["status"] == "DENIED", denied_replay
         finally:
             controller.terminate_all()
+
+
+def test_recovery_uses_verified_authority_and_denies_replay(tmp_path):
+    """An existing command grant must survive recovery without broker access."""
+    boundary = IndependentOperatorApprovalBoundary(
+        db_path=tmp_path / "approval.db", operator_verifier=_fixture_verifier,
+    )
+    authority = VerifiedOperatorApprovalAuthority(boundary)
+    with TeamStore(tmp_path / "state.db") as store:
+        service = OrcaTeamService(store=store)
+        team = service.create_team(lead_session_id="lead-recovery-verified", title="Verified recovery")
+        worker = service.register_worker(WorkerConfig(
+            worker_id="worker-recovery-verified", team_id=team.team_id,
+            role="worker", harness="native", working_dir=str(tmp_path),
+        ))
+        item = service.dispatch_task(
+            from_session_id=team.lead_session_id,
+            to_session_id=worker.session_id,
+            task_id="verified-resume",
+            payload={"steps": [{
+                "name": "step-1",
+                "command": [sys.executable, "-c", "print('VERIFIED_RECOVERED')"],
+            }]},
+        )
+        controller = WorkerProcessController(store=store, approval_authority=authority)
+        try:
+            first = resume_task_from_checkpoint(
+                item.dispatch_id, store=store, controller=controller,
+                approval_authority=authority,
+            )
+            assert first["status"] == "AWAITING_APPROVAL", first
+            action_id = first["action_id"]
+            assert authority.get_action(action_id) is not None
+            boundary.resolve_by_operator(
+                action_id, decision=OperatorDecision.ALLOW_ONCE, operator=_identity(),
+            )
+            second = resume_task_from_checkpoint(
+                item.dispatch_id, store=store, controller=controller,
+                approval_authority=authority,
+            )
+            assert second["status"] == "COMPLETED", second
+            assert authority.is_action_consumed(action_id)
+        finally:
+            controller.terminate_all()
+
+
+def test_authority_neutral_lookup_rejects_mismatched_or_consumed_actions(tmp_path):
+    boundary = IndependentOperatorApprovalBoundary(operator_verifier=_fixture_verifier)
+    authority = VerifiedOperatorApprovalAuthority(boundary)
+    cmd = ["echo", "safe"]
+    ws = str(tmp_path)
+    req = authority.request_command_approval("worker-1", "task-1", cmd, ws)
+    action = authority.get_action(req.action_id)
+    assert action is not None
+    assert authority.is_action_for_context(action, "worker-1", "task-1", cmd, ws)
+    assert not authority.is_action_for_context(action, "worker-2", "task-1", cmd, ws)
+    assert not authority.is_action_for_context(action, "worker-1", "task-1", ["echo", "bad"], ws)
+    boundary.resolve_by_operator(req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=_identity())
+    ok, _, _ = authority.issue_execution_ticket(
+        req.action_id, "worker-1", "task-1", cmd, ws, "s" * 64,
+    )
+    assert ok
+    assert authority.get_action(req.action_id).state.value == "CONSUMED"
