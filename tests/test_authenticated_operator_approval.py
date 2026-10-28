@@ -618,12 +618,16 @@ def test_repeat_expired_consumption_never_raises_or_revives_terminal(
     assert recovered.get_request(req.action_id).state == ApprovalState.EXPIRED
 
 
-def test_consumed_and_denied_states_cannot_be_overwritten_by_late_expiration(tmp_path: Path, operator: OperatorIdentity):
+def test_consumed_and_denied_states_cannot_be_overwritten_by_late_expiration(
+    tmp_path: Path, operator: OperatorIdentity, monkeypatch: pytest.MonkeyPatch,
+):
+    clock = [12000.0]
+    monkeypatch.setattr("subagentbridge.approval.operator_boundary.time.time", lambda: clock[0])
     db = tmp_path / "terminal_timeout.db"
     boundary = fixture_boundary(db_path=db)
     consumed = boundary.create_request(
         session_id="w", task_id="one", command=["echo", "one"],
-        workspace_path=str(tmp_path), ttl_seconds=0.075,
+        workspace_path=str(tmp_path), ttl_seconds=30.0,
     )
     boundary.resolve_by_operator(
         consumed.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator,
@@ -634,12 +638,12 @@ def test_consumed_and_denied_states_cannot_be_overwritten_by_late_expiration(tmp
     )[0]
     denied = boundary.create_request(
         session_id="w", task_id="two", command=["echo", "two"],
-        workspace_path=str(tmp_path), ttl_seconds=0.075,
+        workspace_path=str(tmp_path), ttl_seconds=30.0,
     )
     boundary.resolve_by_operator(
         denied.action_id, decision=OperatorDecision.DENY, operator=operator,
     )
-    time.sleep(0.10)
+    clock[0] += 31.0
     for action, task, state in [
         (consumed, "one", ApprovalState.CONSUMED),
         (denied, "two", ApprovalState.DENIED),
