@@ -169,55 +169,112 @@ class IndependentOperatorApprovalBoundary:
                     "ADD COLUMN operator_verified INTEGER NOT NULL DEFAULT 0"
                 )
 
-    def _persist_request(self, req: OperatorApprovalRequest) -> None:
+    def _persist_request(
+        self,
+        req: OperatorApprovalRequest,
+        *,
+        expected: OperatorApprovalRequest | None = None,
+    ) -> None:
+        """Persist a new request or CAS one permitted state transition.
+
+        Each supervisor owns a separate memory snapshot. Never allow a stale
+        BLOCKED/QUESTION_PENDING/APPROVED snapshot to overwrite the winner in
+        another process, including a still-unconsumed APPROVED row.
+        """
         if not self.db_path:
             return
-        with sqlite3.connect(self.db_path) as conn:
+
+        with sqlite3.connect(self.db_path, timeout=5.0) as conn:
             conn.execute("PRAGMA busy_timeout=5000")
+            if expected is None:
+                try:
+                    conn.execute("""
+                        INSERT INTO operator_approvals (
+                            action_id, session_id, task_id, command_json, workspace_path,
+                            nonce, created_at, expires_at, state, decision,
+                            operator_id, operator_role, operator_channel, operator_notes,
+                            questions_json, answers_json, operator_verified
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        req.action_id, req.session_id, req.task_id,
+                        json.dumps(req.command), req.workspace_path, req.nonce,
+                        req.created_at, req.expires_at, req.state.value,
+                        req.decision.value if req.decision else None,
+                        req.operator_id, req.operator_role, req.operator_channel,
+                        req.operator_notes, json.dumps(req.questions),
+                        json.dumps(req.answers), int(req.operator_verified),
+                    ))
+                except sqlite3.IntegrityError as exc:
+                    raise PermissionError(
+                        "DENIED: stale or terminal approval cannot be inserted again"
+                    ) from exc
+                return
+
+            # The original immutable command context and TTL must never change
+            # when an operator decides or an active approval expires.
+            if (
+                req.action_id != expected.action_id
+                or req.session_id != expected.session_id
+                or req.task_id != expected.task_id
+                or req.command != expected.command
+                or req.workspace_path != expected.workspace_path
+                or req.nonce != expected.nonce
+                or req.created_at != expected.created_at
+                or req.expires_at != expected.expires_at
+            ):
+                raise PermissionError("DENIED: approval context changed during transition")
+
+            permitted = {
+                ApprovalState.BLOCKED: {
+                    ApprovalState.QUESTION_PENDING, ApprovalState.APPROVED,
+                    ApprovalState.DENIED, ApprovalState.EXPIRED,
+                },
+                ApprovalState.QUESTION_PENDING: {
+                    ApprovalState.QUESTION_PENDING, ApprovalState.APPROVED,
+                    ApprovalState.DENIED, ApprovalState.EXPIRED,
+                },
+                ApprovalState.APPROVED: {ApprovalState.EXPIRED},
+            }
+            if req.state not in permitted.get(expected.state, set()):
+                raise PermissionError("DENIED: stale or terminal approval state transition")
+
+            # Expected answers and identity are checked as well as state. This
+            # rejects two concurrent QUESTION_PENDING updates with the same
+            # state but different human answers or operator provenance.
             cursor = conn.execute("""
-                INSERT INTO operator_approvals (
-                    action_id, session_id, task_id, command_json, workspace_path,
-                    nonce, created_at, expires_at, state, decision,
-                    operator_id, operator_role, operator_channel, operator_notes,
-                    questions_json, answers_json, operator_verified
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(action_id) DO UPDATE SET
-                    state=excluded.state,
-                    decision=excluded.decision,
-                    operator_id=excluded.operator_id,
-                    operator_role=excluded.operator_role,
-                    operator_channel=excluded.operator_channel,
-                    operator_notes=excluded.operator_notes,
-                    questions_json=excluded.questions_json,
-                    answers_json=excluded.answers_json,
-                    operator_verified=excluded.operator_verified
-                WHERE operator_approvals.state NOT IN ('CONSUMED', 'DENIED', 'EXPIRED')
-                  AND operator_approvals.nonce=excluded.nonce
-                  AND operator_approvals.session_id=excluded.session_id
-                  AND operator_approvals.task_id=excluded.task_id
-                  AND operator_approvals.command_json=excluded.command_json
-                  AND operator_approvals.workspace_path=excluded.workspace_path
+                UPDATE operator_approvals SET
+                    state=?, decision=?, operator_id=?, operator_role=?,
+                    operator_channel=?, operator_notes=?, questions_json=?,
+                    answers_json=?, operator_verified=?
+                WHERE action_id=? AND nonce=? AND session_id=? AND task_id=?
+                  AND command_json=? AND workspace_path=?
+                  AND state=? AND COALESCE(decision, '')=?
+                  AND COALESCE(operator_id, '')=?
+                  AND COALESCE(operator_role, '')=?
+                  AND COALESCE(operator_channel, '')=?
+                  AND COALESCE(operator_notes, '')=?
+                  AND COALESCE(questions_json, '[]')=?
+                  AND COALESCE(answers_json, '{}')=?
+                  AND operator_verified=?
             """, (
-                req.action_id,
-                req.session_id,
-                req.task_id,
-                json.dumps(req.command),
-                req.workspace_path,
-                req.nonce,
-                req.created_at,
-                req.expires_at,
                 req.state.value,
                 req.decision.value if req.decision else None,
-                req.operator_id,
-                req.operator_role,
-                req.operator_channel,
-                req.operator_notes,
-                json.dumps(req.questions),
-                json.dumps(req.answers),
-                int(req.operator_verified),
+                req.operator_id, req.operator_role, req.operator_channel,
+                req.operator_notes, json.dumps(req.questions),
+                json.dumps(req.answers), int(req.operator_verified),
+                expected.action_id, expected.nonce, expected.session_id,
+                expected.task_id, json.dumps(expected.command),
+                expected.workspace_path, expected.state.value,
+                expected.decision.value if expected.decision else "",
+                expected.operator_id, expected.operator_role,
+                expected.operator_channel, expected.operator_notes,
+                json.dumps(expected.questions), json.dumps(expected.answers),
+                int(expected.operator_verified),
             ))
             if cursor.rowcount != 1:
-                raise PermissionError("DENIED: durable approval state is terminal or context changed")
+                raise PermissionError(
+                    "DENIED: stale operator decision or terminal approval changed in another process"
+                )
 
     def rehydrate_from_disk(self) -> int:
         """Reloads pending/consumed approvals across orchestrator restart."""
@@ -331,7 +388,7 @@ class IndependentOperatorApprovalBoundary:
         expired = deepcopy(req)
         expired.state = ApprovalState.EXPIRED
         try:
-            self._persist_request(expired)
+            self._persist_request(expired, expected=req)
         except PermissionError:
             if self.db_path is not None:
                 self.rehydrate_from_disk()
@@ -419,7 +476,7 @@ class IndependentOperatorApprovalBoundary:
                     },
                 )
 
-            self._persist_request(updated)
+            self._persist_request(updated, expected=req)
             self._requests[action_id] = updated
 
         return deepcopy(updated)
