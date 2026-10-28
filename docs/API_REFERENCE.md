@@ -19,6 +19,10 @@
 
 A **safe first call** is `submit_goal(goal="Review this trusted project's documentation", workspace_path="ABSOLUTE_TRUSTED_REPOSITORY_PATH")`, followed by `get_run` and `list_tasks` with the returned ID. A model message containing "approve" is **never** proof of authenticated human intent; `get_pending_approvals` and `reject_approval` are not approval-grant tools.
 
+## Removed from MCP exposure by P0 lockdown
+
+The legacy worker execution is **disabled** before its unsafe raw-runner dispatch path can execute. The Python compatibility callables `approve_action` and `apply_code_fix` are deliberately **not** exposed as model-callable MCP tools and do not authenticate or approve privileged commands. A caller must never bypass permission gates by setting `skip_permissions=True`.
+
 ## Other / historical interfaces
 
 The source retains legacy session inspection and diagnostics (`spawn_agent`, `send_message`, `wait_for_idle`, `get_agent_status`, `list_agents`, `kill_agent`, `reject_action` and `list_pending_actions`). Registered names should not be mistaken for unrestricted execution: legacy raw-runner routes and unsafe approval paths are deliberately default-denied.
