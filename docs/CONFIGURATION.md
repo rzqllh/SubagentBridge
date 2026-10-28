@@ -1,29 +1,27 @@
-# Simpul — Configuration truth table
+# Simpul v1.1.4 — Configuration reference
 
-Brand: **Simpul**. Technical compatibility: `subagentbridge` and `SUBAGENTBRIDGE_*` remain unchanged.
+**Released:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4). Product: Simpul; Python module/MCP server: `subagentbridge`. For **Antigravity IDE** connection use [Getting Started](public/GETTING_STARTED.md) and the IDE's `mcp_config.json`.
 
-This is based on the candidate source examined 23 October 2026. **Do not treat design-only settings as wired runtime controls.**
+The following variables are read in the v1.1.4 `subagentbridge/server.py` source. This is a **source wiring description**, not a claim of independently verified deployment against all external hosts.
 
-| Setting | Observed use in candidate | Default / note |
-| --- | --- | --- |
-| `SUBAGENTBRIDGE_DB_PATH` | Read by `subagentbridge.server` for legacy session SQLite store | `~/.subagentbridge/sessions.db` |
-| `SUBAGENTBRIDGE_MAX_RETRIES` | Read at import for legacy `spawn_agent` default | `2` |
-| `SUBAGENTBRIDGE_DEFAULT_TIMEOUT_S` | Read at import for legacy wait default | `600` seconds |
-| `SUBAGENTBRIDGE_PRODUCTION_DB` | Read when `get_production_system()` lazily builds the composition root | `<workspace>/.subagentbridge/production_audit.db` |
-| `SUBAGENTBRIDGE_ROUTER_URL` | Mentioned in older docs; **not wired in this server's `get_production_system()` call** | Do not rely on this variable to change the client endpoint |
-| `SUBAGENTBRIDGE_ROUTER_KEY` / `SUBAGENTBRIDGE_BROKER_SECRET` / `SUBAGENTBRIDGE_GATE_MODE` | Described by policy/older docs; **not validated as active server configuration by this audit** | Do not rely on them as enforced controls without a source-and-integration check |
+| Variable | Runtime meaning | Default when omitted |
+|---|---|---|
+| `SUBAGENTBRIDGE_DB_PATH` | SQLite store for server/session/run/task data | `~/.subagentbridge/sessions.db` |
+| `SUBAGENTBRIDGE_MAX_RETRIES` | Legacy runner retry limit | `2` |
+| `SUBAGENTBRIDGE_DEFAULT_TIMEOUT_S` | Legacy wait default | `600` seconds |
+| `SUBAGENTBRIDGE_PRODUCTION_DB` | Audit database path for the workspace's lazily built production composition root | `<workspace>/.subagentbridge/production_audit.db` |
+| `NINE_ROUTER_BASE_URL` | Local router origin, preferred over `SUBAGENTBRIDGE_ROUTER_URL` | `http://127.0.0.1:9099` |
+| `SUBAGENTBRIDGE_ROUTER_URL` | Fallback local router origin | `http://127.0.0.1:9099` |
+| `NINE_ROUTER_API_KEY` | Router credential, preferred over `SUBAGENTBRIDGE_ROUTER_KEY` | Local placeholder in composition; not evidence of a valid router login |
+| `SUBAGENTBRIDGE_ROUTER_KEY` | Fallback router credential | Local placeholder in composition |
 
-`build_production_system(workspace_root, ..., nine_router_base_url="http://127.0.0.1:9099", nine_router_api_key=...)` accepts explicit Python arguments. The MCP server's current composition call does not forward runtime router environment variables into those parameters. This is a configuration gap, not a reason to hardcode real API credentials in public files.
+**Never paste real router/approval credentials into public documentation or commit them to the repository.** Bind router only to a trusted local loopback endpoint; the Python bridge does not control the security or egress of any upstream proxy.
 
-## Operating policy
+## Default operating safety
 
-- `AUTONOMY: OFF`: no unattended privileged operations.
-- D-01 `RISK_ACCEPTED_SAME_IDENTITY`: not a sandbox or separate security principal.
-- D-03 `CHAT_APPROVAL`: policy mode, not evidence of user-authentication isolation.
-- D-02: the `LocalRouterConfig` client accepts a literal HTTP loopback IP and explicit port, no `/v1` path in the base origin. API paths are appended by the client.
+- `AUTONOMY: OFF`: privileged autonomous coding actions are not available by assumption.
+- `GATE_MODE: CHAT_APPROVAL`: model/chat content is not independently authenticated operator identity. An unsafe command remains `BLOCKED` absent real authorization.
+- E18 remains **BLOCKED**. Separate worker PIDs and Git worktrees are **not** isolation from the same account's files or secrets.
+- The optional `VerifiedOperatorApprovalAuthority` is a Python component, **not** a switch enabling production WebAuthn/OIDC. It requires external verifier wiring and a trusted decision surface.
 
-## Persistence boundaries
-
-SQLite audit and budget layers use transaction controls, but `submit_goal`'s current `_runs` and `_tasks` maps are in-memory. A persisted event alone does not rehydrate an active MCP run on restart.
-
-Refer to [Status](SIMPUL_STATUS.md) and [9Router guide](NINE_ROUTER_SETUP.md) before a live deployment.
+For more details see [install](INSTALLATION_QUICKSTART.md), [MCP tools](API_REFERENCE.md), [9Router](NINE_ROUTER_SETUP.md), and [security](public/SECURITY.md).

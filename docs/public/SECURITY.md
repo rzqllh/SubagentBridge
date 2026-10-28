@@ -1,6 +1,8 @@
 # Security and responsible operation
 
-**Status: [published v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3), supervised operation; not an enterprise or isolation certification.** E18 remains `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`.
+> **Current release:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4), 28 October 2026. **Supervised security hardening; NOT enterprise-certified.** Worker hostile-code OS isolation (E18/#21), independent production human WebAuthn/OIDC approval (#22) and operational acceptance (#23) remain OPEN/BLOCKED.
+>
+> **v1.1.4 improvements:** PRs #34–#40 introduce opt-in verifier injection, durable SQLite single-use decision/consumption protections, and a distinct action-specific challenge bound to an operator decision. `VerifiedOperatorApprovalAuthority` refuses an identity-only verifier without an action-proof verifier. Previously approved legacy identity-only grants are not trusted by this new worker IPC adapter after migration. The external verifier is **not included** in the product; a test-only HMAC checker does not constitute human authentication. GitHub build attestations and checksums are verified release-provenance controls, not code-safety or sandbox certification.
 
 ## v1.1.1 security correction
 
@@ -14,7 +16,7 @@ The broker remains **in-process and credential-gated**; fixture token tests do n
 
 ## Post-merge operator authentication limitation
 
-Merged PR #33 introduces `operator_boundary.py`, but constructing `OperatorIdentity(role="security_admin", channel="webauthn", auth_token="any-value")` is **not** authentication. No OIDC issuer/JWKS, WebAuthn challenge verification, trusted operator UI, or production runtime wiring has been demonstrated. The corrective branch makes operator decisions default-deny unless a trusted host supplies a verifier; its unit-test checker is explicitly a test fixture. Existing command dispatch still uses the older `TrustedApprovalAuthority`. Issue #22 remains OPEN.
+Merged PRs #33–#40 contain an optional `IndependentOperatorApprovalBoundary` plus an explicitly injectable `VerifiedOperatorApprovalAuthority` for worker IPC. When configured, the latter requires both an independently trusted **identity** verifier and a trusted **action-specific decision** verifier; otherwise it refuses construction. Its challenge digest is a reference value, **not a WebAuthn assertion**. The default server path still uses the older local authority for compatibility; no genuine independently authenticated human UI/relying party is shipped. Issue #22 remains OPEN.
 
 ## Trust boundaries
 

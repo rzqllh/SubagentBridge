@@ -1,12 +1,13 @@
 # Enterprise-readiness evidence and release gates
 
 **Status:** NOT ENTERPRISE-CERTIFIED (28 October 2026).
-The proposed **v1.1.4 supervised security release** contains merged PRs #30–#40,
-and the active `main` ruleset requires PRs and four Windows/Linux checks.
-The most recent published release *at preparation time* was v1.1.3; see
-[Releases](https://github.com/rzqllh/SubagentBridge/releases) for the actual
-published artifact. PR CI and source-tree features are not proof of WebAuthn
-identity, a hostile-worker sandbox, or production recovery acceptance.
+The **[published v1.1.4 supervised security release](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4)** contains merged PRs #30–#41.
+The active `main` ruleset requires pull requests and four Windows/Linux checks.
+[Exact-main CI](https://github.com/rzqllh/SubagentBridge/actions/runs/40622640492)
+passed 4/4; the [release workflow](https://github.com/rzqllh/SubagentBridge/actions/runs/40623111287)
+successfully built, attested, verified, and published the wheel/sdist/checksums.
+This verifies bounded build provenance, **not** production WebAuthn identity,
+hostile-worker OS sandbox isolation, or recovery/enterprise acceptance.
 
 Simpul is a local-first supervised MCP subagent orchestrator, not a multi-tenant secure agent execution service. The meaning of "enterprise-ready" is evidence-based: operational resilience, provable human authorization, isolation, auditability, reproducible releases, and recoverability are separate gates.
 
@@ -20,7 +21,7 @@ Simpul is a local-first supervised MCP subagent orchestrator, not a multi-tenant
 | E18 hostile worker isolation | BLOCKED (merged partial hardening) | Default workers retain same-user privileges. PRs #31/#38 add env scrubbing, opt-in Linux dedicated UID/GID, strict distinct-identity refusal and Windows Job Object UI limits. **No supported Windows hostile-worker sandbox** or verified Linux filesystem/network/process confinement. Issue #21 remains OPEN |
 | Independent host integration coverage | PARTIAL | Adapters and MCP subprocess tests do not imply true end-to-end certification for every Antigravity/Codex/Claude/Pi build |
 | Artifact integrity and verified handoff | VERIFIED (bounded) | File existence, SHA-256, task binding and transaction-protected receipts under documented trust boundary |
-| Supply-chain/release provenance | PARTIAL | PR #36 adds SHA-pinned Sigstore/GitHub build attestation and verification before release, alongside exact-main QA, wheel/sdist and SHA256 sums. The actual v1.1.4 publication must pass and be independently validated; signed dependency SBOM and restore/rollback drills remain missing |
+| Supply-chain/release provenance | PARTIAL | PR #36 adds SHA-pinned Sigstore/GitHub build attestation and verification before release, alongside exact-main QA, wheel/sdist and SHA256 sums. The v1.1.4 GitHub release workflow passed attestation and artifact verification; clean-environment independent installation, signed dependency-accurate SBOM and restore/rollback drills remain missing |
 | Operational SLO/load/chaos | NOT VERIFIED | No claimed long-duration soak, restore drill, large-scale task-queue load test or production incident exercise |
 
 ## v1.1.4 supervised-release limitations

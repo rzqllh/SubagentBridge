@@ -1,3 +1,5 @@
+> **CURRENT PUBLIC RELEASE:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4) (28 October 2026), exact `main` SHA `3be6e3b58c444ad7afcbff5ed42efa62b9cbbab2`, [4/4 CI](https://github.com/rzqllh/SubagentBridge/actions/runs/40622640492) and [release workflow with verified build attestation SUCCESS](https://github.com/rzqllh/SubagentBridge/actions/runs/40623111287). The older v1.1.0/v1.1.1 receipts and commands below are preserved for historical audit, **not the current installation instructions**. Use [public v1.1.4 Antigravity installation guide](../public/GETTING_STARTED.md). E18 and authenticated human-approval issues remain BLOCKED.
+
 # Simpul — Release Readiness and Operator Guide
 
 > **Published release:** [Simpul v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) · 27 October 2026 · merged main SHA `861f040dc12c33da681331e454ef41299f2dc70b` · workflow 40444832484 SUCCESS. E18 remains BLOCKED.

@@ -1,5 +1,17 @@
 # Simpul release notes
 
+## Version 1.1.4 — published 28 October 2026
+
+[GitHub Release v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4) is published from exact main SHA `3be6e3b58c444ad7afcbff5ed42efa62b9cbbab2`. [Main CI 40622640492](https://github.com/rzqllh/SubagentBridge/actions/runs/40622640492) passed Ubuntu/Windows Python 3.11/3.13 (4/4). The [release workflow 40623111287](https://github.com/rzqllh/SubagentBridge/actions/runs/40623111287) rebuilt/tested the wheel + sdist, produced and verified signed build attestations, and published `SHA256SUMS.txt`.
+
+**Highlights (PR #30–#41):** separate candidate operator approval state with default-deny verifier injection, worker IPC integration when explicitly configured, cross-process SQLite decision and consumption CAS, action-specific proof challenge and migration denying older identity-only approval reuse; strict opt-in distinct OS identity policy; active protected `main` ruleset; pinned signed artifact provenance.
+
+**What this release does NOT do:** offer an independent production WebAuthn/OIDC operator UI, a hostile-worker OS sandbox on Windows/Linux (E18), full Cindy/Orca feature parity, guaranteed native Antigravity IDE integration for every release, or exactly-once arbitrary external side effects. `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL` remain mandatory. This is a **limited supervised security release**, not enterprise certification.
+
+**Start here:** [Antigravity IDE installation and usage](GETTING_STARTED.md) · [parity roadmap](PARITY_AND_ROADMAP.md) · [security](SECURITY.md).
+
+---
+
 ## Version 1.1.3 — published 27 October 2026
 
 [GitHub Release v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3) was published from merged SHA `a47473edf4ff9ef9e59d2dd5f5d682941d0e1826`; [release workflow 40452532343](https://github.com/rzqllh/SubagentBridge/actions/runs/40452532343) succeeded and published wheel, source archive and `SHA256SUMS.txt`. PR #28 passed Ubuntu and Windows with Python 3.11 and 3.13 (4/4 CI PASS); merged source tree matched tested PR tree.

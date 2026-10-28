@@ -2,7 +2,9 @@
 
 **Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
-> **Releases:** see [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) for the latest **published** version and verified artifacts. The source tree is preparing **v1.1.4** with supervised security hardening. It is **not** certified as a hostile-worker sandbox or independently authenticated enterprise operator approval system.
+> **Releases:** see [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) for the latest **published** version and verified artifacts. The current published release is **[v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4)** (28 October 2026), an explicitly supervised security-hardening release. It is **not** certified as a hostile-worker sandbox or independently authenticated enterprise operator approval system.
+
+**Primary setup:** [Install and connect Simpul to Antigravity IDE](docs/public/GETTING_STARTED.md) using the published `v1.1.4` tag and an absolute virtual-environment Python path in the host's `mcp_config.json`. **Product direction:** Antigravity IDE is the primary MCP host; Simpul provides native supervised lead/worker orchestration modeled on selected Orca/Cindy patterns, **not complete parity**. See [parity evidence and open gaps](docs/public/PARITY_AND_ROADMAP.md).
 
 ## What is implemented in Simpul
 
@@ -28,13 +30,13 @@
 | Worker containment | Default remains same-user; an opt-in Linux dedicated-UID control remains experimental and requires host acceptance. **E18 remains BLOCKED** |
 | Human decisions | D-03 `CHAT_APPROVAL`; an LLM is not an authenticated human approver |
 | Model transport | D-02 local literal IP loopback with verified Bearer token authentication |
-| Verification | 23 October Post-Release Corrective Audit: 330 passed, 4 skipped across Windows test discovery |
+| Verification | v1.1.4 exact-main CI **4/4 PASS** (Ubuntu/Windows, Python 3.11/3.13), [run 40622640492](https://github.com/rzqllh/SubagentBridge/actions/runs/40622640492); [signed artifact release workflow SUCCESS](https://github.com/rzqllh/SubagentBridge/actions/runs/40623111287) |
 | Confinement Status | E18 is **BLOCKED**; standard OS user permissions cannot isolate workers under same UID; autonomy strictly forbidden |
 | Host Integration | MCP stdio protocol/subprocess tests verified; independently validate real Antigravity/Codex/Claude host integration for each deployment |
 
 See [project status](docs/SIMPUL_STATUS.md), [acceptance gates](docs/simpul/ACCEPTANCE_GATES.md), and [security limitations](docs/COMPATIBILITY_LIMITATIONS.md).
 
-## Quick start — v1.1.4 (after GitHub release succeeds)
+## Quick start — published v1.1.4
 
 Requires Python 3.11–3.13 and Git. Example for PowerShell:
 
@@ -87,11 +89,11 @@ For architecture and the exact implementation/verification distinction see [core
 
 ## Documentation
 
-- [Enterprise production readiness and unresolved security gates](docs/ENTERPRISE_READINESS.md) — explicit PASS/PARTIAL/BLOCKED criteria; v1.1.1 is a supervised corrective patch, not certification.
+- [Enterprise production readiness and unresolved security gates](docs/ENTERPRISE_READINESS.md) — explicit PASS/PARTIAL/BLOCKED criteria, not certification.
 
-- **[Start here: public user documentation](docs/public/README.md)** — installation, MCP integration, architecture, migration, security and release notes.
+- **[Start here: public user documentation](docs/public/README.md)** — v1.1.4 install, Antigravity IDE connection, first use, Orca/Cindy parity roadmap, architecture and security.
 
-- [Developer roadmap, backlog, acceptance gates and next-session handoff](docs/simpul/README.md)
+- [Public Antigravity-first Orca/Cindy parity roadmap](docs/public/PARITY_AND_ROADMAP.md) · [Historical developer plan and handoff](docs/simpul/README.md)
 
 - [Project status and evidence boundaries](docs/SIMPUL_STATUS.md)
 - [Installation](docs/INSTALLATION_QUICKSTART.md)

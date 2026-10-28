@@ -1,30 +1,24 @@
-> **Release verified — 27 October 2026:** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is published from merge commit `a29f0d98957651e482fbae989a906bb09873f329`; candidate CI ran 4/4 successfully, release workflow [40440851542](https://github.com/rzqllh/SubagentBridge/actions/runs/40440851542) succeeded. Historical candidate notes below are not current status. E18 remains BLOCKED (RISK_ACCEPTED_SAME_IDENTITY).
+# Simpul v1.1.4 — Compatibility and limitations
 
-# Simpul — Compatibility and limitations
+**Published:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4), 28 October 2026 · [main CI 4/4 PASS](https://github.com/rzqllh/SubagentBridge/actions/runs/40622640492). Public name: Simpul; technical distribution/module/MCP server: `subagentbridge`.
 
-Public name: **Simpul**. Repository and technical identifiers remain `rzqllh/SubagentBridge`, `subagentbridge` and `SUBAGENTBRIDGE_*`.
+| Platform / capability | Grounded scope |
+|---|---|
+| Windows and Ubuntu/Linux | CI-tested Python 3.11 and Python 3.13 on both OS families; not all local host versions verified |
+| Python 3.12 | Declared supported in packaging, but not included in the exact four-job CI matrix |
+| Antigravity IDE | Primary intended MCP host using `mcp_config.json`; MCP stdio/subprocess tests exist, but **real IDE-specific installed-version acceptance is not independently certified** |
+| Antigravity / Codex / Claude Code / Pi harnesses | Capability-declared adapters and selected tests; not automatic behavioral or feature parity for arbitrary installed CLIs |
+| Orca/Cindy | Independently implemented native Python lead/worker patterns; legacy Orca naming/shims remain, no required external Orca installation |
+| 9Router | Configurable local loopback text transport; valid upstream credentials and live model capability depend on your configured environment |
+| Published artifacts | Wheel, source archive, SHA256 sums, and signed GitHub build attestations verified in the release workflow; not a production vulnerability certificate |
 
-## Candidate compatibility (as of 23 October 2026)
+## Known operating limits
 
-| Area | Evidence-supported statement |
-| --- | --- |
-| Windows | Intended primary platform; 21 October candidate report cites Windows CI on Python 3.11 and 3.13 |
-| Linux | Candidate report cites Ubuntu CI on Python 3.11 and 3.13 |
-| Python 3.12 | Declared supported in `pyproject.toml`; no separate 3.12 CI evidence cited in current release report |
-| Antigravity IDE | Target MCP host; an end-to-end live IDE workflow is **not independently verified** |
-| 9Router | Loopback-only Python adapter and offline tests; prior live authenticated completion returned HTTP 401 |
-| Orca | Optional adapter seam, disabled by default; no external runner needed for native modules |
-| Production release | **Not published**; PR #2 / PR #3 unmerged |
+1. **`AUTONOMY: OFF`**: SIMPUL is not an unrestricted automatic multi-agent coding fleet. Privileged commands stay gated; `submit_goal` alone does not authorize arbitrary filesystem writes, dependency installation or network operations.
+2. **E18 (#21): BLOCKED**: default workers and supervisor still share an OS user. Different PIDs and Git worktrees are *not* a hostile-worker sandbox; strict worker-identity mode refuses unsupported configurations.
+3. **Human operator (#22): BLOCKED**: opt-in action-specific decision-verifier APIs exist but no production WebAuthn/OIDC trusted UI or independently verified operator origin is included. A model tool call or chat reply cannot approve itself.
+4. **Recovery (#23): PARTIAL**: SQLite checkpoint reconciliation handles bounded scenarios but cannot guarantee exactly-once arbitrary external side effects after abrupt crashes. Avoid blind retry.
+5. **Host and upstream parity: PARTIAL**: Cindy/Orca core concepts are a roadmap target, not a feature-by-feature promise. Antigravity IDE interaction and specific host permissions must be tested in your installed version.
+6. **Local configuration**: server reads `SUBAGENTBRIDGE_DB_PATH`, `SUBAGENTBRIDGE_PRODUCTION_DB`, `NINE_ROUTER_BASE_URL`/`SUBAGENTBRIDGE_ROUTER_URL` and `NINE_ROUTER_API_KEY`/`SUBAGENTBRIDGE_ROUTER_KEY` per [configuration](CONFIGURATION.md); never commit credentials.
 
-## Runtime limitations
-
-1. `AUTONOMY: OFF`: this candidate is not a general-purpose unattended coding agent.
-2. `submit_goal` records `SUBMITTED` / `PENDING` state in process memory; it does not run a full worker pipeline in that handler.
-3. D-01 `RISK_ACCEPTED_SAME_IDENTITY` does **not** isolate untrusted workers or test code from user-owned secrets.
-4. D-03 `CHAT_APPROVAL` and broker token unit tests do **not** prove authenticated human intent against malicious same-user workers.
-5. D-02 client loopback restrictions do not control any upstream proxy's own egress.
-6. E18 red-team, E22 checkout-root containment, and E23 pinned remote checkout require stronger independent proof. Historical E01–E21 test names do not close these gates.
-7. SQLite audit/event persistence is not identical to recovery of the MCP server's in-memory run/task registry.
-8. Runtime configuration described in older `SUBAGENTBRIDGE_ROUTER_*` examples is not wired through the present server composition call.
-
-See [Project status](SIMPUL_STATUS.md), [API](API_REFERENCE.md) and [Configuration](CONFIGURATION.md).
+**Start here:** [Antigravity installation and safe first use](public/GETTING_STARTED.md), [parity roadmap](public/PARITY_AND_ROADMAP.md), [MCP API](API_REFERENCE.md), [security](public/SECURITY.md), [enterprise gates](ENTERPRISE_READINESS.md).

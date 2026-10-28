@@ -1,3 +1,5 @@
+> **Current 28 October 2026 scope:** This file is the **historical Plan v3.1 stage map** and preserves original stage IDs, not the outstanding task list for v1.1.4. The project released [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4) and merged the newer security-hardening PRs. For the **current Antigravity-first Orca/Cindy parity targets and honest remaining gaps**, use [public roadmap](../public/PARITY_AND_ROADMAP.md) and [current status](../SIMPUL_STATUS.md). Historical mentions that old PRs must first be merged/repaired no longer represent current repository action items.
+
 # Simpul — Full development roadmap (Plan v3.1 continuity)
 
 This is a **forward development roadmap**, not an assertion that all stages are independently verified. Original governing specification: [Production PR Plan v3.1](../../artifacts/bootstrap/v3_1/candidate/Xyeena_SubagentBridge_Production_PR_Plan_v3_1.md). Exactly 15 stages, retaining original IDs: PR-00, PR-01, PR-02, PR-03, PR-03b, PR-04a, PR-04b, PR-05, PR-06, PR-07, PR-08, PR-09, PR-10, PR-11, PR-12.
