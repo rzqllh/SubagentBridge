@@ -269,9 +269,20 @@ def resume_task_from_checkpoint(
             cmd = owner["command"]
             command_list = [str(x) for x in cmd] if isinstance(cmd, list) else [str(cmd)]
             action_id = owner.get("approval_action_id")
-            action = approval_authority.broker.get_action(action_id) if action_id else None
-            if action is None or action.state.value == "EXPIRED" or (
-                action.state.value == "APPROVED" and approval_authority.is_action_consumed(action.action_id)
+            action = approval_authority.get_action(action_id) if action_id else None
+            # Legacy and verified authorities share the same trusted recovery
+            # interface. A consumed/expired grant or one bound to another exact
+            # command is replaced with a fresh BLOCKED request: never replay.
+            if (
+                action is None
+                or action.state.value in ("EXPIRED", "CONSUMED")
+                or not approval_authority.is_action_for_context(
+                    action, worker_id, command_task_id, command_list, worktree_path or ""
+                )
+                or (
+                    action.state.value == "APPROVED"
+                    and approval_authority.is_action_consumed(action.action_id)
+                )
             ):
                 action = approval_authority.request_command_approval(
                     worker_id=worker_id,
