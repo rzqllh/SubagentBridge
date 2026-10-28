@@ -284,6 +284,7 @@ def test_operator_proof_cannot_authorize_different_action_or_decision(tmp_path):
         operator=proof_for_first,
     )
     assert authority.get_action(first.action_id).state.value == "APPROVED"
+    assert authority.get_action(first.action_id).action_bound_verified is True
 
 
 def test_decision_verifier_outage_is_fail_closed(tmp_path):
@@ -303,3 +304,39 @@ def test_decision_verifier_outage_is_fail_closed(tmp_path):
             operator=_identity(req, OperatorDecision.ALLOW_ONCE),
         )
     assert authority.get_action(req.action_id).state.value == "BLOCKED"
+
+
+def test_upgrade_refuses_legacy_approved_row_without_action_proof(tmp_path):
+    db = tmp_path / "legacy-provenance.db"
+    legacy = IndependentOperatorApprovalBoundary(
+        db_path=db,
+        operator_verifier=lambda identity: identity.operator_id == "test-operator",
+    )
+    req = legacy.create_request(
+        session_id="worker-legacy", task_id="task-legacy",
+        command=["git", "status"], workspace_path=str(tmp_path),
+    )
+    legacy_identity = OperatorIdentity(
+        operator_id="test-operator", role="security_lead",
+        channel="webauthn", auth_token="reusable-identity-token",
+    )
+    legacy.resolve_by_operator(
+        req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=legacy_identity,
+    )
+    assert legacy.get_request(req.action_id).operator_verified
+    assert not legacy.get_request(req.action_id).action_bound_verified
+
+    upgraded = IndependentOperatorApprovalBoundary(
+        db_path=db,
+        operator_verifier=_fixture_verifier,
+        decision_verifier=_fixture_decision_verifier,
+    )
+    assert upgraded.rehydrate_from_disk() == 1
+    authority = VerifiedOperatorApprovalAuthority(upgraded)
+    ok, reason, ticket = authority.issue_execution_ticket(
+        req.action_id, "worker-legacy", "task-legacy",
+        ["git", "status"], str(tmp_path), "s" * 64,
+    )
+    assert not ok and ticket is None
+    assert "action-bound decision provenance" in reason
+    assert upgraded.get_request(req.action_id).state.value == "APPROVED"
