@@ -423,6 +423,7 @@ def test_old_schema_migrates_with_unverified_default(tmp_path: Path):
     with sqlite3.connect(db) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")}
     assert "operator_verified" in columns
+    assert "action_bound_verified" in columns
 
 
 def test_ledger_failure_cannot_leave_operator_action_approved(tmp_path: Path, operator: OperatorIdentity, monkeypatch):
@@ -507,6 +508,7 @@ def test_concurrent_legacy_provenance_migration_uses_one_writer(tmp_path: Path):
     with sqlite3.connect(db) as conn:
         columns = [row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")]
     assert columns.count("operator_verified") == 1
+    assert columns.count("action_bound_verified") == 1
 
 
 def test_two_independent_supervisors_can_consume_durable_grant_only_once(tmp_path: Path, operator: OperatorIdentity):

@@ -85,6 +85,8 @@ class OperatorApprovalRequest:
     answers: dict[str, str] = field(default_factory=dict)
     # False for all legacy rows; only a trusted host verifier can set True.
     operator_verified: bool = False
+    # Persisted proof provenance: old identity-only approvals remain untrusted.
+    action_bound_verified: bool = False
 
 
 def canonical_command_digest(command: list[str], workspace_path: str, task_id: str) -> str:
@@ -94,6 +96,34 @@ def canonical_command_digest(command: list[str], workspace_path: str, task_id: s
         "task_id": str(task_id),
     }, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def operator_decision_challenge(
+    request: OperatorApprovalRequest, decision: OperatorDecision,
+) -> str:
+    """Action-specific challenge digest supplied to a trusted RP/IdP verifier.
+
+    This is a challenge, NOT an authenticated assertion or a signature.
+    WebAuthn/OIDC validation, consent, role checks and replay prevention must
+    be enforced by the trusted external relying party.
+    """
+    if not isinstance(request, OperatorApprovalRequest) or not isinstance(decision, OperatorDecision):
+        raise TypeError("operator decision challenge requires a request and explicit decision")
+    payload = json.dumps({
+        "domain": "SIMPUL_OPERATOR_APPROVAL_V1",
+        "action_id": request.action_id,
+        "session_id": request.session_id,
+        "task_id": request.task_id,
+        "nonce": request.nonce,
+        "command_digest": canonical_command_digest(
+            request.command, request.workspace_path, request.task_id,
+        ),
+        "workspace_path": request.workspace_path,
+        "created_at": request.created_at,
+        "expires_at": request.expires_at,
+        "decision": decision.value,
+    }, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class IndependentOperatorApprovalBoundary:
@@ -107,6 +137,9 @@ class IndependentOperatorApprovalBoundary:
         default_ttl_seconds: float = 900.0,
         signing_secret: str | None = None,
         operator_verifier: Callable[[OperatorIdentity], bool] | None = None,
+        decision_verifier: Callable[
+            [OperatorApprovalRequest, OperatorDecision, OperatorIdentity], bool
+        ] | None = None,
     ) -> None:
         if not 0 < default_ttl_seconds <= 86400:
             raise ValueError("default_ttl_seconds must be within (0, 86400]")
@@ -115,6 +148,9 @@ class IndependentOperatorApprovalBoundary:
         # verifier. A caller-constructed OperatorIdentity is never authentication.
         # No verifier => ALLOW_ONCE, DENY and ANSWER_QUESTIONS all fail closed.
         self._operator_verifier = operator_verifier
+        # Only a trusted host can verify a fresh, action-specific external
+        # assertion. Identity-only checks are insufficient for worker dispatch.
+        self._decision_verifier = decision_verifier
         self._secret = signing_secret or token_hex(32)
         self._lock = threading.RLock()
         self._requests: dict[str, OperatorApprovalRequest] = {}
@@ -157,7 +193,8 @@ class IndependentOperatorApprovalBoundary:
                     operator_notes TEXT,
                     questions_json TEXT,
                     answers_json TEXT,
-                    operator_verified INTEGER NOT NULL DEFAULT 0
+                    operator_verified INTEGER NOT NULL DEFAULT 0,
+                    action_bound_verified INTEGER NOT NULL DEFAULT 0
                 )
             """)
             existing = {row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")}
@@ -167,6 +204,12 @@ class IndependentOperatorApprovalBoundary:
                 conn.execute(
                     "ALTER TABLE operator_approvals "
                     "ADD COLUMN operator_verified INTEGER NOT NULL DEFAULT 0"
+                )
+            if "action_bound_verified" not in existing:
+                # An old APPROVED row is not evidence of a signed action proof.
+                conn.execute(
+                    "ALTER TABLE operator_approvals "
+                    "ADD COLUMN action_bound_verified INTEGER NOT NULL DEFAULT 0"
                 )
 
     def _persist_request(
@@ -193,8 +236,9 @@ class IndependentOperatorApprovalBoundary:
                             action_id, session_id, task_id, command_json, workspace_path,
                             nonce, created_at, expires_at, state, decision,
                             operator_id, operator_role, operator_channel, operator_notes,
-                            questions_json, answers_json, operator_verified
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            questions_json, answers_json, operator_verified,
+                            action_bound_verified
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         req.action_id, req.session_id, req.task_id,
                         json.dumps(req.command), req.workspace_path, req.nonce,
@@ -203,6 +247,7 @@ class IndependentOperatorApprovalBoundary:
                         req.operator_id, req.operator_role, req.operator_channel,
                         req.operator_notes, json.dumps(req.questions),
                         json.dumps(req.answers), int(req.operator_verified),
+                        int(req.action_bound_verified),
                     ))
                 except sqlite3.IntegrityError as exc:
                     raise PermissionError(
@@ -245,7 +290,7 @@ class IndependentOperatorApprovalBoundary:
                 UPDATE operator_approvals SET
                     state=?, decision=?, operator_id=?, operator_role=?,
                     operator_channel=?, operator_notes=?, questions_json=?,
-                    answers_json=?, operator_verified=?
+                    answers_json=?, operator_verified=?, action_bound_verified=?
                 WHERE action_id=? AND nonce=? AND session_id=? AND task_id=?
                   AND command_json=? AND workspace_path=?
                   AND state=? AND COALESCE(decision, '')=?
@@ -255,13 +300,13 @@ class IndependentOperatorApprovalBoundary:
                   AND COALESCE(operator_notes, '')=?
                   AND COALESCE(questions_json, '[]')=?
                   AND COALESCE(answers_json, '{}')=?
-                  AND operator_verified=?
-            """, (
-                req.state.value,
+                  AND operator_verified=? AND action_bound_verified=?
+            """, (                req.state.value,
                 req.decision.value if req.decision else None,
                 req.operator_id, req.operator_role, req.operator_channel,
                 req.operator_notes, json.dumps(req.questions),
                 json.dumps(req.answers), int(req.operator_verified),
+                int(req.action_bound_verified),
                 expected.action_id, expected.nonce, expected.session_id,
                 expected.task_id, json.dumps(expected.command),
                 expected.workspace_path, expected.state.value,
@@ -269,7 +314,7 @@ class IndependentOperatorApprovalBoundary:
                 expected.operator_id, expected.operator_role,
                 expected.operator_channel, expected.operator_notes,
                 json.dumps(expected.questions), json.dumps(expected.answers),
-                int(expected.operator_verified),
+                int(expected.operator_verified), int(expected.action_bound_verified),
             ))
             if cursor.rowcount != 1:
                 raise PermissionError(
@@ -311,6 +356,7 @@ class IndependentOperatorApprovalBoundary:
                     questions=json.loads(r["questions_json"] or "[]"),
                     answers=json.loads(r["answers_json"] or "{}"),
                     operator_verified=bool(r["operator_verified"]),
+                    action_bound_verified=bool(r["action_bound_verified"]),
                 )
                 self._requests[req.action_id] = req
                 if state == ApprovalState.CONSUMED:
@@ -438,6 +484,17 @@ class IndependentOperatorApprovalBoundary:
             if req.nonce in self._consumed_nonces:
                 raise PermissionError("Action nonce already consumed (replay prevented)")
 
+            if self._decision_verifier is not None:
+                # Recompute challenge inside the trusted state lock. A signed
+                # login bearer token from a different action/decision cannot
+                # serve as transaction authorization for this request.
+                try:
+                    authorized = self._decision_verifier(deepcopy(req), decision, operator)
+                except Exception as exc:
+                    raise PermissionError("DENIED: action-bound decision verification failed") from exc
+                if authorized is not True:
+                    raise PermissionError("DENIED: action-specific operator proof invalid")
+
             # Copy-on-write: never expose APPROVED in memory before both the
             # audit append and durable state persistence succeed. These stores
             # are not atomically coupled, so a failed later step stays BLOCKED.
@@ -448,6 +505,7 @@ class IndependentOperatorApprovalBoundary:
             updated.operator_channel = operator.channel
             updated.operator_notes = notes
             updated.operator_verified = True
+            updated.action_bound_verified = self._decision_verifier is not None
 
             if decision == OperatorDecision.ALLOW_ONCE:
                 updated.state = ApprovalState.APPROVED
@@ -511,6 +569,8 @@ class IndependentOperatorApprovalBoundary:
                 return False, "DENIED: approval has no verified operator provenance", None
             if self._operator_verifier is None:
                 return False, "DENIED: operator authentication boundary is unavailable", None
+            if self._decision_verifier is not None and not req.action_bound_verified:
+                return False, "DENIED: approval has no action-bound decision provenance", None
 
             if req.nonce in self._consumed_nonces:
                 return False, "DENIED: approval already consumed (replay prevented)", None
@@ -537,12 +597,14 @@ class IndependentOperatorApprovalBoundary:
                         result = conn.execute(
                             "UPDATE operator_approvals SET state=? "
                             "WHERE action_id=? AND state=? AND nonce=? "
-                            "AND operator_verified=1 AND expires_at>?",
+                            "AND operator_verified=1 "
+                            "AND (?=0 OR action_bound_verified=1) AND expires_at>?",
                             (
                                 ApprovalState.CONSUMED.value,
                                 req.action_id,
                                 ApprovalState.APPROVED.value,
                                 req.nonce,
+                                int(self._decision_verifier is not None),
                                 now,
                             ),
                         )
