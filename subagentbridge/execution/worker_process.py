@@ -33,6 +33,7 @@ from subagentbridge.approval.trusted_authority import (
     TrustedApprovalAuthority,
     get_trusted_authority,
 )
+from subagentbridge.approval.verified_operator_authority import VerifiedOperatorApprovalAuthority
 
 
 class TimedStreamReader:
@@ -129,7 +130,7 @@ class WorkerProcessController:
     def __init__(
         self,
         store: TeamStore,
-        approval_authority: TrustedApprovalAuthority | None = None,
+        approval_authority: TrustedApprovalAuthority | VerifiedOperatorApprovalAuthority | None = None,
         isolation_policy: WorkerIsolationPolicy | None = None,
     ) -> None:
         self.isolation_policy = isolation_policy or WorkerIsolationPolicy()
