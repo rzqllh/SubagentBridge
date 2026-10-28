@@ -1,9 +1,11 @@
 # Signed release provenance — candidate release gate
 
-**Status:** implemented on the candidate branch, NOT proven on a published
-release. Main's last published artifact is still v1.1.3. Branch protection,
-independent reviewer approvals, isolated build, signed SBOM, and E18 acceptance
-remain separate, unresolved requirements.
+**Status:** candidate v1.1.4 release gate with active `main` ruleset
+and four required Windows/Linux CI checks (verified 28 October 2026).
+A published release and its Sigstore attestations are only verified **after**
+a successful immutable-SHA release workflow and independent artifact checks.
+Independent reviewer approval, signed dependency-accurate SBOM, restored
+backup/rollback drill, and E18 acceptance remain separate requirements.
 
 ## Gate order
 
@@ -41,8 +43,10 @@ in an expendable environment first.
 
 ## Still required
 
-- Set enforced GitHub `main` branch protection / rulesets, mandatory checks
-  and an independent review; this requires repository administration access.
+- GitHub `main` protection and four mandatory checks have been configured
+  and verified active. Independently reviewed PR approvals are **not** enforced
+  (required approval count remains zero); a second reviewer is still needed
+  for independently attested production acceptance.
 - Independently audit and test a **real release execution** and its resulting
   GitHub attestations, not just PR checks. No release is triggered by the PR.
 - Generate and sign a dependency-accurate SPDX/CycloneDX SBOM (not an SBOM
