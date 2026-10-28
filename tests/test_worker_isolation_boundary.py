@@ -213,3 +213,35 @@ def test_windows_job_restricted_mode_applied_or_fails_closed(tmp_path):
         with pytest.raises(RuntimeError, match="Windows Job Object"):
             worker_launch_configuration(policy, code_root=tmp_path)
 
+
+
+def test_e18_strict_identity_policy_never_accepts_same_user_or_job_ui_limits(tmp_path):
+    """E18: a Job Object controls some UI behavior, not Windows privileges."""
+    for mode in ("inherited", "windows_job_restricted"):
+        with pytest.raises(PermissionError, match="E18_BLOCKED"):
+            WorkerIsolationPolicy(mode=mode, require_distinct_os_identity=True)
+    with pytest.raises(TypeError, match="boolean"):
+        WorkerIsolationPolicy(mode="dedicated_user", uid=65432, gid=65432,
+                              require_distinct_os_identity="true")
+
+
+def test_e18_strict_mode_refuses_unsupported_os_before_worker_spawn(tmp_path):
+    policy = WorkerIsolationPolicy(
+        mode="dedicated_user",
+        uid=65432, gid=65432,
+        require_distinct_os_identity=True,
+    )
+    with TeamStore(tmp_path / "state.db") as store:
+        controller = WorkerProcessController(store, isolation_policy=policy)
+        cfg = WorkerConfig(
+            worker_id="e18-strict", team_id="e18-team",
+            role="worker", working_dir=str(tmp_path),
+        )
+        if sys.platform.startswith("linux"):
+            with patch("subagentbridge.execution.worker_isolation.os.geteuid", return_value=1000):
+                with pytest.raises(PermissionError, match="supervisor"):
+                    controller.spawn_worker(cfg)
+        else:
+            with pytest.raises(RuntimeError, match="Linux OS identity"):
+                controller.spawn_worker(cfg)
+        assert not controller._processes
