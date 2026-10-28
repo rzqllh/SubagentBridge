@@ -318,6 +318,28 @@ class IndependentOperatorApprovalBoundary:
 
         return deepcopy(req)
 
+    def _expire_if_due(self, req: OperatorApprovalRequest, now: float) -> OperatorApprovalRequest:
+        """Expire active actions without overwriting a terminal row in another process.
+
+        Caller holds the local RLock. A stale supervisor rehydrates its view
+        if a concurrent terminal transition won in the durable store.
+        """
+        if now < req.expires_at or req.state not in (
+            ApprovalState.BLOCKED, ApprovalState.QUESTION_PENDING, ApprovalState.APPROVED,
+        ):
+            return req
+        expired = deepcopy(req)
+        expired.state = ApprovalState.EXPIRED
+        try:
+            self._persist_request(expired)
+        except PermissionError:
+            if self.db_path is not None:
+                self.rehydrate_from_disk()
+                return self._requests.get(req.action_id, expired)
+            return expired
+        self._requests[req.action_id] = expired
+        return expired
+
     def resolve_by_operator(
         self,
         action_id: str,
@@ -350,8 +372,7 @@ class IndependentOperatorApprovalBoundary:
                 raise KeyError(f"unknown action_id {action_id!r}")
 
             if req.state in (ApprovalState.BLOCKED, ApprovalState.QUESTION_PENDING) and now >= req.expires_at:
-                req.state = ApprovalState.EXPIRED
-                self._persist_request(req)
+                self._expire_if_due(req, now)
                 raise PermissionError("Approval request has expired")
 
             if req.state != ApprovalState.BLOCKED and req.state != ApprovalState.QUESTION_PENDING:
@@ -424,8 +445,7 @@ class IndependentOperatorApprovalBoundary:
                 return False, f"DENIED: unknown action {action_id!r}", None
 
             if now >= req.expires_at:
-                req.state = ApprovalState.EXPIRED
-                self._persist_request(req)
+                self._expire_if_due(req, now)
                 return False, "DENIED: approval expired", None
 
             if req.state != ApprovalState.APPROVED:
@@ -510,10 +530,8 @@ class IndependentOperatorApprovalBoundary:
     def get_request(self, action_id: str) -> OperatorApprovalRequest | None:
         with self._lock:
             req = self._requests.get(action_id)
-            if req and req.state in (ApprovalState.BLOCKED, ApprovalState.APPROVED, ApprovalState.QUESTION_PENDING):
-                if time.time() >= req.expires_at:
-                    req.state = ApprovalState.EXPIRED
-                    self._persist_request(req)
+            if req is not None:
+                req = self._expire_if_due(req, time.time())
             return deepcopy(req) if req is not None else None
 
     def list_pending(self) -> list[OperatorApprovalRequest]:
@@ -521,10 +539,7 @@ class IndependentOperatorApprovalBoundary:
         with self._lock:
             pending: list[OperatorApprovalRequest] = []
             for req in self._requests.values():
-                if req.state in (ApprovalState.BLOCKED, ApprovalState.QUESTION_PENDING):
-                    if now >= req.expires_at:
-                        req.state = ApprovalState.EXPIRED
-                        self._persist_request(req)
-                    else:
-                        pending.append(deepcopy(req))
+                current = self._expire_if_due(req, now)
+                if current.state in (ApprovalState.BLOCKED, ApprovalState.QUESTION_PENDING):
+                    pending.append(deepcopy(current))
             return pending
