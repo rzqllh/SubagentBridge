@@ -41,3 +41,18 @@ On Windows this mode is intentionally **unsupported and fail-closed** pending ve
 Passing these tests is **not** proof of hostile-worker confinement. Track the remaining security work in [E18 Issue #21](https://github.com/rzqllh/SubagentBridge/issues/21), [Human Approval Issue #22](https://github.com/rzqllh/SubagentBridge/issues/22), and [Enterprise Readiness](ENTERPRISE_READINESS.md).
 
 **Execution compatibility:** `PYTHONSAFEPATH=1` is intentionally not forced on every descendant command. The trusted worker entrypoint itself runs with `python -P`, but an explicitly authorized `python -c` or test subprocess may need the declared workspace on Python's module search path (e.g. importing a freshly generated local test module). This is not a hostile-code isolation guarantee; OS identity and workspace policy must carry that burden.
+
+
+## Enforced distinct-identity requirement (opt-in)
+
+To explicitly reject a same-user worker in a host security policy, construct:
+
+```python
+from subagentbridge.execution.worker_isolation import WorkerIsolationPolicy
+policy = WorkerIsolationPolicy(
+    mode="dedicated_user", uid=10050, gid=10050,
+    require_distinct_os_identity=True,
+)
+```
+
+This policy refuses `inherited` and `windows_job_restricted` because they do **not** provide a different OS user identity. Windows strict-mode remains unavailable rather than silently claiming Job Object UI limits are a sandbox. Even the opt-in Linux UID/GID switch does not prove confinement of network, workspaces, syscalls or sibling processes; the original E18 negative host tests and independent security review are still mandatory. Do not enable strict mode for a workspace where the configured Linux supervisor cannot safely drop privileges.
