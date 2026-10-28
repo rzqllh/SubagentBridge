@@ -96,6 +96,34 @@ def canonical_command_digest(command: list[str], workspace_path: str, task_id: s
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def operator_decision_challenge(
+    request: OperatorApprovalRequest, decision: OperatorDecision,
+) -> str:
+    """Action-specific challenge digest supplied to a trusted RP/IdP verifier.
+
+    This is a challenge, NOT an authenticated assertion or a signature.
+    WebAuthn/OIDC validation, consent, role checks and replay prevention must
+    be enforced by the trusted external relying party.
+    """
+    if not isinstance(request, OperatorApprovalRequest) or not isinstance(decision, OperatorDecision):
+        raise TypeError("operator decision challenge requires a request and explicit decision")
+    payload = json.dumps({
+        "domain": "SIMPUL_OPERATOR_APPROVAL_V1",
+        "action_id": request.action_id,
+        "session_id": request.session_id,
+        "task_id": request.task_id,
+        "nonce": request.nonce,
+        "command_digest": canonical_command_digest(
+            request.command, request.workspace_path, request.task_id,
+        ),
+        "workspace_path": request.workspace_path,
+        "created_at": request.created_at,
+        "expires_at": request.expires_at,
+        "decision": decision.value,
+    }, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class IndependentOperatorApprovalBoundary:
     """Local decision store; requires externally verified operator assertions."""
 
@@ -107,6 +135,9 @@ class IndependentOperatorApprovalBoundary:
         default_ttl_seconds: float = 900.0,
         signing_secret: str | None = None,
         operator_verifier: Callable[[OperatorIdentity], bool] | None = None,
+        decision_verifier: Callable[
+            [OperatorApprovalRequest, OperatorDecision, OperatorIdentity], bool
+        ] | None = None,
     ) -> None:
         if not 0 < default_ttl_seconds <= 86400:
             raise ValueError("default_ttl_seconds must be within (0, 86400]")
@@ -115,6 +146,9 @@ class IndependentOperatorApprovalBoundary:
         # verifier. A caller-constructed OperatorIdentity is never authentication.
         # No verifier => ALLOW_ONCE, DENY and ANSWER_QUESTIONS all fail closed.
         self._operator_verifier = operator_verifier
+        # Only a trusted host can verify a fresh, action-specific external
+        # assertion. Identity-only checks are insufficient for worker dispatch.
+        self._decision_verifier = decision_verifier
         self._secret = signing_secret or token_hex(32)
         self._lock = threading.RLock()
         self._requests: dict[str, OperatorApprovalRequest] = {}
@@ -437,6 +471,17 @@ class IndependentOperatorApprovalBoundary:
 
             if req.nonce in self._consumed_nonces:
                 raise PermissionError("Action nonce already consumed (replay prevented)")
+
+            if self._decision_verifier is not None:
+                # Recompute challenge inside the trusted state lock. A signed
+                # login bearer token from a different action/decision cannot
+                # serve as transaction authorization for this request.
+                try:
+                    authorized = self._decision_verifier(deepcopy(req), decision, operator)
+                except Exception as exc:
+                    raise PermissionError("DENIED: action-bound decision verification failed") from exc
+                if authorized is not True:
+                    raise PermissionError("DENIED: action-specific operator proof invalid")
 
             # Copy-on-write: never expose APPROVED in memory before both the
             # audit append and durable state persistence succeed. These stores
