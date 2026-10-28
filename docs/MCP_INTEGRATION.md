@@ -1,32 +1,39 @@
-# Simpul — MCP stdio integration
+# Simpul v1.1.4 — MCP integration (Antigravity IDE first)
 
-Simpul keeps the technical server/module name `subagentbridge`. This guide applies to the open PR #3 candidate, **not** the default-branch prototype.
+**Published release:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4). `subagentbridge` is the Python package, module and MCP server identifier. Its public product name is **Simpul**.
 
-## Connect a compatible MCP host
+## Antigravity IDE setup
 
-Create a Python virtual environment and install the candidate following [Installation](INSTALLATION_QUICKSTART.md). Configure the host's MCP servers with the **actual venv Python executable**. If `python` already resolves to that venv in the host process, this minimal entry is sufficient:
+Use the [first-run installation guide](public/GETTING_STARTED.md) for Windows/Linux commands and exact examples of `mcp_config.json`. The [official Antigravity MCP guide](https://antigravity.google/docs/mcp) describes the IDE steps: **Agent panel → … → MCP Servers → Manage MCP Servers → View raw config**. Global configuration lives at `~/.gemini/config/mcp_config.json`; a workspace-local configuration can live under `.agents/mcp_config.json`.
+
+Add a local stdio server under `mcpServers`; its `command` should be the **absolute path to your virtual environment's Python executable**:
 
 ```json
 {
   "mcpServers": {
     "subagentbridge": {
-      "command": "python",
+      "command": "/absolute/path/to/SubagentBridge/.venv/bin/python",
       "args": ["-m", "subagentbridge.server"]
     }
   }
 }
 ```
 
-If your IDE launches a different Python environment, replace `command` with an absolute path to the venv's `python.exe` on Windows or `bin/python` on Linux. MCP configuration file locations and exact UI steps vary by host version; confirm them within your installed host.
+On Windows, replace `command` with an absolute `C:\\...\\.venv\\Scripts\\python.exe` path (escape Windows backslashes in JSON). Do not run the stdio server as an interactive terminal chatbot. Its stdout belongs to MCP protocol messages. After configuring, reload the MCP server and inspect tools in your IDE.
 
-No production credentials should appear in an example configuration. The server uses stdio; ordinary terminal text printed to stdout can corrupt the MCP protocol.
+## MCP tool surface implemented in v1.1.4
 
-## Current MCP tool contract
+| Tool | Purpose |
+|---|---|
+| `submit_goal(goal, workspace_path=None, model=None, execute=False, commands=None)` | Register a supervised goal; default only records the run; optional execution remains gated |
+| `get_run(run_id)` / `list_tasks(run_id)` | Read run and task state |
+| `execute_run(run_id, commands=None)` / `execute_task(run_id, task_id, command=None)` | Attempt explicitly supervised execution; unsafe/unauthorized commands return `BLOCKED` |
+| `get_task_evidence(run_id, task_id)` | Inspect reported evidence/QA state, not assume completion from one exit code |
+| `get_pending_approvals()` / `reject_approval(action_id, reason="")` | Inspect/deny pending gated actions; **neither grants approval** |
+| `cancel_run(run_id, reason="")` / `get_model_usage()` | Cancellation and model usage inspection |
 
-The source exposes `submit_goal(goal, workspace_path=None, model=None)`, `get_run(run_id)`, `list_tasks(run_id)`, `get_task_evidence(run_id, task_id)`, `get_pending_approvals()`, `reject_approval(action_id, reason="")`, `cancel_run(run_id, reason="")` and `get_model_usage()`.
+Some historical session tools remain registered as compatibility/diagnostics; arbitrary legacy worker spawning or `approve_action` is **not** a supported autonomous-approval route. Native team/worker Python APIs are not automatically separate MCP tools.
 
-`submit_goal` currently stores a `SUBMITTED` run and a `PENDING` task; it is **not** proof of an executing PM/Developer/QA flow. Live Antigravity MCP acceptance is still pending. See [API reference](API_REFERENCE.md) for exact behavior and legacy diagnostics.
+**Safety boundary:** `AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`; same-user hostile-worker containment E18 is BLOCKED. Simpul ships no standalone human WebAuthn/OIDC approval UI or guaranteed live Antigravity host-integration parity. An MCP client-side permission grant is different from a human operator signing a specific privileged command.
 
-## Security
-
-`approve_action` is deliberately **not** an MCP tool. No model self-approvals, Always Allow, or unattended changes. `AUTONOMY: OFF` and Phase-A `RISK_ACCEPTED_SAME_IDENTITY` are active constraints; same-user isolation has not been demonstrated. See [Project Status](SIMPUL_STATUS.md).
+See [API](API_REFERENCE.md), [parity roadmap](public/PARITY_AND_ROADMAP.md), [configuration](CONFIGURATION.md), [security](public/SECURITY.md).
