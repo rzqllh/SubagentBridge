@@ -35,6 +35,12 @@ class VerifiedOperatorApprovalAuthority:
     def __init__(self, boundary: IndependentOperatorApprovalBoundary) -> None:
         if not isinstance(boundary, IndependentOperatorApprovalBoundary):
             raise TypeError("boundary must be IndependentOperatorApprovalBoundary")
+        if boundary._decision_verifier is None:
+            # Production IPC must not accept a reusable identity bearer token
+            # as authorization for arbitrary subsequent commands.
+            raise PermissionError(
+                "DENIED: verified worker IPC requires an action-specific operator decision verifier"
+            )
         self.boundary = boundary
 
     def request_command_approval(
