@@ -8,9 +8,12 @@ Windows/Linux hostile-worker isolation.
 ## What is implemented
 
 The trusted host may explicitly construct an
-`IndependentOperatorApprovalBoundary` with its own authenticated
-`operator_verifier`, then inject `VerifiedOperatorApprovalAuthority` into
-`WorkerProcessController(approval_authority=...)`.
+`IndependentOperatorApprovalBoundary` with **both** an independently authenticated
+`operator_verifier` and an **action-specific** `decision_verifier`, then inject
+`VerifiedOperatorApprovalAuthority` into
+`WorkerProcessController(approval_authority=...)`. The adapter now refuses
+construction when the action-specific decision verifier is missing. A reusable
+identity token by itself is not transaction authorization.
 
 The runtime adapter:
 - Creates exact worker/session/task/command/workspace approval requests.
@@ -25,9 +28,16 @@ The runtime adapter:
 
 1. Implement a trusted server-side WebAuthn relying-party flow or OIDC verifier
    with cryptographic issuer/signature, audience, expiry, nonce and role checks.
-2. Bind approval to a fresh server-generated action challenge including its
-   `session_id`, `task_id`, canonical command, canonical workspace, request
-   nonce and TTL. A reusable identity bearer token is **not** an action approval.
+   WebAuthn must check expected challenge, origin, RP ID hash, user presence/
+   verification, assertion signature, and credential owner/counter policy.
+2. Compute `operator_decision_challenge(request, decision)` only from the
+   trusted persisted approval request. It domain-separates and hashes action ID,
+   worker session, task, command digest, canonical workspace, unique request
+   nonce, created/expiry timestamps, and **decision type**. The trusted RP must
+   verify a fresh assertion bound to this challenge, not merely check that an
+   identity token belongs to a user. Require an explicit decision for each
+   approval; `ALLOW_ONCE` proof cannot authorize `DENY` or another action.
+   A reusable identity bearer token is **not** an action approval.
 3. Keep verifier and resolution API off all MCP/model/worker-callable surfaces.
    Do not inject callbacks derived from model-controlled input or untrusted code.
 4. Use durable approval storage protected by a separate least-privilege OS
@@ -41,8 +51,9 @@ The runtime adapter:
 
 `tests/test_verified_operator_authority.py` exercises the adapter and a real
 worker subprocess through the command dispatcher using a clearly labeled
-**test-only** verifier. Test fixtures do not represent WebAuthn, a signature
-verifier, or production SSO. Check exact-head four-platform GitHub CI; these
+**test-only** HMAC decision challenge. These fixtures demonstrate replay and
+wrong-decision denial, **not** WebAuthn user verification, RP origin validation,
+credential signature verification, IdP role provenance or production SSO. Check exact-head four-platform GitHub CI; these
 checks establish functionality, not enterprise security certification.
 
 E18 remains `BLOCKED (RISK_ACCEPTED_SAME_IDENTITY)`. There is no default
