@@ -1,47 +1,32 @@
-> **Published update (27 Oct 2026):** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is released from merge SHA `a29f0d9` and passed a full CI matrix. Prior candidate and v1.0.0 references in this document are historical, not current status. E18 remains BLOCKED. See [release readiness](simpul/RELEASE_READINESS.md).
+# Simpul — v1.1.4 MCP API reference
 
-## 27 October 2026 — Candidate API additions
+**Current published release:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4), 28 October 2026. Source-of-truth for actual model-callable tools is the `@mcp.tool()` registration in `subagentbridge/server.py`. The public product name is **Simpul**; `subagentbridge` is intentionally preserved for MCP and Python compatibility.
 
-The newer C07 branch exposes **Python-library** constructs `subagentbridge.domain.team_contracts.AgentTeam`, `AgentSession`, `AgentRole`, `WorkerConfig`, `QueueItem`, `WorkerCheckpoint`; `subagentbridge.storage.team_store.TeamStore`; `subagentbridge.team.team_manager.TeamManager`; and `subagentbridge.execution.integration_adapter.IntegrationProbe`. These are not automatically added MCP tools: do not confuse a Python method with an exposed model-callable MCP endpoint. Legacy `Orca*` symbols are maintained for migration, with read-only legacy SQL views. Verified completion needs real execution evidence, artifact integrity and authenticated authorization. Refer to [release readiness](simpul/RELEASE_READINESS.md). These changes remain unreleased as of 27 October.
+## Primary supervised tools
 
-# Simpul — MCP API reference (development candidate)
+| Tool | Signature | Semantics |
+|---|---|---|
+| `submit_goal` | `goal: str, workspace_path: str \\| None = None, model: str \\| None = None, execute: bool = False, commands: dict[str, list[str]] \\| None = None` | Creates a run and initial task in the SQLite-backed registry; without `execute=True`, returns `SUBMITTED` instead of running code |
+| `get_run` | `run_id: str` | Reads recorded run status, or NOT_FOUND |
+| `list_tasks` | `run_id: str` | Reads associated task state |
+| `execute_run` | `run_id: str, commands: dict[str, list[str]] \\| None = None` | Attempts supervised PM/Dev/QA lifecycle, denies commands outside the trusted allowlist unless a genuine authorization route exists |
+| `execute_task` | `run_id: str, task_id: str, command: list[str] \\| None = None` | Attempts a specific supervised task and returns evidence/status; blocked execution is not success |
+| `get_task_evidence` | `run_id: str, task_id: str` | Reads evidence and QA status of the identified task |
+| `get_pending_approvals` | none | Inspects pending actions; not a grant operation |
+| `reject_approval` | `action_id: str, reason: str = ""` | Explicitly rejects a pending privileged action |
+| `get_model_usage` | none | Reports budget / usage where available |
+| `cancel_run` | `run_id: str, reason: str = ""` | Requests cancellation of an active run |
 
-The public name is **Simpul**; the Python module and MCP server name remain `subagentbridge`. This reference describes signatures found in `subagentbridge/server.py` on the `integrate/roadmap-v4-verified` branch as reviewed 23 October 2026, **not** the older default-branch implementation.
+A **safe first call** is `submit_goal(goal="Review this trusted project's documentation", workspace_path="ABSOLUTE_TRUSTED_REPOSITORY_PATH")`, followed by `get_run` and `list_tasks` with the returned ID. A model message containing "approve" is **never** proof of authenticated human intent; `get_pending_approvals` and `reject_approval` are not approval-grant tools.
 
-## Production-oriented tools
+## Other / historical interfaces
 
-| MCP tool | Actual arguments | Observed behavior / limit |
-| --- | --- | --- |
-| `submit_goal` | `goal: str, workspace_path: str \| None = None, model: str \| None = None` | Creates an in-memory `SUBMITTED` run and one `PENDING` task, attempts to append a submission event. **Does not dispatch an agent in this handler.** |
-| `get_run` | `run_id: str` | Reads the in-process run table, or returns `NOT_FOUND` |
-| `list_tasks` | `run_id: str` | Returns in-process task snapshots |
-| `get_task_evidence` | `run_id: str, task_id: str` | Returns task status, evidence ID list, and status-derived `verified` flag; does **not** itself validate a receipt |
-| `get_pending_approvals` | none | Reads pending actions |
-| `reject_approval` | `action_id: str, reason: str = ""` | Records rejection; not human approval |
-| `cancel_run` | `run_id: str, reason: str = ""` | Marks an in-process run and nonterminal tasks cancelled |
-| `get_model_usage` | none | Reads legacy session usage and, when available, budget snapshot |
+The source retains legacy session inspection and diagnostics (`spawn_agent`, `send_message`, `wait_for_idle`, `get_agent_status`, `list_agents`, `kill_agent`, `reject_action` and `list_pending_actions`). Registered names should not be mistaken for unrestricted execution: legacy raw-runner routes and unsafe approval paths are deliberately default-denied.
 
-Run/task lookup tables are currently in process memory. Treat an audit event as history, **not** proof that run-state rehydration is implemented.
+`approve_action` and `apply_code_fix` are **not** model-callable MCP tools. The Python-level native team manager, dispatch, queue, steering, worker and crash-recovery interfaces do **not** all have a one-to-one MCP endpoint.
 
-## Legacy diagnostic tools still registered
+## Capability and persistence boundaries
 
-`spawn_agent(session_id, workspace_path, runner="agy", model=None, agent_type=None, reasoning_effort=None, skip_permissions=False, hitl_enabled=True, max_retries=2)`, `send_message(session_id, message)`, `wait_for_idle(session_id, timeout_seconds=600)`, `get_agent_status(session_id)`, `list_agents()`, `kill_agent(session_id)`, `reject_action(action_id, reason="")`, and `list_pending_actions(session_id=None)`.
+The server rehydrates registered runs/tasks from SQLite at startup; this does not imply that every partially completed external side effect can be safely replayed. Simpul supports native supervised worker subprocesses, but **hostile-worker OS isolation is not certified** (E18). The opt-in verified-operator adapter requires a trusted action-specific verifier, **not provided** as a production WebAuthn/OIDC relying party. CI unit tests and MCP subprocess tests are not independent live acceptance of a specific Antigravity IDE installation.
 
-These are compatibility/diagnostic surfaces. Existing legacy execution lockdown means registering a tool is not evidence of permission to execute unsafe workers. Do not set `skip_permissions=True` or `hitl_enabled=False` to try to bypass the gate.
-
-## Removed from MCP exposure by P0 lockdown
-
-In the retained legacy raw-runner paths, legacy worker execution is **disabled** before the unsafe subprocess launch. This is not a claim that the new `submit_goal` endpoint automatically dispatches workers. The following legacy compatibility callables do not grant approval or write permission.
-
-## Deliberately not exposed as MCP tools
-
-- `approve_action(...)` is a compatibility callable returning denial, not authenticated permission.
-- `apply_code_fix(...)` is a compatibility callable returning denial, not a code-edit tool.
-
-The separate `ApprovalBroker` module has one-time token and fingerprint checks but an authenticated human approval channel, accessible independently of same-user workers, **has not been proven**.
-
-## MCP resources
-
-Currently registered: `agy://logs/{session_id}` and `agy://pending/{session_id}`. Do not assume other legacy or design-only resource URIs are available.
-
-See [Simpul status](SIMPUL_STATUS.md), [MCP setup](MCP_INTEGRATION.md) and [security](SECURITY_APPROVAL_MODEL.md).
+See [Antigravity setup](public/GETTING_STARTED.md), [MCP integration](MCP_INTEGRATION.md), [parity](public/PARITY_AND_ROADMAP.md) and [security](public/SECURITY.md).
