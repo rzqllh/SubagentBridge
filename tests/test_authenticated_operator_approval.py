@@ -507,3 +507,155 @@ def test_concurrent_legacy_provenance_migration_uses_one_writer(tmp_path: Path):
     with sqlite3.connect(db) as conn:
         columns = [row[1] for row in conn.execute("PRAGMA table_info(operator_approvals)")]
     assert columns.count("operator_verified") == 1
+
+
+def test_two_independent_supervisors_can_consume_durable_grant_only_once(tmp_path: Path, operator: OperatorIdentity):
+    """P0: an RLock inside each supervisor is NOT cross-process replay protection."""
+    from threading import Barrier
+
+    db = tmp_path / "cross_process_approval.db"
+    first = fixture_boundary(db_path=db)
+    req = first.create_request(
+        session_id="worker-concurrent",
+        task_id="task-concurrent",
+        command=["echo", "safe"],
+        workspace_path=str(tmp_path),
+    )
+    first.resolve_by_operator(
+        req.action_id,
+        decision=OperatorDecision.ALLOW_ONCE,
+        operator=operator,
+    )
+    second = fixture_boundary(db_path=db)
+    assert second.rehydrate_from_disk() == 1
+
+    ready = Barrier(2)
+
+    def consume(boundary: IndependentOperatorApprovalBoundary):
+        ready.wait(timeout=5)
+        return boundary.consume_for_execution(
+            req.action_id,
+            session_id="worker-concurrent",
+            task_id="task-concurrent",
+            command=["echo", "safe"],
+            workspace_path=str(tmp_path),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = [
+            pool.submit(consume, first),
+            pool.submit(consume, second),
+        ]
+        result = [future.result(timeout=10) for future in pending]
+
+    assert sum(bool(allowed) for allowed, _, _ in result) == 1, result
+    assert sum(ticket is not None for _, _, ticket in result) == 1
+    denied = [reason for allowed, reason, _ in result if not allowed]
+    assert len(denied) == 1
+    assert "durable approval already consumed" in denied[0]
+
+    recovered = fixture_boundary(db_path=db)
+    assert recovered.rehydrate_from_disk() == 1
+    assert recovered.get_request(req.action_id).state == ApprovalState.CONSUMED
+
+
+def test_stale_supervisor_cannot_reopen_terminal_consumed_grant(tmp_path: Path, operator: OperatorIdentity):
+    db = tmp_path / "durable_terminal.db"
+    authorized = fixture_boundary(db_path=db)
+    req = authorized.create_request(
+        session_id="w", task_id="t",
+        command=["echo", "safe"], workspace_path=str(tmp_path),
+    )
+    authorized.resolve_by_operator(
+        req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator,
+    )
+    stale = fixture_boundary(db_path=db)
+    assert stale.rehydrate_from_disk() == 1
+    assert stale.get_request(req.action_id).state == ApprovalState.APPROVED
+
+    allowed, _, _ = authorized.consume_for_execution(
+        req.action_id, session_id="w", task_id="t",
+        command=["echo", "safe"], workspace_path=str(tmp_path),
+    )
+    assert allowed
+
+    # The previous INSERT OR REPLACE code could resurrect APPROVED here.
+    with pytest.raises(PermissionError, match="terminal"):
+        stale._persist_request(stale.get_request(req.action_id))
+
+    recovered = fixture_boundary(db_path=db)
+    assert recovered.rehydrate_from_disk() == 1
+    assert recovered.get_request(req.action_id).state == ApprovalState.CONSUMED
+
+
+def test_repeat_expired_consumption_never_raises_or_revives_terminal(
+    tmp_path: Path, operator: OperatorIdentity, monkeypatch: pytest.MonkeyPatch,
+):
+    # Deterministic logical time: avoid racing a 25ms approval TTL against
+    # slow Windows filesystem and CI startup.
+    clock = [10000.0]
+    monkeypatch.setattr("subagentbridge.approval.operator_boundary.time.time", lambda: clock[0])
+    db = tmp_path / "expired_terminal.db"
+    boundary = fixture_boundary(db_path=db)
+    req = boundary.create_request(
+        session_id="w", task_id="t", command=["echo", "safe"],
+        workspace_path=str(tmp_path), ttl_seconds=25.0,
+    )
+    boundary.resolve_by_operator(
+        req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator,
+    )
+    clock[0] += 26.0
+    for _ in range(3):
+        ok, reason, ticket = boundary.consume_for_execution(
+            req.action_id, session_id="w", task_id="t",
+            command=["echo", "safe"], workspace_path=str(tmp_path),
+        )
+        assert not ok and ticket is None and "expired" in reason
+    assert boundary.get_request(req.action_id).state == ApprovalState.EXPIRED
+    assert not boundary.list_pending()
+    recovered = fixture_boundary(db_path=db)
+    assert recovered.rehydrate_from_disk() == 1
+    assert recovered.get_request(req.action_id).state == ApprovalState.EXPIRED
+
+
+def test_consumed_and_denied_states_cannot_be_overwritten_by_late_expiration(
+    tmp_path: Path, operator: OperatorIdentity, monkeypatch: pytest.MonkeyPatch,
+):
+    clock = [12000.0]
+    monkeypatch.setattr("subagentbridge.approval.operator_boundary.time.time", lambda: clock[0])
+    db = tmp_path / "terminal_timeout.db"
+    boundary = fixture_boundary(db_path=db)
+    consumed = boundary.create_request(
+        session_id="w", task_id="one", command=["echo", "one"],
+        workspace_path=str(tmp_path), ttl_seconds=30.0,
+    )
+    boundary.resolve_by_operator(
+        consumed.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator,
+    )
+    assert boundary.consume_for_execution(
+        consumed.action_id, session_id="w", task_id="one",
+        command=["echo", "one"], workspace_path=str(tmp_path),
+    )[0]
+    denied = boundary.create_request(
+        session_id="w", task_id="two", command=["echo", "two"],
+        workspace_path=str(tmp_path), ttl_seconds=30.0,
+    )
+    boundary.resolve_by_operator(
+        denied.action_id, decision=OperatorDecision.DENY, operator=operator,
+    )
+    clock[0] += 31.0
+    for action, task, state in [
+        (consumed, "one", ApprovalState.CONSUMED),
+        (denied, "two", ApprovalState.DENIED),
+    ]:
+        for _ in range(2):
+            ok, _, ticket = boundary.consume_for_execution(
+                action.action_id, session_id="w", task_id=task,
+                command=["echo", task], workspace_path=str(tmp_path),
+            )
+            assert not ok and ticket is None
+        assert boundary.get_request(action.action_id).state == state
+    rehydrated = fixture_boundary(db_path=db)
+    assert rehydrated.rehydrate_from_disk() == 2
+    assert rehydrated.get_request(consumed.action_id).state == ApprovalState.CONSUMED
+    assert rehydrated.get_request(denied.action_id).state == ApprovalState.DENIED

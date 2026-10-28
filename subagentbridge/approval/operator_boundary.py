@@ -173,13 +173,30 @@ class IndependentOperatorApprovalBoundary:
         if not self.db_path:
             return
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO operator_approvals (
+            conn.execute("PRAGMA busy_timeout=5000")
+            cursor = conn.execute("""
+                INSERT INTO operator_approvals (
                     action_id, session_id, task_id, command_json, workspace_path,
                     nonce, created_at, expires_at, state, decision,
                     operator_id, operator_role, operator_channel, operator_notes,
                     questions_json, answers_json, operator_verified
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(action_id) DO UPDATE SET
+                    state=excluded.state,
+                    decision=excluded.decision,
+                    operator_id=excluded.operator_id,
+                    operator_role=excluded.operator_role,
+                    operator_channel=excluded.operator_channel,
+                    operator_notes=excluded.operator_notes,
+                    questions_json=excluded.questions_json,
+                    answers_json=excluded.answers_json,
+                    operator_verified=excluded.operator_verified
+                WHERE operator_approvals.state NOT IN ('CONSUMED', 'DENIED', 'EXPIRED')
+                  AND operator_approvals.nonce=excluded.nonce
+                  AND operator_approvals.session_id=excluded.session_id
+                  AND operator_approvals.task_id=excluded.task_id
+                  AND operator_approvals.command_json=excluded.command_json
+                  AND operator_approvals.workspace_path=excluded.workspace_path
             """, (
                 req.action_id,
                 req.session_id,
@@ -199,6 +216,8 @@ class IndependentOperatorApprovalBoundary:
                 json.dumps(req.answers),
                 int(req.operator_verified),
             ))
+            if cursor.rowcount != 1:
+                raise PermissionError("DENIED: durable approval state is terminal or context changed")
 
     def rehydrate_from_disk(self) -> int:
         """Reloads pending/consumed approvals across orchestrator restart."""
@@ -299,6 +318,28 @@ class IndependentOperatorApprovalBoundary:
 
         return deepcopy(req)
 
+    def _expire_if_due(self, req: OperatorApprovalRequest, now: float) -> OperatorApprovalRequest:
+        """Expire active actions without overwriting a terminal row in another process.
+
+        Caller holds the local RLock. A stale supervisor rehydrates its view
+        if a concurrent terminal transition won in the durable store.
+        """
+        if now < req.expires_at or req.state not in (
+            ApprovalState.BLOCKED, ApprovalState.QUESTION_PENDING, ApprovalState.APPROVED,
+        ):
+            return req
+        expired = deepcopy(req)
+        expired.state = ApprovalState.EXPIRED
+        try:
+            self._persist_request(expired)
+        except PermissionError:
+            if self.db_path is not None:
+                self.rehydrate_from_disk()
+                return self._requests.get(req.action_id, expired)
+            return expired
+        self._requests[req.action_id] = expired
+        return expired
+
     def resolve_by_operator(
         self,
         action_id: str,
@@ -331,8 +372,7 @@ class IndependentOperatorApprovalBoundary:
                 raise KeyError(f"unknown action_id {action_id!r}")
 
             if req.state in (ApprovalState.BLOCKED, ApprovalState.QUESTION_PENDING) and now >= req.expires_at:
-                req.state = ApprovalState.EXPIRED
-                self._persist_request(req)
+                self._expire_if_due(req, now)
                 raise PermissionError("Approval request has expired")
 
             if req.state != ApprovalState.BLOCKED and req.state != ApprovalState.QUESTION_PENDING:
@@ -405,8 +445,7 @@ class IndependentOperatorApprovalBoundary:
                 return False, f"DENIED: unknown action {action_id!r}", None
 
             if now >= req.expires_at:
-                req.state = ApprovalState.EXPIRED
-                self._persist_request(req)
+                self._expire_if_due(req, now)
                 return False, "DENIED: approval expired", None
 
             if req.state != ApprovalState.APPROVED:
@@ -430,10 +469,33 @@ class IndependentOperatorApprovalBoundary:
             if expected_digest != actual_digest:
                 return False, "DENIED: command or workspace mismatch with approved action", None
 
-            # Mark consumed
+            # Cross-process single-use consumption must be asserted by the
+            # database, not just this instance's RLock/in-memory nonce set.
+            # A stale supervisor may hold its own APPROVED snapshot.
+            if self.db_path is not None:
+                try:
+                    with sqlite3.connect(self.db_path, timeout=5.0) as conn:
+                        conn.execute("PRAGMA busy_timeout=5000")
+                        conn.execute("BEGIN IMMEDIATE")
+                        result = conn.execute(
+                            "UPDATE operator_approvals SET state=? "
+                            "WHERE action_id=? AND state=? AND nonce=? "
+                            "AND operator_verified=1 AND expires_at>?",
+                            (
+                                ApprovalState.CONSUMED.value,
+                                req.action_id,
+                                ApprovalState.APPROVED.value,
+                                req.nonce,
+                                now,
+                            ),
+                        )
+                        if result.rowcount != 1:
+                            return False, "DENIED: durable approval already consumed or changed", None
+                except sqlite3.Error:
+                    return False, "DENIED: durable approval store unavailable", None
+
             req.state = ApprovalState.CONSUMED
             self._consumed_nonces.add(req.nonce)
-            self._persist_request(req)
 
         # Issue single-use HMAC ticket
         expiry = now + ticket_ttl_seconds
@@ -468,21 +530,16 @@ class IndependentOperatorApprovalBoundary:
     def get_request(self, action_id: str) -> OperatorApprovalRequest | None:
         with self._lock:
             req = self._requests.get(action_id)
-            if req and req.state in (ApprovalState.BLOCKED, ApprovalState.APPROVED, ApprovalState.QUESTION_PENDING):
-                if time.time() >= req.expires_at:
-                    req.state = ApprovalState.EXPIRED
-                    self._persist_request(req)
+            if req is not None:
+                req = self._expire_if_due(req, time.time())
             return deepcopy(req) if req is not None else None
 
     def list_pending(self) -> list[OperatorApprovalRequest]:
         now = time.time()
         with self._lock:
             pending: list[OperatorApprovalRequest] = []
-            for req in self._requests.values():
-                if req.state in (ApprovalState.BLOCKED, ApprovalState.QUESTION_PENDING):
-                    if now >= req.expires_at:
-                        req.state = ApprovalState.EXPIRED
-                        self._persist_request(req)
-                    else:
-                        pending.append(deepcopy(req))
+            for req in list(self._requests.values()):
+                current = self._expire_if_due(req, now)
+                if current.state in (ApprovalState.BLOCKED, ApprovalState.QUESTION_PENDING):
+                    pending.append(deepcopy(current))
             return pending
