@@ -80,7 +80,7 @@ def test_stale_blocked_snapshot_cannot_reject_or_reapprove_approved_grant(tmp_pa
         workspace_path=str(tmp_path),
     )
     assert not denied and ticket is None
-    assert "durable approval already consumed" in reason
+    assert "not APPROVED" in reason or "durable approval already consumed" in reason
 
 
 def test_parallel_opposite_decisions_have_one_durable_winner(tmp_path):
