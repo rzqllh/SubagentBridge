@@ -6,11 +6,11 @@
 
 | Tool | Signature | Semantics |
 |---|---|---|
-| `submit_goal` | `goal: str, workspace_path: str \\| None = None, model: str \\| None = None, execute: bool = False, commands: dict[str, list[str]] \\| None = None` | Creates a run and initial task in the SQLite-backed registry; without `execute=True`, returns `SUBMITTED` instead of running code |
+| `submit_goal` | `goal: str, workspace_path: str \| None = None, model: str \| None = None, execute: bool = False, commands: dict[str, list[str]] \| None = None` | Creates a run and initial task in the SQLite-backed registry; without `execute=True`, returns `SUBMITTED` instead of running code |
 | `get_run` | `run_id: str` | Reads recorded run status, or NOT_FOUND |
 | `list_tasks` | `run_id: str` | Reads associated task state |
-| `execute_run` | `run_id: str, commands: dict[str, list[str]] \\| None = None` | Attempts supervised PM/Dev/QA lifecycle, denies commands outside the trusted allowlist unless a genuine authorization route exists |
-| `execute_task` | `run_id: str, task_id: str, command: list[str] \\| None = None` | Attempts a specific supervised task and returns evidence/status; blocked execution is not success |
+| `execute_run` | `run_id: str, commands: dict[str, list[str]] \| None = None` | Attempts supervised PM/Dev/QA lifecycle, denies commands outside the trusted allowlist unless a genuine authorization route exists |
+| `execute_task` | `run_id: str, task_id: str, command: list[str] \| None = None` | Attempts a specific supervised task and returns evidence/status; blocked execution is not success |
 | `get_task_evidence` | `run_id: str, task_id: str` | Reads evidence and QA status of the identified task |
 | `get_pending_approvals` | none | Inspects pending actions; not a grant operation |
 | `reject_approval` | `action_id: str, reason: str = ""` | Explicitly rejects a pending privileged action |
