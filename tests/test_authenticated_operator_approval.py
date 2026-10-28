@@ -586,3 +586,66 @@ def test_stale_supervisor_cannot_reopen_terminal_consumed_grant(tmp_path: Path, 
     recovered = fixture_boundary(db_path=db)
     assert recovered.rehydrate_from_disk() == 1
     assert recovered.get_request(req.action_id).state == ApprovalState.CONSUMED
+
+
+def test_repeat_expired_consumption_never_raises_or_revives_terminal(tmp_path: Path, operator: OperatorIdentity):
+    db = tmp_path / "expired_terminal.db"
+    boundary = fixture_boundary(db_path=db)
+    req = boundary.create_request(
+        session_id="w", task_id="t", command=["echo", "safe"],
+        workspace_path=str(tmp_path), ttl_seconds=0.025,
+    )
+    boundary.resolve_by_operator(
+        req.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator,
+    )
+    time.sleep(0.05)
+    for _ in range(3):
+        ok, reason, ticket = boundary.consume_for_execution(
+            req.action_id, session_id="w", task_id="t",
+            command=["echo", "safe"], workspace_path=str(tmp_path),
+        )
+        assert not ok and ticket is None and "expired" in reason
+    assert boundary.get_request(req.action_id).state == ApprovalState.EXPIRED
+    assert not boundary.list_pending()
+    recovered = fixture_boundary(db_path=db)
+    assert recovered.rehydrate_from_disk() == 1
+    assert recovered.get_request(req.action_id).state == ApprovalState.EXPIRED
+
+
+def test_consumed_and_denied_states_cannot_be_overwritten_by_late_expiration(tmp_path: Path, operator: OperatorIdentity):
+    db = tmp_path / "terminal_timeout.db"
+    boundary = fixture_boundary(db_path=db)
+    consumed = boundary.create_request(
+        session_id="w", task_id="one", command=["echo", "one"],
+        workspace_path=str(tmp_path), ttl_seconds=0.075,
+    )
+    boundary.resolve_by_operator(
+        consumed.action_id, decision=OperatorDecision.ALLOW_ONCE, operator=operator,
+    )
+    assert boundary.consume_for_execution(
+        consumed.action_id, session_id="w", task_id="one",
+        command=["echo", "one"], workspace_path=str(tmp_path),
+    )[0]
+    denied = boundary.create_request(
+        session_id="w", task_id="two", command=["echo", "two"],
+        workspace_path=str(tmp_path), ttl_seconds=0.075,
+    )
+    boundary.resolve_by_operator(
+        denied.action_id, decision=OperatorDecision.DENY, operator=operator,
+    )
+    time.sleep(0.10)
+    for action, task, state in [
+        (consumed, "one", ApprovalState.CONSUMED),
+        (denied, "two", ApprovalState.DENIED),
+    ]:
+        for _ in range(2):
+            ok, _, ticket = boundary.consume_for_execution(
+                action.action_id, session_id="w", task_id=task,
+                command=["echo", task], workspace_path=str(tmp_path),
+            )
+            assert not ok and ticket is None
+        assert boundary.get_request(action.action_id).state == state
+    rehydrated = fixture_boundary(db_path=db)
+    assert rehydrated.rehydrate_from_disk() == 2
+    assert rehydrated.get_request(consumed.action_id).state == ApprovalState.CONSUMED
+    assert rehydrated.get_request(denied.action_id).state == ApprovalState.DENIED
