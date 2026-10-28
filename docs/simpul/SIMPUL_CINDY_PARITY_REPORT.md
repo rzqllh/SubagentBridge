@@ -1,3 +1,5 @@
+> **CURRENT STATUS (28 October 2026):** This document is a **historical C00–C07 research and CI receipt**. Its implementation-phase labels (e.g. C03/C04 "COMPLETE") refer to bounded native-core phase work, **NOT full feature/API/UX parity with current Cindy/Orca or verified live Antigravity IDE acceptance**. [v1.1.4 is released](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4); current parity classification and next milestones: [public roadmap](../public/PARITY_AND_ROADMAP.md). Open enterprise gates: [#21](https://github.com/rzqllh/SubagentBridge/issues/21), [#22](https://github.com/rzqllh/SubagentBridge/issues/22), [#23](https://github.com/rzqllh/SubagentBridge/issues/23).
+
 # SIMPUL — Cindy/Orca Core Parity Execution Report
 
 > **Single authoritative record** for Simpul's orchestration-core parity work against Cindy reference.
