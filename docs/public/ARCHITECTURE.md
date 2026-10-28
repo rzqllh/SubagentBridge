@@ -1,5 +1,8 @@
 # Simpul architecture
 
+> **v1.1.4 primary target:** Google Antigravity IDE via MCP stdio. Cindy/Orca architectural parallels are documented in the [current parity roadmap](PARITY_AND_ROADMAP.md); this diagram represents the **native supervisor**, not an IDE-native UI or full upstream parity.
+
+
 Simpul is organized as a local MCP stdio transport, supervised orchestration domain, native worker subprocess controller, and a SQLite durable team store.
 
 ```text
