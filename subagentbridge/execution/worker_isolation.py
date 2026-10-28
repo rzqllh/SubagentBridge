@@ -32,10 +32,20 @@ class WorkerIsolationPolicy:
     mode: str = "inherited"  # 'inherited', 'dedicated_user', or 'windows_job_restricted'
     uid: int | None = None
     gid: int | None = None
+    require_distinct_os_identity: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in ("inherited", "dedicated_user", "windows_job_restricted"):
             raise ValueError(f"Unsupported isolation mode: {self.mode!r}")
+        if type(self.require_distinct_os_identity) is not bool:
+            raise TypeError("require_distinct_os_identity must be a boolean")
+        if self.require_distinct_os_identity and self.mode != "dedicated_user":
+            # Job Object UI limits are NOT Windows identity separation.
+            # Same-user subprocess isolation cannot protect host secrets.
+            raise PermissionError(
+                "E18_BLOCKED: distinct OS worker identity requires Linux dedicated_user; "
+                "Windows restricted-token identity support is not implemented"
+            )
         if self.mode in ("inherited", "windows_job_restricted") and (self.uid is not None or self.gid is not None):
             raise ValueError("UID/GID cannot be set when isolation mode is not dedicated_user")
         if self.mode == "dedicated_user" and (
