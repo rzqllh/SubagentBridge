@@ -2,7 +2,7 @@
 
 **Simpul** (formerly **SubagentBridge**) is a native-first Model Context Protocol (MCP) subagent supervisor for supervised development workflows. It targets Google Antigravity IDE and other compatible MCP stdio hosts. Its architecture separates orchestration, worker identities, policy gates, evidence and local model transport.
 
-> **Published:** [Simpul v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3) on 27 October 2026 (SHA `a47473edf4ff9ef9e59d2dd5f5d682941d0e1826`); GitHub Actions run 40452532343 SUCCESS. Bounded approval TTL hardening, not an enterprise identity or isolation certification.
+> **Releases:** see [GitHub Releases](https://github.com/rzqllh/SubagentBridge/releases) for the latest **published** version and verified artifacts. The source tree is preparing **v1.1.4** with supervised security hardening. It is **not** certified as a hostile-worker sandbox or independently authenticated enterprise operator approval system.
 
 ## What is implemented in Simpul
 
@@ -18,14 +18,14 @@
 
 **Execution Lifecycle:** `submit_goal(..., execute=True)` or `execute_run(run_id, commands=...)` executes the complete supervised PM → Developer → QA lifecycle. Under SIM-403 strict fail-closed enforcement, tasks without genuine execution commands cannot issue receipts or achieve `VERIFIED` status.
 
-**Unreleased development control:** optional Linux dedicated worker identity and scrubbed worker process environments are documented in [Worker Isolation](docs/WORKER_ISOLATION.md). Default workers still use the supervisor's OS identity, and E18 remains **BLOCKED**.
+**Experimental worker isolation control:** optional Linux dedicated worker identity and scrubbed worker process environments are documented in [Worker Isolation](docs/WORKER_ISOLATION.md). Default workers still use the supervisor's OS identity, and E18 remains **BLOCKED**.
 
 ## Safety and evidence status
 
 | Area | Current boundary |
 | --- | --- |
 | Autonomy | `AUTONOMY: OFF`; unattended privileged changes are prohibited |
-| Worker containment | Default remains same-user; an unreleased opt-in Linux dedicated-UID control is under test. **E18 remains BLOCKED** |
+| Worker containment | Default remains same-user; an opt-in Linux dedicated-UID control remains experimental and requires host acceptance. **E18 remains BLOCKED** |
 | Human decisions | D-03 `CHAT_APPROVAL`; an LLM is not an authenticated human approver |
 | Model transport | D-02 local literal IP loopback with verified Bearer token authentication |
 | Verification | 23 October Post-Release Corrective Audit: 330 passed, 4 skipped across Windows test discovery |
@@ -34,14 +34,14 @@
 
 See [project status](docs/SIMPUL_STATUS.md), [acceptance gates](docs/simpul/ACCEPTANCE_GATES.md), and [security limitations](docs/COMPATIBILITY_LIMITATIONS.md).
 
-## Quick start — v1.1.3
+## Quick start — v1.1.4 (after GitHub release succeeds)
 
 Requires Python 3.11–3.13 and Git. Example for PowerShell:
 
 ```powershell
 git clone https://github.com/rzqllh/SubagentBridge.git
 cd SubagentBridge
-git checkout v1.1.3
+git checkout v1.1.4
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"

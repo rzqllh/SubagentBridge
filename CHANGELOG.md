@@ -7,12 +7,28 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — worker privilege-boundary hardening candidate
+## [Unreleased] — v1.1.4 supervised security-hardening release
 
-- Explicit allowlist of worker environment variables excludes AI/cloud credentials and untrusted `PYTHONPATH` inheritance.
-- Optional Linux dedicated-worker UID/GID startup fails closed on missing privileges, mismatched identity or writable/symlinked runtime source. Windows dedicated identity is not implemented.
-- Negative tests cover inherited credential leakage, world-writable modules and symlinked code paths.
-- **E18 and production human identity remain BLOCKED**; these are partial supervised defenses, not enterprise signoff.
+This section is used as the release notes by the exact-main GitHub release workflow.
+**Scope: public supervised security hardening; NOT an enterprise-certified hostile-worker sandbox or authenticated production approval service.**
+
+### Security hardening
+- Merge PRs #30–#40: independently verifiable approval provenance candidate with fail-closed default when no trusted human verifier is configured, exact operator context binding and expired/replayed approval rejection.
+- Add opt-in `VerifiedOperatorApprovalAuthority` connecting externally verified operator decisions with real worker IPC ticket issuance and checkpoint recovery. The default local legacy authority is retained for compatibility and is NOT out-of-band human authentication.
+- Bind opt-in worker IPC operator proof to a domain-separated action-specific challenge including action ID, worker/session, task, command, canonical workspace, nonce, TTL and decision type. Migration treats legacy identity-only approved records as **not action-proof verified**.
+- Protect durable decisions and consumption across concurrent supervisor instances with atomic SQLite compare-and-swap, immutable terminal states and deterministic expiration regression coverage.
+- Optional Linux distinct worker UID/GID with stricter fail-closed configuration; explicitly reject same-user/Windows Job Object UI restrictions when a distinct OS security identity is demanded. No full Windows hostile worker sandbox is implemented.
+
+### Supply chain and verification
+- GitHub branch `main` now has an **active** ruleset requiring PRs, four matrix CI status checks, up-to-date branches, conversation resolution, and denying force-pushes/deletions.
+- Release pipeline checks exact `main` SHA and the four Ubuntu/Windows CI jobs, builds wheel/sdist, produces GitHub/Sigstore build attestations, verifies those attestations, and publishes checksums. A successful release run must still be independently checked after publication; no signed SBOM or host security certificate is claimed.
+- Add regression tests for SQLite migration/locking, parallel approval conflicts, action-specific proof, verified worker IPC, checkpoint recovery and strict OS-identity policy.
+
+### Known limitations — mandatory disclosure
+- **E18 / issue #21:** Hostile worker isolation on real Windows and Linux remains **BLOCKED**. Default worker processes share the supervisor OS identity.
+- **Issue #22:** Real WebAuthn/OIDC relying party, operator-enrollment/UI, out-of-band action proof and independent role/signature validation are **NOT IMPLEMENTED**; test-only HMAC is not human authentication.
+- **Issue #23:** Production restore/rollback, long-running chaos/soak, signed dependency SBOM and independent security review remain **PARTIAL**.
+- `AUTONOMY: OFF`; `GATE_MODE: CHAT_APPROVAL`. No autonomous privileged command execution or enterprise isolation claim.
 
 ## [1.1.3] - 2026-10-27
 
