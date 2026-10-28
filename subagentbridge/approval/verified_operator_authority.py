@@ -20,13 +20,10 @@ from subagentbridge.approval.operator_boundary import (
     IndependentOperatorApprovalBoundary,
     OperatorApprovalRequest,
 )
-from subagentbridge.approval.trusted_authority import (
-    TrustedApprovalAuthority,
-    compute_action_resource,
-)
+from subagentbridge.approval.trusted_authority import compute_action_resource
 
 
-class VerifiedOperatorApprovalAuthority(TrustedApprovalAuthority):
+class VerifiedOperatorApprovalAuthority:
     """Production-dispatch-compatible trusted operator approval adapter.
 
     Deliberately does not initialize the legacy in-process ApprovalBroker.
