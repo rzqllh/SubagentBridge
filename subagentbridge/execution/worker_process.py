@@ -113,6 +113,18 @@ def _is_reconfigure_ack(raw: str, request_id: str) -> bool:
     return isinstance(event, dict) and event.get("type") == "RECONFIGURED" and event.get("request_id") == request_id
 
 
+def _is_control_event(raw: str, event_type: str, worker_id: str) -> bool:
+    try:
+        event = json.loads(raw.strip())
+    except (ValueError, TypeError):
+        return False
+    return (
+        isinstance(event, dict)
+        and event.get("type") == event_type
+        and event.get("worker_id") == worker_id
+    )
+
+
 def kill_process_tree(pid: int, timeout: float = 2.0) -> None:
     """Recursively terminates and reaps child and grandchild processes safely on Windows and Linux."""
     if pid <= 0:
@@ -444,7 +456,10 @@ class WorkerProcessController:
         except OSError:
             return None
 
-        line = reader.readline(timeout=timeout)
+        line = reader.readline_matching(
+            lambda raw: _is_control_event(raw, "PONG", worker_id),
+            timeout=timeout,
+        )
         if not line:
             return None
 
@@ -619,9 +634,13 @@ class WorkerProcessController:
         except OSError:
             return False
 
-        # Read the INTERRUPTED event confirmation if available within deadline
+        # Read only this worker's interrupt ACK; preserve unrelated task
+        # results in the IPC queue for explicit reconciliation.
         if reader:
-            reader.readline(timeout=1.0)
+            reader.readline_matching(
+                lambda raw: _is_control_event(raw, "INTERRUPTED", worker_id),
+                timeout=1.0,
+            )
 
         record = self._records.get(worker_id)
         if record:
