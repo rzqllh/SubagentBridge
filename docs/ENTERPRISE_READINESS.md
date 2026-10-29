@@ -1,6 +1,25 @@
 # Enterprise-readiness evidence and release gates
 
-**Status:** NOT ENTERPRISE-CERTIFIED (28 October 2026).
+**Status:** NOT ENTERPRISE-CERTIFIED / ENTERPRISE RELEASE BLOCKED (29 October 2026).
+
+## Current post-v1.1.4 source qualification (not a published release)
+
+The latest published public version is **v1.1.4**. Later protected-main
+changes PRs **#65–#68** add truthful 9Router harness fail-closed behavior,
+correlated worker IPC and safe switching, bounded worker batch registration,
+atomic queue steering, and immutable Lead/Worker metadata registration. Each
+PR passed four Ubuntu/Windows Python 3.11/3.13 CI jobs before merge.
+Check the **new exact-main** push CI independently after every merge; a green
+PR alone is not proof that a new package has been released.
+
+None of these patches implements a production independently authenticated
+operator UI/IdP (#22), a supported hostile-worker OS sandbox (#21), or
+complete operational/SBOM/soak/restore evidence (#23). A source-candidate
+hardening PR is not `ENTERPRISE_READY`. Branch protection is enabled, but
+independent reviewer approval and real-host negative tests remain release
+requirements. See
+[Release decision packet](simpul/ENTERPRISE_RELEASE_DECISION_20261029.md).
+
 The **[published v1.1.4 supervised security release](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4)** contains merged PRs #30–#41.
 The active `main` ruleset requires pull requests and four Windows/Linux checks.
 [Exact-main CI](https://github.com/rzqllh/SubagentBridge/actions/runs/40622640492)
