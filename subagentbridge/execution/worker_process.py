@@ -207,6 +207,7 @@ class WorkerProcessController:
         # Async dispatch is considered outstanding until externally reconciled.
         # Never allow a live harness switch to race an unconsumed task result.
         self._busy_workers: set[str] = set()
+        self._busy_task_ids: dict[str, str] = {}
 
     def spawn_worker(
         self,
@@ -215,6 +216,9 @@ class WorkerProcessController:
         branch_name: str | None = None,
     ) -> WorkerProcessRecord:
         """Spawns a real child OS process running worker_runtime_entrypoint."""
+        prior = self._processes.get(config.worker_id)
+        if prior is not None and prior.poll() is None:
+            raise RuntimeError("Worker ID already owns a live process")
         worktree_path = worktree_path or config.working_dir
         session_secret = token_hex(32)
         cmd = [
@@ -387,7 +391,9 @@ class WorkerProcessController:
             updated_at=now,
         )
         self.store.save_session(session)
-
+        # A new IPC process cannot inherit an exited predecessor's busy claim.
+        self._busy_workers.discard(config.worker_id)
+        self._busy_task_ids.pop(config.worker_id, None)
         return record
 
     def has_attached_worker_ipc(self, worker_id: str) -> bool:
@@ -409,7 +415,7 @@ class WorkerProcessController:
             WorkerStatus.FAILED, WorkerStatus.ARCHIVED,
         ):
             return False
-        return self.has_attached_worker_ipc(worker_id)
+        return self.has_attached_worker_ipc(worker_id) and worker_id not in self._busy_workers
 
     def is_worker_alive(self, worker_id: str) -> bool:
         proc = self._processes.get(worker_id)
@@ -526,11 +532,13 @@ class WorkerProcessController:
             payload["workspace_path"] = ws
 
         self._busy_workers.add(worker_id)
+        self._busy_task_ids[worker_id] = task_id
         try:
             proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
             proc.stdin.flush()
         except OSError as exc:
             self._busy_workers.discard(worker_id)
+            self._busy_task_ids.pop(worker_id, None)
             return {"status": "ERROR", "error": f"IPC pipe write failed: {exc}"}
 
         line = reader.readline_matching(
@@ -541,6 +549,7 @@ class WorkerProcessController:
         # on this controller until the result is explicitly reconciled.
         if line is not None:
             self._busy_workers.discard(worker_id)
+            self._busy_task_ids.pop(worker_id, None)
         if line is None:
             return {
                 "status": "TIMEOUT",
@@ -615,12 +624,56 @@ class WorkerProcessController:
             payload["workspace_path"] = ws
 
         self._busy_workers.add(worker_id)
+        self._busy_task_ids[worker_id] = task_id
         try:
             proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
             proc.stdin.flush()
         except OSError:
             self._busy_workers.discard(worker_id)
+            self._busy_task_ids.pop(worker_id, None)
             raise
+
+    def collect_async_result(
+        self,
+        worker_id: str,
+        task_id: str,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        """Explicitly reconcile a pending async or timed-out task by exact ID.
+
+        A timeout retains its busy claim: unknown external effects must not be
+        replayed or followed by an unrelated task without reconciliation.
+        """
+        if self._busy_task_ids.get(worker_id) != task_id:
+            raise ValueError("No outstanding IPC task with this worker/task identity")
+        reader = self._readers.get(worker_id)
+        if reader is None or not self.has_attached_worker_ipc(worker_id):
+            return {"status": "RECOVERY_BLOCKED", "task_id": task_id,
+                    "reason": "Worker IPC detached; operator reconciliation required"}
+        line = reader.readline_matching(
+            lambda raw: _is_task_result(raw, task_id), timeout=timeout,
+        )
+        if line is None:
+            return {"status": "TIMEOUT", "task_id": task_id,
+                    "reason": "Worker task outcome is still ambiguous"}
+        result = json.loads(line.strip())
+        if not isinstance(result, dict):
+            raise RuntimeError("Invalid worker result envelope")
+        self._busy_workers.discard(worker_id)
+        self._busy_task_ids.pop(worker_id, None)
+        if "tokens_consumed" in result:
+            record = self._records.get(worker_id)
+            if record:
+                record.tokens_consumed = int(result["tokens_consumed"])
+            session = self.store.load_session(worker_id)
+            if session:
+                from dataclasses import replace as dataclass_replace
+                session.config = dataclass_replace(
+                    session.config, tokens_consumed=int(result["tokens_consumed"]),
+                )
+                session.updated_at = time.time()
+                self.store.save_session(session)
+        return result
 
     def interrupt_worker(self, worker_id: str, task_id: str = "") -> bool:
         proc = self._processes.get(worker_id)
@@ -829,6 +882,8 @@ class WorkerProcessController:
 
         self._processes.pop(worker_id, None)
         self._readers.pop(worker_id, None)
+        self._busy_workers.discard(worker_id)
+        self._busy_task_ids.pop(worker_id, None)
         job_handle = self._job_handles.pop(worker_id, None)
         if job_handle and sys.platform == "win32":
             try:
