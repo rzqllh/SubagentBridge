@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict
 import threading
 import time
 from pathlib import Path
@@ -744,6 +745,151 @@ class TeamStore:
                     session.updated_at,
                 ),
             )
+
+    def create_team_with_lead_once(
+        self, *, team_id: str, lead_session_id: str, title: str,
+    ) -> AgentTeam:
+        """Create a team and immutable lead identity in one SQLite transaction.
+
+        Repeating the exact same team registration is idempotent. A different
+        lead, title or already-owned session ID is never silently overwritten.
+        Caller-supplied IDs are NOT proof of independent user authentication.
+        """
+        if (
+            not isinstance(team_id, str) or not team_id.strip()
+            or len(team_id) > 128 or not isinstance(lead_session_id, str)
+            or not lead_session_id.strip() or len(lead_session_id) > 128
+            or not isinstance(title, str) or len(title) > 256
+        ):
+            raise ValueError("bounded nonempty team and lead identities required")
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self._conn.execute(
+                    "SELECT * FROM simpul_teams WHERE team_id = ?", (team_id,),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        existing["lead_session_id"] != lead_session_id
+                        or existing["title"] != title
+                    ):
+                        raise PermissionError("team registration cannot replace owner or title")
+                    lead = self._conn.execute(
+                        "SELECT role, team_id FROM simpul_sessions WHERE session_id = ?",
+                        (lead_session_id,),
+                    ).fetchone()
+                    if (
+                        lead is None or lead["role"] != AgentRole.LEAD.value
+                        or lead["team_id"] != team_id
+                    ):
+                        raise PermissionError("existing team has inconsistent lead identity")
+                    result = AgentTeam(
+                        team_id=team_id, lead_session_id=lead_session_id,
+                        title=title, created_at=existing["created_at"],
+                    )
+                    self._conn.execute("COMMIT")
+                    return result
+                if self._conn.execute(
+                    "SELECT 1 FROM simpul_sessions WHERE session_id = ?", (lead_session_id,),
+                ).fetchone() is not None:
+                    raise PermissionError("lead session identity already belongs to another team")
+                created = time.time()
+                self._conn.execute(
+                    """INSERT INTO simpul_teams (team_id, lead_session_id, title, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (team_id, lead_session_id, title, created),
+                )
+                cfg = WorkerConfig(worker_id=lead_session_id, team_id=team_id, role="lead")
+                self._conn.execute(
+                    """INSERT INTO simpul_sessions
+                       (session_id, role, team_id, status, config_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (lead_session_id, AgentRole.LEAD.value, team_id,
+                     WorkerStatus.IDLE.value, json.dumps(asdict(cfg)), created, created),
+                )
+                self._conn.execute("COMMIT")
+                return AgentTeam(
+                    team_id=team_id, lead_session_id=lead_session_id,
+                    title=title, created_at=created,
+                )
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+
+    def register_single_worker_once(
+        self,
+        *, team_id: str, config: WorkerConfig,
+        worktree_path: str | None = None, branch_name: str | None = None,
+    ) -> AgentSession:
+        """Insert one worker + optional worktree atomically, never upserting an ID.
+
+        Dedicated to the trusted TeamManager metadata API. It does not create
+        OS processes or authorize commands or impersonate an operator.
+        """
+        if (
+            not isinstance(config, WorkerConfig)
+            or not isinstance(team_id, str) or not team_id.strip()
+            or not isinstance(config.worker_id, str) or not config.worker_id.strip()
+            or len(config.worker_id) > 128 or config.team_id != team_id
+            or not isinstance(config.role, str) or not config.role.strip()
+            or config.role.lower() == "lead"
+        ):
+            raise ValueError("worker identity, role or team binding is invalid")
+        if config.pid is not None or config.process_create_time is not None:
+            raise PermissionError("metadata registration cannot adopt an unverified OS process")
+        if worktree_path is not None and (
+            not isinstance(worktree_path, str) or not worktree_path.strip()
+            or len(worktree_path) > 4096
+        ):
+            raise ValueError("bounded worktree path required")
+        if branch_name is not None and (
+            not isinstance(branch_name, str) or not branch_name.strip()
+            or len(branch_name) > 256
+        ):
+            raise ValueError("bounded branch name required")
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                team = self._conn.execute(
+                    "SELECT lead_session_id FROM simpul_teams WHERE team_id = ?",
+                    (team_id,),
+                ).fetchone()
+                if team is None:
+                    raise ValueError(f"team {team_id!r} not found")
+                if team["lead_session_id"] == config.worker_id:
+                    raise PermissionError("worker cannot replace the team lead identity")
+                if self._conn.execute(
+                    "SELECT 1 FROM simpul_sessions WHERE session_id = ?",
+                    (config.worker_id,),
+                ).fetchone() is not None:
+                    raise ValueError("worker identity already registered")
+                now = time.time()
+                self._conn.execute(
+                    """INSERT INTO simpul_sessions
+                       (session_id, role, team_id, status, config_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (config.worker_id, AgentRole.WORKER.value, team_id,
+                     WorkerStatus.IDLE.value, json.dumps(asdict(config)), now, now),
+                )
+                if worktree_path:
+                    self._conn.execute(
+                        """INSERT INTO simpul_worktrees
+                           (worker_id, team_id, worktree_path, branch_name, created_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (config.worker_id, team_id, worktree_path,
+                         branch_name or f"worker/{config.worker_id}", now),
+                    )
+                self._conn.execute("COMMIT")
+                return AgentSession(
+                    session_id=config.worker_id, role=AgentRole.WORKER,
+                    team_id=team_id, status=WorkerStatus.IDLE, config=config,
+                    created_at=now, updated_at=now,
+                )
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
 
     def register_worker_batch_once(
         self,
