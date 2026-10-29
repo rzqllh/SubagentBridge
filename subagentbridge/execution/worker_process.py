@@ -533,8 +533,15 @@ class WorkerProcessController:
             payload["execution_ticket"] = ticket
             payload["workspace_path"] = ws
 
-        self._busy_workers.add(worker_id)
-        self._busy_task_ids[worker_id] = task_id
+        with self._state_lock:
+            if worker_id in self._busy_workers or record.status in (
+                WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED, WorkerStatus.FAILED,
+                WorkerStatus.ARCHIVED,
+            ):
+                return {"status": "DENIED", "task_id": task_id,
+                        "reason": "Worker became busy or unavailable before task admission"}
+            self._busy_workers.add(worker_id)
+            self._busy_task_ids[worker_id] = task_id
         try:
             proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
             proc.stdin.flush()
@@ -548,10 +555,7 @@ class WorkerProcessController:
             timeout=timeout,
         )
         # On timeout execution may still be running; refuse later operations
-        # on this controller until the result is explicitly reconciled.
-        if line is not None:
-            self._busy_workers.discard(worker_id)
-            self._busy_task_ids.pop(worker_id, None)
+        # until the exact outstanding task result is explicitly reconciled.
         if line is None:
             return {
                 "status": "TIMEOUT",
@@ -570,29 +574,34 @@ class WorkerProcessController:
 
         res: dict[str, Any] = res_raw
 
-        # Update metered token tracking
-        if "tokens_consumed" in res:
-            record.tokens_consumed = int(res["tokens_consumed"])
-            session = self.store.load_session(worker_id)
-            if session:
-                session.config = WorkerConfig(
-                    worker_id=session.config.worker_id,
-                    team_id=session.config.team_id,
-                    role=session.config.role,
-                    harness=session.config.harness,
-                    model=session.config.model,
-                    provider=session.config.provider,
-                    system_prompt=session.config.system_prompt,
-                    working_dir=session.config.working_dir,
-                    effort=session.config.effort,
-                    budget_tokens=session.config.budget_tokens,
-                    pid=session.config.pid,
-                    process_create_time=session.config.process_create_time,
-                    tokens_consumed=record.tokens_consumed,
-                    fallback_to_native=session.config.fallback_to_native,
-                )
-                session.updated_at = time.time()
-                self.store.save_session(session)
+        # Task admission remains held until token accounting is durably saved.
+        with self._state_lock:
+            # Update metered token tracking
+            if "tokens_consumed" in res:
+                record.tokens_consumed = int(res["tokens_consumed"])
+                session = self.store.load_session(worker_id)
+                if session:
+                    session.config = WorkerConfig(
+                        worker_id=session.config.worker_id,
+                        team_id=session.config.team_id,
+                        role=session.config.role,
+                        harness=session.config.harness,
+                        model=session.config.model,
+                        provider=session.config.provider,
+                        system_prompt=session.config.system_prompt,
+                        working_dir=session.config.working_dir,
+                        effort=session.config.effort,
+                        budget_tokens=session.config.budget_tokens,
+                        pid=session.config.pid,
+                        process_create_time=session.config.process_create_time,
+                        tokens_consumed=record.tokens_consumed,
+                        fallback_to_native=session.config.fallback_to_native,
+                    )
+                    session.updated_at = time.time()
+                    self.store.save_session(session)
+
+            self._busy_workers.discard(worker_id)
+            self._busy_task_ids.pop(worker_id, None)
 
         return res
 
