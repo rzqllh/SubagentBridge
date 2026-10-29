@@ -460,7 +460,14 @@ def main() -> int:
                     if "required_capabilities" in payload and payload["required_capabilities"]:
                         from subagentbridge.runners.harness_adapters import HarnessCapability
 
-                        req_caps = {HarnessCapability(c) for c in payload["required_capabilities"]}
+                        raw_caps = payload["required_capabilities"]
+                        if (
+                            not isinstance(raw_caps, list)
+                            or len(raw_caps) > len(HarnessCapability)
+                            or any(not isinstance(c, str) for c in raw_caps)
+                        ):
+                            raise ValueError("invalid capability set")
+                        req_caps = {HarnessCapability(c) for c in raw_caps}
                     res = adapter.execute(
                         task_id,
                         str(instruction),
@@ -481,6 +488,15 @@ def main() -> int:
                         "task_id": task_id,
                         "status": "UNSUPPORTED_HOST",
                         "error": str(exc),
+                        "timestamp": time.time(),
+                    })
+                    continue
+                except (ValueError, TypeError):
+                    send_event({
+                        "type": "RESULT",
+                        "task_id": task_id,
+                        "status": "DENIED",
+                        "error": "InvalidCapabilityOrExecutionConfig",
                         "timestamp": time.time(),
                     })
                     continue
