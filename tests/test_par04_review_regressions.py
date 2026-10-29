@@ -1,0 +1,128 @@
+"""PAR-04 review regressions: truthful router, IPC ownership and reconfigure safety."""
+from __future__ import annotations
+
+import io
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from subagentbridge.domain.team_contracts import WorkerConfig, WorkerStatus
+from subagentbridge.execution.worker_process import TimedStreamReader, WorkerProcessController
+from subagentbridge.runners.harness_adapters import get_harness_registry
+from subagentbridge.storage.team_store import TeamStore
+
+
+def test_ipc_control_ack_never_consumes_previous_task_result():
+    previous = json.dumps({"type": "RESULT", "task_id": "old", "status": "COMPLETED"}) + "\n"
+    confirmation = json.dumps({
+        "type": "RECONFIGURED", "request_id": "expected",
+        "worker_id": "worker", "fallback_to_native": True,
+    }) + "\n"
+    reader = TimedStreamReader(io.StringIO(previous + confirmation))
+    matching = reader.readline_matching(
+        lambda raw: json.loads(raw)["request_id"] == "expected"
+        if json.loads(raw).get("type") == "RECONFIGURED" else False,
+        timeout=1.0,
+    )
+    assert matching is not None
+    assert json.loads(matching)["type"] == "RECONFIGURED"
+    assert reader.readline(timeout=1.0) == previous
+    assert reader.readline(timeout=0.01) is None
+
+
+def test_unreachable_router_does_not_fabricate_completion_or_usage(monkeypatch):
+    monkeypatch.setenv("NINEROUTER_BASE_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("NINEROUTER_API_KEY", "test-not-a-live-router")
+    adapter = get_harness_registry().get("9router")
+    assert not adapter.get_capabilities().is_available
+    res = adapter.execute(
+        "r", "invent a success", WorkerConfig(worker_id="w", team_id="t", harness="9router"),
+    )
+    assert res["status"] == "UNSUPPORTED_HOST"
+    assert not any(field in res for field in ("metered_tokens", "evidence", "summary"))
+
+
+def test_interrupted_idle_worker_keeps_attached_pipes_and_can_resume():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with TeamStore(Path(tmp_dir) / "teams.db") as store:
+            controller = WorkerProcessController(store)
+            controller.spawn_worker(
+                WorkerConfig(worker_id="interrupted", team_id="team", harness="native"),
+                worktree_path=tmp_dir,
+            )
+            try:
+                assert controller.interrupt_worker("interrupted", task_id="unused")
+                assert controller.has_attached_worker_ipc("interrupted")
+                assert not controller.is_worker_dispatchable("interrupted")
+                assert controller.resume_worker("interrupted")
+                assert controller.is_worker_dispatchable("interrupted")
+            finally:
+                controller.terminate_worker("interrupted")
+
+
+def test_fallback_setting_is_preserved_by_live_switch_and_child():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with TeamStore(Path(tmp_dir) / "teams.db") as store:
+            controller = WorkerProcessController(store)
+            controller.spawn_worker(
+                WorkerConfig(
+                    worker_id="fallback", team_id="team", harness="native",
+                    fallback_to_native=True,
+                ), worktree_path=tmp_dir,
+            )
+            try:
+                assert controller.switch_worker_harness("fallback", "9router")
+                session = store.load_session("fallback")
+                assert session is not None and session.config.fallback_to_native is True
+                result = controller.dispatch_task_to_worker(
+                    "fallback", "fallback-test",
+                    {"instruction": "create_file:fallback.txt:real native fallback"},
+                    timeout=5.0,
+                )
+                assert result["status"] == "COMPLETED"
+                assert result["fallback_from"] == "9router"
+                assert (Path(tmp_dir) / "fallback.txt").read_text() == "real native fallback"
+            finally:
+                controller.terminate_worker("fallback")
+
+
+def test_unacknowledged_reconfigure_fails_closed_and_keeps_old_config():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with TeamStore(Path(tmp_dir) / "teams.db") as store:
+            controller = WorkerProcessController(store)
+            controller.spawn_worker(
+                WorkerConfig(worker_id="no-ack", team_id="team", harness="native"),
+                worktree_path=tmp_dir,
+            )
+            with patch.object(
+                controller._readers["no-ack"], "readline_matching", return_value=None,
+            ):
+                with pytest.raises(RuntimeError, match="No matching RECONFIGURED acknowledgement"):
+                    controller.switch_worker_harness("no-ack", "pi")
+            session = store.load_session("no-ack")
+            assert session is not None
+            assert session.config.harness == "native"
+            assert not controller.has_attached_worker_ipc("no-ack")
+
+
+def test_outstanding_async_result_prevents_harness_switch():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with TeamStore(Path(tmp_dir) / "teams.db") as store:
+            controller = WorkerProcessController(store)
+            controller.spawn_worker(
+                WorkerConfig(worker_id="busy", team_id="team", harness="native"),
+                worktree_path=tmp_dir,
+            )
+            try:
+                controller.send_task_async("busy", "slow", {
+                    "instruction": "echo on a disposable worker",
+                })
+                with pytest.raises(RuntimeError, match="outstanding"):
+                    controller.switch_worker_harness("busy", "pi")
+                session = store.load_session("busy")
+                assert session is not None and session.config.harness == "native"
+            finally:
+                controller.terminate_worker("busy")
