@@ -257,26 +257,24 @@ def test_05_local_9router_adapter_validation() -> None:
         assert caps_invalid.is_available is False
         assert "invalid" in caps_invalid.diagnostic.lower() or "loopback" in caps_invalid.diagnostic.lower()
 
-    # 3. Configured with valid literal loopback address -> available and executes
-    with patch.dict(os.environ, {"NINEROUTER_BASE_URL": "http://127.0.0.1:8080", "NINEROUTER_API_KEY": "sk-loopback-secret"}):
+    # 3. Syntactically valid loopback credentials do NOT imply authenticated
+    # router execution, no fake COMPLETED, metered_tokens or evidence.
+    with patch.dict(os.environ, {"NINEROUTER_BASE_URL": "http://127.0.0.1:1", "NINEROUTER_API_KEY": "sk-loopback-secret"}):
         caps_valid = nine.get_capabilities()
-        assert caps_valid.is_available is True
-        assert caps_valid.default_model == "openai/gpt-4o"
-
+        assert caps_valid.is_available is False
+        assert "not connected" in caps_valid.diagnostic.lower()
         res_valid = nine.execute(
             task_id="t-9r-exec",
             instruction="summarize text",
             config=WorkerConfig(
-                worker_id="w9",
-                team_id="t1",
-                harness="9router",
-                model="openai/gpt-4o",
-                provider="9router",
+                worker_id="w9", team_id="t1", harness="9router",
+                model="openai/gpt-4o", provider="9router",
             ),
         )
-        assert res_valid["status"] == "COMPLETED"
-        assert res_valid["evidence"]["harness"] == "9router"
-        assert res_valid["evidence"]["model"] == "openai/gpt-4o"
+        assert res_valid["status"] == "UNSUPPORTED_HOST"
+        assert "metered_tokens" not in res_valid
+        assert "summary" not in res_valid
+        assert "evidence" not in res_valid
 
 
 def test_06_safe_pause_switch_and_recovery() -> None:
