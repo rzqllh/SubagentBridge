@@ -1,4 +1,4 @@
-# Simpul v1.1.4 — MCP integration (Antigravity IDE first)
+# Simpul v1.1.4 : MCP integration (Antigravity IDE first)
 
 **Published release:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4). `subagentbridge` is the Python package, module and MCP server identifier. Its public product name is **Simpul**.
 

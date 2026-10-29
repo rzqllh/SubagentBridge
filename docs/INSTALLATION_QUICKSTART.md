@@ -1,10 +1,10 @@
-# Simpul — Installation and Quick Start
+# Simpul : Installation and Quick Start
 
 **Current published release:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4) (28 October 2026). The Python package and executable namespace remain `subagentbridge`.
 
 ## Requirements
 
-- Python **3.11–3.13**; CI exercises 3.11 and 3.13 on Windows and Linux. Python 3.12 is declared compatible but is not in the current four-job CI matrix.
+- Python **3.11-3.13**; CI exercises 3.11 and 3.13 on Windows and Linux. Python 3.12 is declared compatible but is not in the current four-job CI matrix.
 - Git, a compatible MCP stdio client, and permission to create a virtual environment.
 - A dedicated, least-privileged user and explicitly trusted workspace. **Do not** expose untrusted credentials or assume workers are OS-sandboxed.
 
@@ -62,7 +62,7 @@ python -m mypy --ignore-missing-imports --check-untyped-defs subagentbridge
 python -m bandit -q -r -ll subagentbridge
 ```
 
-The last three commands require development-only `ruff`, `mypy` and `bandit`; see [Release Readiness](simpul/RELEASE_READINESS.md) for pinned versions.
+The last three commands require development-only `ruff`, `mypy` and `bandit`; see [Release Readiness](public/PARITY_AND_ROADMAP.md) for pinned versions.
 
 ## Existing SQLite databases
 

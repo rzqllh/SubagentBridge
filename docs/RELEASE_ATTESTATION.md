@@ -1,4 +1,4 @@
-# Signed release provenance — candidate release gate
+# Signed release provenance : candidate release gate
 
 **Status:** candidate v1.1.4 release gate with active `main` ruleset
 and four required Windows/Linux CI checks (verified 28 October 2026).

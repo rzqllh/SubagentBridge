@@ -1,4 +1,4 @@
-# Simpul — v1.1.4 MCP API reference
+# Simpul : v1.1.4 MCP API reference
 
 **Current published release:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4), 28 October 2026. Source-of-truth for actual model-callable tools is the `@mcp.tool()` registration in `subagentbridge/server.py`. The public product name is **Simpul**; `subagentbridge` is intentionally preserved for MCP and Python compatibility.
 

@@ -1,7 +1,7 @@
 # Enterprise-readiness evidence and release gates
 
 **Status:** NOT ENTERPRISE-CERTIFIED (28 October 2026).
-The **[published v1.1.4 supervised security release](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4)** contains merged PRs #30–#41.
+The **[published v1.1.4 supervised security release](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4)** contains merged PRs #30-#41.
 The active `main` ruleset requires pull requests and four Windows/Linux checks.
 [Exact-main CI](https://github.com/rzqllh/SubagentBridge/actions/runs/40622640492)
 passed 4/4; the [release workflow](https://github.com/rzqllh/SubagentBridge/actions/runs/40623111287)

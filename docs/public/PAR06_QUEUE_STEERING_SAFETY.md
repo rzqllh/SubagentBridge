@@ -1,4 +1,4 @@
-# PAR-06 — Supervised queue steering and priority controls
+# PAR-06 : Supervised queue steering and priority controls
 
 Status: **CODE_PRESENT / CI_PENDING / HOST_E2E_BLOCKED**. Scope: protected-main candidate, not an enterprise authorization proof.
 

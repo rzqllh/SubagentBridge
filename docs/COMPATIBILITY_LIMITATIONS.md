@@ -1,4 +1,4 @@
-# Simpul v1.1.4 — Compatibility and limitations
+# Simpul v1.1.4 : Compatibility and limitations
 
 **Published:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4), 28 October 2026 · [main CI 4/4 PASS](https://github.com/rzqllh/SubagentBridge/actions/runs/40622640492). Public name: Simpul; technical distribution/module/MCP server: `subagentbridge`.
 

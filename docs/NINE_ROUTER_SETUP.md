@@ -1,4 +1,4 @@
-# Simpul — Local 9Router client (candidate)
+# Simpul : Local 9Router client (candidate)
 
 This guide describes `subagentbridge.models.nine_router` as implemented in the open PR #3 branch. It is **not** proof that 9Router account authentication or external provider routing works end-to-end.
 

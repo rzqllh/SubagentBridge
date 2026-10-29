@@ -1,4 +1,4 @@
-# Simpul v1.1.4 — Configuration reference
+# Simpul v1.1.4 : Configuration reference
 
 **Released:** [v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4). Product: Simpul; Python module/MCP server: `subagentbridge`. For **Antigravity IDE** connection use [Getting Started](public/GETTING_STARTED.md) and the IDE's `mcp_config.json`.
 

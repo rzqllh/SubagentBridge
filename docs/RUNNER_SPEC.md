@@ -1,4 +1,4 @@
-# Runner Spec — Adding a New Backend
+# Runner Spec : Adding a New Backend
 
 Every runner implements the `AgentRunner` interface (own implementation, same contract shape
 as the reviewed upstream design):
@@ -47,7 +47,7 @@ These do **not** call the vendor API directly from the runner class. Instead:
    the vendor's chat completion response and re-emits it on stdout, one JSON object per line,
    in a shape the runner's `parse_event` understands.
 3. `parse_event` in `GptRunner`/`DeepSeekRunner` is trivial because we control the wrapper's
-   output format — make it emit the canonical kinds directly, no translation needed.
+   output format : make it emit the canonical kinds directly, no translation needed.
 
 This isolates all HTTP/API/auth concerns in the wrapper layer, keeps `manager.py` and the
 subprocess execution model completely unaware of the difference between a real CLI and a

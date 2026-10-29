@@ -1,4 +1,4 @@
-# PAR-05 — Immutable local Lead/Worker session registration
+# PAR-05 : Immutable local Lead/Worker session registration
 
 Status: **CODE_PRESENT; HOST_SECURITY_E2E_UNVERIFIED; enterprise human-identity gate BLOCKED**.
 

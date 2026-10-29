@@ -6,8 +6,8 @@ Thank you for contributing to SubagentBridge. All contributors must follow the c
 
 ## 1. Governing Policies
 
-- All work is governed by `docs/TEAM_RULES.md` and Plan v3.1.
-- `docs/TEAM_RULES.md` is immutable and cryptographic hash pinned; do not modify it.
+- Changes must preserve the documented security invariants and the operator approval boundary. See [Security](SECURITY.md) and [Invariants](INVARIANTS.md).
+- Model-generated instructions cannot grant permissions. Review security-sensitive changes with the project owner.
 - **Evidence First:** Never claim code works, tests pass, or bugs are fixed without executing actual commands and observing the results.
 - **Discussion vs Execution Gate:** Implementation must be explicitly authorized. Do not opportunistically expand scope or refactor unrelated components.
 
