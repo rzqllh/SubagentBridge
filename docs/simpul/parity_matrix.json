@@ -51,7 +51,7 @@
         "simpul_implementation": {
           "source_file": "subagentbridge/domain/team_contracts.py",
           "symbol_or_path": "AgentRole, OrcaRole",
-          "notes": "Typed enum AgentRole.LEAD ('lead') and AgentRole.WORKER ('worker') with migration alias OrcaRole."
+          "notes": "Typed enum AgentRole.LEAD ('lead') and AgentRole.WORKER ('worker') with migration alias OrcaRole; end-to-end supervised PM, Developer, and QA lifecycle verified via tests/test_supervised_lifecycle_acceptance.py."
         },
         "test_evidence": {
           "test_file": "tests/test_c01_parity_foundation.py",
