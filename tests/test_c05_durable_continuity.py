@@ -142,10 +142,15 @@ def test_c05_crash_recovery_detects_dead_worker(store_and_service):
         worker_id="w-dead-1",
         team_id=team.team_id,
         role="coder",
-        pid=dead_pid,
-        process_create_time=1000.0,
     )
     worker = service.register_worker(cfg)
+    # Fault injection must bypass normal admission *only via the trusted test
+    # store*, not by allowing callers to register unverified OS PID identities.
+    from dataclasses import replace as dataclass_replace
+    worker.config = dataclass_replace(
+        worker.config, pid=dead_pid, process_create_time=1000.0,
+    )
+    store.save_session(worker)
     service.set_worker_status(worker.session_id, WorkerStatus.RUNNING)
 
     # Dispatch task to this worker
