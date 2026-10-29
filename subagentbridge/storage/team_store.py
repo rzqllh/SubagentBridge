@@ -1069,12 +1069,12 @@ class TeamStore:
                     "SELECT lead_session_id FROM simpul_teams WHERE team_id = ?",
                     (item.team_id,),
                 ).fetchone()
-                if (
-                    lead is None or lead["role"] != AgentRole.LEAD.value
-                    or lead["team_id"] != item.team_id
-                    or owner is None or owner["lead_session_id"] != lead_session_id
-                ):
-                    raise PermissionError("registered lead ownership is required")
+                if lead is None or lead["role"] != AgentRole.LEAD.value:
+                    raise PermissionError("Only lead session can steer tasks")
+                if lead["team_id"] != item.team_id:
+                    raise PermissionError("cross-team task steering not permitted")
+                if owner is None or owner["lead_session_id"] != lead_session_id:
+                    raise PermissionError("Only registered team lead can steer tasks")
                 if item.status not in (
                     QueueTaskStatus.PENDING, QueueTaskStatus.DISPATCHED,
                     QueueTaskStatus.RUNNING,
