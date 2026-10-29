@@ -4,6 +4,8 @@ from __future__ import annotations
 import io
 import json
 import tempfile
+from threading import Event
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -183,3 +185,44 @@ def test_invalid_capability_is_task_level_denial_not_worker_crash():
                 assert (Path(tmp_dir) / "after-denial.txt").read_text() == "alive"
             finally:
                 controller.terminate_worker("capabilities")
+
+
+def test_task_admission_serializes_with_reconfigure_and_preserves_usage():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with TeamStore(Path(tmp_dir) / "teams.db") as store:
+            controller = WorkerProcessController(store)
+            controller.spawn_worker(
+                WorkerConfig(worker_id="race", team_id="team", harness="native"),
+                worktree_path=tmp_dir,
+            )
+            reader = controller._readers["race"]
+            original_read = reader.readline_matching
+            switch_waiting = Event()
+            release_ack = Event()
+
+            def hold_reconfigure_ack(predicate, timeout=5.0):
+                if timeout == 2.0:
+                    switch_waiting.set()
+                    assert release_ack.wait(timeout=3.0)
+                return original_read(predicate, timeout=timeout)
+
+            try:
+                with patch.object(reader, "readline_matching", side_effect=hold_reconfigure_ack):
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        sw = pool.submit(controller.switch_worker_harness, "race", "pi")
+                        assert switch_waiting.wait(timeout=3.0)
+                        run = pool.submit(
+                            controller.dispatch_task_to_worker, "race", "race-task",
+                            {"instruction": "pi task after switch"}, 5.0,
+                        )
+                        release_ack.set()
+                        assert sw.result(timeout=6.0) is True
+                        result = run.result(timeout=8.0)
+                assert result["status"] == "COMPLETED", result
+                session = store.load_session("race")
+                assert session is not None and session.config.harness == "pi"
+                if "tokens_consumed" in result:
+                    assert session.config.tokens_consumed == result["tokens_consumed"]
+            finally:
+                release_ack.set()
+                controller.terminate_worker("race")
