@@ -95,6 +95,27 @@ class TeamManager:
 
         return session
 
+    def create_workers_batch(
+        self,
+        lead_session_id: str,
+        team_id: str,
+        configs: list[WorkerConfig],
+        *,
+        max_workers: int = 8,
+    ) -> list[AgentSession]:
+        """Trusted-in-process metadata registration only; no process spawning.
+
+        Explicit lead/team binding and worker quota are verified atomically by
+        TeamStore. Caller-supplied lead IDs are NOT independent authentication;
+        do not expose this method directly as an untrusted MCP tool.
+        """
+        return self.store.register_worker_batch_once(
+            team_id=team_id,
+            lead_session_id=lead_session_id,
+            configs=configs,
+            max_workers=max_workers,
+        )
+
     def get_session(self, session_id: str) -> AgentSession | None:
         return self.store.load_session(session_id)
 
