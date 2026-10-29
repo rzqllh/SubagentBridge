@@ -228,29 +228,25 @@ class TeamManager:
         dispatch_id: str,
         guidance: str | dict[str, Any],
     ) -> QueueItem:
-        lead = self.store.load_session(lead_session_id)
-        if not lead or lead.role != AgentRole.LEAD:
-            raise PermissionError(f"Only lead session can steer tasks: {lead_session_id!r}")
-        item = self.store.load_queue_item(dispatch_id)
-        if not item:
-            raise KeyError(f"queue item {dispatch_id!r} not found")
-        if lead.team_id != item.team_id:
-            raise PermissionError("cross-team task steering not permitted")
-        if item.status not in (
-            QueueTaskStatus.PENDING,
-            QueueTaskStatus.DISPATCHED,
-            QueueTaskStatus.RUNNING,
-        ):
-            raise ValueError(f"Cannot steer task in terminal status {item.status.value}")
+        """Atomically append lead-owned guidance without mutating task payload."""
+        return self.store.steer_queue_item_once(
+            lead_session_id=lead_session_id,
+            dispatch_id=dispatch_id,
+            guidance=guidance,
+        )
 
-        item.steering_instructions.append({
-            "guidance": guidance,
-            "steered_by": lead_session_id,
-            "timestamp": time.time(),
-        })
-        item.updated_at = time.time()
-        self.store.save_queue_item(item)
-        return item
+    def reprioritize_task(
+        self,
+        lead_session_id: str,
+        dispatch_id: str,
+        priority: int,
+    ) -> QueueItem:
+        """Reorder only pending tasks; already claimed tasks are immutable."""
+        return self.store.steer_queue_item_once(
+            lead_session_id=lead_session_id,
+            dispatch_id=dispatch_id,
+            priority=priority,
+        )
 
     def cancel_task(
         self,

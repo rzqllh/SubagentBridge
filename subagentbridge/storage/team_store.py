@@ -1012,6 +1012,100 @@ class TeamStore:
                     self._conn.execute("ROLLBACK")
                 raise
 
+    def steer_queue_item_once(
+        self,
+        *,
+        lead_session_id: str,
+        dispatch_id: str,
+        guidance: str | dict[str, Any] | None = None,
+        priority: int | None = None,
+    ) -> QueueItem:
+        """Atomically append operator guidance or reprioritize an active task.
+
+        This is a trusted in-process API, not an authenticated operator surface.
+        It never rewrites command payloads, approvals, or terminal task status.
+        BEGIN IMMEDIATE serializes cancellation, queue claim and other steering
+        calls across independent SQLite supervisors.
+        """
+        if guidance is None and priority is None:
+            raise ValueError("guidance or priority must be specified")
+        if priority is not None and (type(priority) is not int or not -100 <= priority <= 100):
+            raise ValueError("priority must be an integer from -100 to 100")
+        if guidance is not None:
+            if isinstance(guidance, str):
+                if not guidance.strip() or len(guidance) > 4096:
+                    raise ValueError("bounded nonempty guidance required")
+            elif isinstance(guidance, dict):
+                if not guidance or len(guidance) > 32 or any(
+                    k in guidance for k in (
+                        "command", "execution_ticket", "approved", "approver",
+                        "approval_action_id", "workspace_path", "payload",
+                    )
+                ):
+                    raise PermissionError("guidance cannot modify privileged execution context")
+                try:
+                    encoded = json.dumps(guidance)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("guidance must be JSON serializable") from exc
+                if len(encoded) > 4096:
+                    raise ValueError("guidance size limit exceeded")
+            else:
+                raise TypeError("guidance must be text or JSON-compatible mapping")
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM simpul_queue WHERE dispatch_id = ?", (dispatch_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(dispatch_id)
+                item = self._row_to_queue_item(row)
+                lead = self._conn.execute(
+                    "SELECT role, team_id FROM simpul_sessions WHERE session_id = ?",
+                    (lead_session_id,),
+                ).fetchone()
+                owner = self._conn.execute(
+                    "SELECT lead_session_id FROM simpul_teams WHERE team_id = ?",
+                    (item.team_id,),
+                ).fetchone()
+                if lead is None or lead["role"] != AgentRole.LEAD.value:
+                    raise PermissionError("Only lead session can steer tasks")
+                if lead["team_id"] != item.team_id:
+                    raise PermissionError("cross-team task steering not permitted")
+                if owner is None or owner["lead_session_id"] != lead_session_id:
+                    raise PermissionError("Only registered team lead can steer tasks")
+                if item.status not in (
+                    QueueTaskStatus.PENDING, QueueTaskStatus.DISPATCHED,
+                    QueueTaskStatus.RUNNING,
+                ):
+                    raise ValueError(f"Cannot steer task in terminal or nonactive status {item.status.value}")
+                if priority is not None and item.status != QueueTaskStatus.PENDING:
+                    raise ValueError("only pending tasks may be reprioritized")
+                if guidance is not None:
+                    item.steering_instructions.append({
+                        "guidance": guidance,
+                        "steered_by": lead_session_id,
+                        "timestamp": time.time(),
+                    })
+                if priority is not None:
+                    item.priority = priority
+                item.updated_at = time.time()
+                cur = self._conn.execute(
+                    """UPDATE simpul_queue SET steering_json = ?, priority = ?, updated_at = ?
+                       WHERE dispatch_id = ? AND status = ?""",
+                    (json.dumps(item.steering_instructions), item.priority,
+                     item.updated_at, dispatch_id, row["status"]),
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError("concurrent queue transition rejected")
+                self._conn.execute("COMMIT")
+                return item
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+
     def cancel_active_queue_item(self, dispatch_id: str, lead_session_id: str, reason: str) -> QueueItem:
         """Do not rewrite terminal completion, even if cancellation races handoff."""
         with self._lock:
