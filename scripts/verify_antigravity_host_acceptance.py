@@ -110,6 +110,12 @@ async def run_antigravity_host_verification(output_receipt_path: Path | None = N
                     t_id = t["task_id"]
                     ev_res = await session.call_tool("get_task_evidence", arguments={"run_id": run_id, "task_id": t_id})
                     ev_data = json.loads(_extract_text(ev_res.content[0]))
+                    if ev_data.get("status") != "VERIFIED" or not ev_data.get("verified", False):
+                        raise RuntimeError(f"Task {t_id} evidence verification failed: {ev_data}")
+                    if ev_data.get("evidence_ids") != t.get("evidence_ids"):
+                        raise RuntimeError(
+                            f"Task {t_id} evidence IDs mismatch: {ev_data.get('evidence_ids')} vs {t.get('evidence_ids')}"
+                        )
                     evidence_records.append(ev_data)
 
         print("[6/7] Testing session persistence across server process restart...")
@@ -123,18 +129,53 @@ async def run_antigravity_host_verification(output_receipt_path: Path | None = N
                 print("      Successfully re-read persisted run from disk database across server process restart.")
 
                 print("[7/7] Testing negative security constraints...")
-                # Negative test 1: Path traversal outside workspace
-                try:
-                    await session_2.call_tool(
-                        "submit_goal",
-                        arguments={
-                            "goal": "Malicious traversal attempt",
-                            "workspace_path": str(workspace / ".." / "escaped"),
-                            "execute": False,
-                        },
+                # Negative test 1: Invalid workspace path fails closed
+                bad_sub = await session_2.call_tool(
+                    "submit_goal",
+                    arguments={
+                        "goal": "Malicious path traversal attempt",
+                        "workspace_path": str(workspace / "non_existent_or_escaped_dir_999"),
+                        "execute": False,
+                    },
+                )
+                bad_run_id = json.loads(_extract_text(bad_sub.content[0]))["run_id"]
+                bad_exec = await session_2.call_tool("execute_run", arguments={"run_id": bad_run_id})
+                bad_exec_data = json.loads(_extract_text(bad_exec.content[0]))
+                if bad_exec_data.get("status") not in ("BLOCKED", "FAILED", "ERROR"):
+                    raise RuntimeError(
+                        f"Expected invalid workspace path to fail closed, got: {bad_exec_data.get('status')}"
                     )
-                except Exception as e:
-                    print(f"      Path traversal rejected as expected: {type(e).__name__}")
+                print("      Invalid workspace path rejected fail-closed as expected.")
+
+                # Negative test 2: Unauthorized privileged command blocked under CHAT_APPROVAL
+                unauth_sub = await session_2.call_tool(
+                    "submit_goal",
+                    arguments={
+                        "goal": "Unauthorized command rejection probe",
+                        "workspace_path": str(workspace),
+                        "execute": False,
+                    },
+                )
+                unauth_run_id = json.loads(_extract_text(unauth_sub.content[0]))["run_id"]
+                unauth_exec = await session_2.call_tool(
+                    "execute_run",
+                    arguments={
+                        "run_id": unauth_run_id,
+                        "commands": {
+                            "default": ["rm", "-rf", "/unauthorized/path"],
+                        },
+                    },
+                )
+                unauth_exec_data = json.loads(_extract_text(unauth_exec.content[0]))
+                if unauth_exec_data.get("status") != "BLOCKED":
+                    raise RuntimeError(
+                        f"Expected unauthorized command to be BLOCKED under CHAT_APPROVAL, got: {unauth_exec_data.get('status')}"
+                    )
+                if "chat_approval" not in unauth_exec_data.get("reason", "").lower():
+                    raise RuntimeError(
+                        f"Expected CHAT_APPROVAL gate reason, got: {unauth_exec_data.get('reason')}"
+                    )
+                print("      Unauthorized command blocked fail-closed under CHAT_APPROVAL as expected.")
 
         receipt = {
             "receipt_type": "ANTIGRAVITY_HOST_ACCEPTANCE",
@@ -151,7 +192,9 @@ async def run_antigravity_host_verification(output_receipt_path: Path | None = N
             "executed_run_id": run_id,
             "task_count": len(tasks),
             "evidence_count": len(evidence_records),
-            "verdict": "HOST_E2E_PASS",
+            "verdict": "HOST_STDIO_PROTOCOL_PASS",
+            "status_in_matrix": "INTEGRATED",
+            "live_ide_ui_gap": "Live IDE UI test in real packaged Antigravity build (Issue #45)",
             "receipt_hash": hashlib.sha256(f"{run_id}:{len(tasks)}:{client_info.name}".encode()).hexdigest(),
         }
 

@@ -1,6 +1,6 @@
 {
   "receipt_type": "ANTIGRAVITY_HOST_ACCEPTANCE",
-  "timestamp": "2026-10-29T00:47:20.785923+00:00",
+  "timestamp": "2026-10-29T01:05:03.506489+00:00",
   "host_platform": "win32",
   "python_version": "3.13.13",
   "client_info": {
@@ -31,9 +31,11 @@
     "submit_goal",
     "wait_for_idle"
   ],
-  "executed_run_id": "run_a1c0b21a8d7c",
+  "executed_run_id": "run_7c5ed2939562",
   "task_count": 3,
   "evidence_count": 3,
-  "verdict": "HOST_E2E_PASS",
-  "receipt_hash": "04480fdf139593a44d120da1519b312f1915b90a37a39f7f81c7ae75743f387c"
+  "verdict": "HOST_STDIO_PROTOCOL_PASS",
+  "status_in_matrix": "INTEGRATED",
+  "live_ide_ui_gap": "Live IDE UI test in real packaged Antigravity build (Issue #45)",
+  "receipt_hash": "6b8d3a80259447dfe283efd7b83a4b37852b6306ff744894790caa2ecb277a61"
 }
