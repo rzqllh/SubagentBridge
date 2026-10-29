@@ -18,11 +18,18 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from typing import Any
 import unittest
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.types import Implementation
+from mcp.types import Implementation, TextContent
+
+
+def _extract_text(content_item: Any) -> str:
+    if isinstance(content_item, TextContent):
+        return content_item.text
+    return str(getattr(content_item, "text", ""))
 
 
 class TestAntigravityHostAcceptance(unittest.IsolatedAsyncioTestCase):
@@ -123,18 +130,18 @@ class TestAntigravityHostAcceptance(unittest.IsolatedAsyncioTestCase):
                     },
                 )
                 self.assertTrue(len(sub_res.content) > 0)
-                sub_data = json.loads(sub_res.content[0].text)
+                sub_data = json.loads(_extract_text(sub_res.content[0]))
                 run_id = sub_data["run_id"]
                 self.assertEqual(sub_data["status"], "SUBMITTED")
 
                 # 4. Antigravity Host Run Execution
                 exec_res = await session.call_tool("execute_run", arguments={"run_id": run_id})
-                exec_data = json.loads(exec_res.content[0].text)
+                exec_data = json.loads(_extract_text(exec_res.content[0]))
                 self.assertEqual(exec_data["status"], "COMPLETED")
 
                 # 5. Antigravity Host Evidence Verification
                 tasks_res = await session.call_tool("list_tasks", arguments={"run_id": run_id})
-                tasks = [json.loads(c.text) for c in tasks_res.content]
+                tasks = [json.loads(_extract_text(c)) for c in tasks_res.content]
                 self.assertEqual(len(tasks), 3)
 
                 for task in tasks:
@@ -144,7 +151,7 @@ class TestAntigravityHostAcceptance(unittest.IsolatedAsyncioTestCase):
                         "get_task_evidence",
                         arguments={"run_id": run_id, "task_id": task_id},
                     )
-                    ev_data = json.loads(ev_res.content[0].text)
+                    ev_data = json.loads(_extract_text(ev_res.content[0]))
                     self.assertEqual(ev_data["status"], "VERIFIED")
                     self.assertTrue(ev_data["verified"])
                     self.assertEqual(ev_data["evidence_ids"], task["evidence_ids"])
@@ -158,10 +165,109 @@ class TestAntigravityHostAcceptance(unittest.IsolatedAsyncioTestCase):
                         "command": [sys.executable, "-c", "print('pm re-verified')"],
                     },
                 )
-                task_data = json.loads(task_res.content[0].text)
+                task_data = json.loads(_extract_text(task_res.content[0]))
                 self.assertEqual(task_data["status"], "VERIFIED")
                 self.assertEqual(task_data["task_id"], f"{run_id}_pm")
                 self.assertTrue(task_data["evidence"]["verified"])
+
+    async def test_03_antigravity_session_restart_and_state_recovery(self):
+        """Validate Antigravity session restart and persistence across independent MCP server processes."""
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "subagentbridge.server"],
+            env=self.host_env,
+        )
+        antigravity_client_info = Implementation(name="antigravity-ide", version="2.0.0")
+
+        # 1. First session: submit goal
+        async with stdio_client(params) as (read_1, write_1):
+            async with ClientSession(read_1, write_1, client_info=antigravity_client_info) as session_1:
+                await session_1.initialize()
+                sub_res = await session_1.call_tool(
+                    "submit_goal",
+                    arguments={
+                        "goal": "Session restart persistence check",
+                        "workspace_path": str(self.workspace),
+                        "execute": False,
+                    },
+                )
+                sub_data = json.loads(_extract_text(sub_res.content[0]))
+                run_id = sub_data["run_id"]
+                self.assertEqual(sub_data["status"], "SUBMITTED")
+
+        # 2. Second session: fresh server process reloads exact run state from persistent DB
+        async with stdio_client(params) as (read_2, write_2):
+            async with ClientSession(read_2, write_2, client_info=antigravity_client_info) as session_2:
+                await session_2.initialize()
+                get_res = await session_2.call_tool("get_run", arguments={"run_id": run_id})
+                run_data = json.loads(_extract_text(get_res.content[0]))
+                self.assertEqual(run_data["run_id"], run_id)
+                self.assertEqual(run_data["status"], "SUBMITTED")
+                self.assertEqual(run_data["goal"], "Session restart persistence check")
+
+    async def test_04_negative_workspace_path_traversal_and_escapes(self):
+        """Verify Antigravity MCP host rejects non-existent paths or path traversal outside workspace fail-closed."""
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "subagentbridge.server"],
+            env=self.host_env,
+        )
+        antigravity_client_info = Implementation(name="antigravity-ide", version="2.0.0")
+
+        async with stdio_client(params) as (read_s, write_s):
+            async with ClientSession(read_s, write_s, client_info=antigravity_client_info) as session:
+                await session.initialize()
+                traversal_path = str(self.workspace / "non_existent_or_escaped_dir_999")
+                sub_res = await session.call_tool(
+                    "submit_goal",
+                    arguments={
+                        "goal": "Malicious path traversal attempt",
+                        "workspace_path": traversal_path,
+                        "execute": False,
+                    },
+                )
+                run_id = json.loads(_extract_text(sub_res.content[0]))["run_id"]
+
+                # Attempting to execute in an invalid/non-existent workspace fails closed
+                exec_res = await session.call_tool("execute_run", arguments={"run_id": run_id})
+                exec_data = json.loads(_extract_text(exec_res.content[0]))
+                self.assertIn(exec_data["status"], ("BLOCKED", "FAILED", "ERROR"))
+
+    async def test_05_negative_disallowed_command_rejection(self):
+        """Verify arbitrary unauthorized command execution through MCP is refused without approval."""
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "subagentbridge.server"],
+            env=self.host_env,
+        )
+        antigravity_client_info = Implementation(name="antigravity-ide", version="2.0.0")
+
+        async with stdio_client(params) as (read_s, write_s):
+            async with ClientSession(read_s, write_s, client_info=antigravity_client_info) as session:
+                await session.initialize()
+                sub_res = await session.call_tool(
+                    "submit_goal",
+                    arguments={
+                        "goal": "Unapproved command rejection test",
+                        "workspace_path": str(self.workspace),
+                        "execute": False,
+                    },
+                )
+                run_id = json.loads(_extract_text(sub_res.content[0]))["run_id"]
+
+                # Executing run with unauthorized privileged commands fails closed under CHAT_APPROVAL
+                exec_res = await session.call_tool(
+                    "execute_run",
+                    arguments={
+                        "run_id": run_id,
+                        "commands": {
+                            "default": ["rm", "-rf", "/unauthorized/path"],
+                        },
+                    },
+                )
+                exec_data = json.loads(_extract_text(exec_res.content[0]))
+                self.assertEqual(exec_data["status"], "BLOCKED")
+                self.assertIn("requires human approval under chat_approval", exec_data.get("reason", "").lower())
 
 
 if __name__ == "__main__":

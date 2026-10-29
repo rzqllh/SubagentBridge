@@ -79,7 +79,7 @@ The following table reflects the 26 audited features across 6 functional categor
 
 | Feature ID | Feature Name | Upstream Source (SHA `b7e46bc` / `5beeefc`) | Simpul Source File | Status | Security Boundary |
 |---|---|---|---|---|---|
-| `PAR-FEAT-18` | Antigravity IDE Stdio MCP Server | Cindy `orcaTeamService.ts` | `subagentbridge/server.py` | `INTEGRATED` | Stdio MCP protocol; privileged execution requires human approval |
+| `PAR-FEAT-18` | Antigravity IDE Stdio MCP Server | Cindy `orcaTeamService.ts` | `subagentbridge/server.py` | `INTEGRATED` | Stdio MCP protocol verified; live packaged IDE UI test pending |
 | `PAR-FEAT-19` | Multi-Harness Capability Checking | Cindy `orcaTeamService.ts` | `subagentbridge/runners/harness_adapters.py` | `INTEGRATED` | Fine-grained capabilities; unsupported harness raises KeyError |
 | `PAR-FEAT-20` | Safe Model-Callable Team Tools | Cindy `orcaTeamService.ts` | `subagentbridge/server.py` | `INTEGRATED` | Inspection tools only; self-approval strictly unexposed |
 | `PAR-FEAT-21` | Progress Timeline & Observability | Cindy `orcaTeamService.ts` | `subagentbridge/storage/team_store.py` | `UNIT_TESTED` | Read-only event stream; no execution side effects |
