@@ -208,6 +208,8 @@ class WorkerProcessController:
         # Never allow a live harness switch to race an unconsumed task result.
         self._busy_workers: set[str] = set()
         self._busy_task_ids: dict[str, str] = {}
+        # One admission/commit lock prevents reconfigure racing a task claim.
+        self._state_lock = threading.RLock()
 
     def spawn_worker(
         self,
@@ -749,97 +751,98 @@ class WorkerProcessController:
         fallback_to_native: bool | None = None,
     ) -> bool:
         """Safely reconfigures harness, model, provider, and effort on an IDLE or PAUSED worker."""
-        record = self._records.get(worker_id)
-        if not record or not self.is_worker_alive(worker_id):
-            return False
-        if record.status not in (WorkerStatus.IDLE, WorkerStatus.PAUSED):
-            raise RuntimeError(f"Cannot switch harness on worker in {record.status.value} state")
-        if worker_id in self._busy_workers:
-            raise RuntimeError("Cannot switch harness while task response is still outstanding")
+        with self._state_lock:
+            record = self._records.get(worker_id)
+            if not record or not self.is_worker_alive(worker_id):
+                return False
+            if record.status not in (WorkerStatus.IDLE, WorkerStatus.PAUSED):
+                raise RuntimeError(f"Cannot switch harness on worker in {record.status.value} state")
+            if worker_id in self._busy_workers:
+                raise RuntimeError("Cannot switch harness while task response is still outstanding")
 
-        from subagentbridge.runners.harness_adapters import HarnessCapability, get_harness_registry
+            from subagentbridge.runners.harness_adapters import HarnessCapability, get_harness_registry
 
-        registry = get_harness_registry()
-        adapter = registry.get(new_harness)
-        caps = adapter.get_capabilities()
+            registry = get_harness_registry()
+            adapter = registry.get(new_harness)
+            caps = adapter.get_capabilities()
 
-        # Validate target model/provider/effort
-        if new_model and not adapter.validate_model(new_model):
-            raise ValueError(f"ModelNotSupported: harness {new_harness!r} does not support {new_model!r}")
-        if new_provider and not adapter.validate_provider(new_provider):
-            raise ValueError(f"ProviderNotSupported: harness {new_harness!r} does not support {new_provider!r}")
-        if new_effort and HarnessCapability.THINKING_BUDGET not in caps.supported_capabilities:
-            raise ValueError(f"CapabilityMismatch: harness {new_harness!r} does not support THINKING_BUDGET for effort={new_effort!r}")
+            # Validate target model/provider/effort
+            if new_model and not adapter.validate_model(new_model):
+                raise ValueError(f"ModelNotSupported: harness {new_harness!r} does not support {new_model!r}")
+            if new_provider and not adapter.validate_provider(new_provider):
+                raise ValueError(f"ProviderNotSupported: harness {new_harness!r} does not support {new_provider!r}")
+            if new_effort and HarnessCapability.THINKING_BUDGET not in caps.supported_capabilities:
+                raise ValueError(f"CapabilityMismatch: harness {new_harness!r} does not support THINKING_BUDGET for effort={new_effort!r}")
 
-        session = self.store.load_session(worker_id)
-        if session is None:
-            raise RuntimeError("Cannot reconfigure worker without durable session")
-        old_cfg = session.config
-        effective_fallback = (
-            fallback_to_native if fallback_to_native is not None else old_cfg.fallback_to_native
-        )
-
-        # Notify running child process over IPC if live
-        proc = self._processes.get(worker_id)
-        reader = self._readers.get(worker_id)
-        if proc and proc.poll() is None and proc.stdin:
-            reconfig_request_id = token_hex(16)
-            reconfig_msg = {
-                "command": "RECONFIGURE",
-                "request_id": reconfig_request_id,
-                "harness": new_harness,
-                "model": new_model or caps.default_model,
-                "provider": new_provider or caps.default_provider,
-                "effort": new_effort,
-                "fallback_to_native": effective_fallback,
-            }
-            try:
-                proc.stdin.write(json.dumps(reconfig_msg) + "\n")
-                proc.stdin.flush()
-                if reader is None:
-                    raise RuntimeError("Worker IPC reply stream is unavailable")
-                ack = reader.readline_matching(
-                    lambda raw: _is_reconfigure_ack(raw, reconfig_request_id),
-                    timeout=2.0,
-                )
-                if ack is None:
-                    raise RuntimeError("No matching RECONFIGURED acknowledgement")
-                ack_obj = json.loads(ack.strip())
-                if (
-                    ack_obj.get("worker_id") != worker_id
-                    or ack_obj.get("harness") != new_harness
-                    or ack_obj.get("fallback_to_native") is not effective_fallback
-                ):
-                    raise RuntimeError("Worker reconfiguration ACK payload mismatch")
-            except Exception as exc:
-                # The child may apply a delayed reconfiguration after timeout.
-                # Kill it rather than persisting a configuration it did not ACK.
-                self.terminate_worker(worker_id)
-                raise RuntimeError(f"Failed to confirm worker RECONFIGURE: {exc}") from exc
-
-        # Update persisted session config in store
-        if session:
-            updated_cfg = WorkerConfig(
-                worker_id=old_cfg.worker_id,
-                team_id=old_cfg.team_id,
-                role=old_cfg.role,
-                harness=new_harness,
-                model=new_model or (caps.default_model if new_harness != "native" else "native"),
-                provider=new_provider or (caps.default_provider if new_harness != "native" else "local"),
-                system_prompt=old_cfg.system_prompt,
-                working_dir=old_cfg.working_dir,
-                effort=new_effort,
-                budget_tokens=old_cfg.budget_tokens,
-                pid=old_cfg.pid,
-                process_create_time=old_cfg.process_create_time,
-                tokens_consumed=old_cfg.tokens_consumed,
-                fallback_to_native=effective_fallback,
+            session = self.store.load_session(worker_id)
+            if session is None:
+                raise RuntimeError("Cannot reconfigure worker without durable session")
+            old_cfg = session.config
+            effective_fallback = (
+                fallback_to_native if fallback_to_native is not None else old_cfg.fallback_to_native
             )
-            session.config = updated_cfg
-            session.updated_at = time.time()
-            self.store.save_session(session)
 
-        return True
+            # Notify running child process over IPC if live
+            proc = self._processes.get(worker_id)
+            reader = self._readers.get(worker_id)
+            if proc and proc.poll() is None and proc.stdin:
+                reconfig_request_id = token_hex(16)
+                reconfig_msg = {
+                    "command": "RECONFIGURE",
+                    "request_id": reconfig_request_id,
+                    "harness": new_harness,
+                    "model": new_model or caps.default_model,
+                    "provider": new_provider or caps.default_provider,
+                    "effort": new_effort,
+                    "fallback_to_native": effective_fallback,
+                }
+                try:
+                    proc.stdin.write(json.dumps(reconfig_msg) + "\n")
+                    proc.stdin.flush()
+                    if reader is None:
+                        raise RuntimeError("Worker IPC reply stream is unavailable")
+                    ack = reader.readline_matching(
+                        lambda raw: _is_reconfigure_ack(raw, reconfig_request_id),
+                        timeout=2.0,
+                    )
+                    if ack is None:
+                        raise RuntimeError("No matching RECONFIGURED acknowledgement")
+                    ack_obj = json.loads(ack.strip())
+                    if (
+                        ack_obj.get("worker_id") != worker_id
+                        or ack_obj.get("harness") != new_harness
+                        or ack_obj.get("fallback_to_native") is not effective_fallback
+                    ):
+                        raise RuntimeError("Worker reconfiguration ACK payload mismatch")
+                except Exception as exc:
+                    # The child may apply a delayed reconfiguration after timeout.
+                    # Kill it rather than persisting a configuration it did not ACK.
+                    self.terminate_worker(worker_id)
+                    raise RuntimeError(f"Failed to confirm worker RECONFIGURE: {exc}") from exc
+
+            # Update persisted session config in store
+            if session:
+                updated_cfg = WorkerConfig(
+                    worker_id=old_cfg.worker_id,
+                    team_id=old_cfg.team_id,
+                    role=old_cfg.role,
+                    harness=new_harness,
+                    model=new_model or (caps.default_model if new_harness != "native" else "native"),
+                    provider=new_provider or (caps.default_provider if new_harness != "native" else "local"),
+                    system_prompt=old_cfg.system_prompt,
+                    working_dir=old_cfg.working_dir,
+                    effort=new_effort,
+                    budget_tokens=old_cfg.budget_tokens,
+                    pid=old_cfg.pid,
+                    process_create_time=old_cfg.process_create_time,
+                    tokens_consumed=old_cfg.tokens_consumed,
+                    fallback_to_native=effective_fallback,
+                )
+                session.config = updated_cfg
+                session.updated_at = time.time()
+                self.store.save_session(session)
+
+            return True
 
     def terminate_worker(self, worker_id: str, timeout: float = 3.0) -> bool:
         proc = self._processes.get(worker_id)
