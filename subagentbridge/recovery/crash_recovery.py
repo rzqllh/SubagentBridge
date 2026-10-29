@@ -210,6 +210,11 @@ def resume_task_from_checkpoint(
             # because it is deliberately non-dispatchable. Outstanding IPC
             # effects remain ambiguous and require operator reconciliation.
             if not controller.resume_worker(worker_id):
+                # Release the durable CAS resume claim. Nothing was dispatched,
+                # so a later authenticated reconciliation can safely retry.
+                item.status = QueueTaskStatus.DISPATCHED
+                item.updated_at = time.time()
+                store.save_queue_item(item)
                 return {
                     "status": "RECOVERY_BLOCKED",
                     "dispatch_id": dispatch_id,
