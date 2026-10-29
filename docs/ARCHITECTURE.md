@@ -1,12 +1,4 @@
-> **Published update (27 Oct 2026):** [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) is released from merge SHA `a29f0d9` and passed a full CI matrix. Prior candidate and v1.0.0 references in this document are historical, not current status. E18 remains BLOCKED. See [release readiness](simpul/RELEASE_READINESS.md).
-
-## 27 October 2026 — C07 orchestration architecture candidate
-
-The earlier 23 October descriptions are historical. The open C00–C07 stack now implements native Python Lead/Worker sessions (`team_contracts`), SQLite WAL persistence (`team_store`), coordination (`team_manager`), independent OS worker subprocess IPC, capability-checked host routing, verified artifact handoffs, and bounded worktree/checkpoint recovery. Legacy `Orca*` symbols are compatibility shims. The host adapter matrix is not proof of full real-session end-to-end integration with each external host. For release gates and trust boundaries see [release readiness](simpul/RELEASE_READINESS.md). This candidate is not contained in the published `v1.0.0` tag.
-
-> **Simpul architecture candidate (23 October 2026):** This document describes module intentions and component boundaries in PR #3, not proof of a fully operating end-to-end MCP team. The current `server.submit_goal` path creates in-memory `SUBMITTED`/`PENDING` records without starting the coordinator; `build_production_system` currently returns `coordinator=None`. Some components are wired as libraries but not as live MCP dispatch. `AUTONOMY: OFF` and D-01 same-user limitations apply. See [actual MCP contract](API_REFERENCE.md) and [status](SIMPUL_STATUS.md).
-
-# SubagentBridge: Architecture Specification
+# Simpul architecture
 
 This document details the production architecture of SubagentBridge across its domain contracts, composition root, persistence layer, execution boundary, and verification gates.
 

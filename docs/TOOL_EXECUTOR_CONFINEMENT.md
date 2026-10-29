@@ -1,4 +1,4 @@
-# Simpul — Supervised execution and containment limits
+# Simpul : Supervised execution and containment limits
 
 The PR #3 candidate contains `SupervisedReadOnlyExecutor` and process-management utilities intended for bounded test/inspection workflows. **This is not a sandbox for arbitrary untrusted code.** D-01 is `RISK_ACCEPTED_SAME_IDENTITY`; `AUTONOMY: OFF`.
 

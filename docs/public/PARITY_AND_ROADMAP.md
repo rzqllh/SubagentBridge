@@ -1,6 +1,6 @@
-# Simpul — Antigravity-First Subagent Roadmap & Upstream Parity
+# Simpul : Antigravity-First Subagent Roadmap & Upstream Parity
 
-**Status: public v1.1.4, 29 October 2026.** This document serves as the human-readable architectural and parity reference. The machine-readable authoritative audit matrix is maintained in [`docs/simpul/parity_matrix.json`](../simpul/parity_matrix.json) and enforced by CI test [`tests/test_parity_matrix_truth.py`](../../tests/test_parity_matrix_truth.py).
+**Source capability reference, 29 October 2026.** The published release is v1.1.4; later source changes are not automatically included in that artifact. This document serves as the human-readable architectural and parity reference. The machine-readable authoritative audit matrix is maintained in [`docs/simpul/parity_matrix.json`](../simpul/parity_matrix.json) and enforced by CI test [`tests/test_parity_matrix_truth.py`](../../tests/test_parity_matrix_truth.py).
 
 ## Product Direction
 

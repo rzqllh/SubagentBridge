@@ -1,4 +1,4 @@
-# Verified operator approval to worker IPC — integration status
+# Verified operator approval to worker IPC : integration status
 
 **Enterprise acceptance: BLOCKED.** This module is only the connection between
 host-verified operator grants and worker IPC tickets. It does **not** include a

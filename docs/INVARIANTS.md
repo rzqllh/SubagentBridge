@@ -1,6 +1,6 @@
-# Security invariant catalogue — PR-00
+# Security invariant catalogue : PR-00
 
-**Authority:** human `docs/TEAM_RULES.md` and pinned Plan v3.1 §0B. **Status:** all invariants below are requirements, **not** assurances delivered by PR-00. `AUTONOMY: OFF`.
+These invariants define required behavior. Read [Security](SECURITY.md) for enforcement limits. Passing a test is not a security certification. `AUTONOMY: OFF`.
 
 | ID | Contract (must be proven with executable negative tests) | Planned gate / PR |
 |---|---|---|
@@ -19,7 +19,7 @@
 
 ## CI contract: red is visible
 
-`tests/test_invariants_contract.py` contains **twelve named expected failures**, one per invariant. They deliberately assert current missing interfaces or unsafe legacy behavior. An `expectedFailure` result is **not** a pass for that invariant even when the unit test process returns exit 0; it remains `UNVERIFIED`. `unexpected success` is a gate to investigate—never silently waive or relax an assertion. These scaffolding probes are **not** substitute for required executable adversarial tests.
+`tests/test_invariants_contract.py` contains **twelve named expected failures**, one per invariant. They deliberately assert current missing interfaces or unsafe legacy behavior. An `expectedFailure` result is **not** a pass for that invariant even when the unit test process returns exit 0; it remains `UNVERIFIED`. `unexpected success` is a gate to investigate:never silently waive or relax an assertion. These scaffolding probes are **not** substitute for required executable adversarial tests.
 
 When a PR implements one invariant, first prove negative tests using the actual execution boundary, receipts and independent verifier on the exact SHA, then update the test's expected-failure classification with explicit test ownership and human approval if test edits are required. PR-00 does not weaken any future acceptance criterion.
 

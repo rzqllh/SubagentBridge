@@ -1,10 +1,10 @@
 # Simpul release notes
 
-## Version 1.1.4 — published 28 October 2026
+## Version 1.1.4 : published 28 October 2026
 
 [GitHub Release v1.1.4](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.4) is published from exact main SHA `3be6e3b58c444ad7afcbff5ed42efa62b9cbbab2`. [Main CI 40622640492](https://github.com/rzqllh/SubagentBridge/actions/runs/40622640492) passed Ubuntu/Windows Python 3.11/3.13 (4/4). The [release workflow 40623111287](https://github.com/rzqllh/SubagentBridge/actions/runs/40623111287) rebuilt/tested the wheel + sdist, produced and verified signed build attestations, and published `SHA256SUMS.txt`.
 
-**Highlights (PR #30–#41):** separate candidate operator approval state with default-deny verifier injection, worker IPC integration when explicitly configured, cross-process SQLite decision and consumption CAS, action-specific proof challenge and migration denying older identity-only approval reuse; strict opt-in distinct OS identity policy; active protected `main` ruleset; pinned signed artifact provenance.
+**Highlights (PR #30-#41):** separate candidate operator approval state with default-deny verifier injection, worker IPC integration when explicitly configured, cross-process SQLite decision and consumption CAS, action-specific proof challenge and migration denying older identity-only approval reuse; strict opt-in distinct OS identity policy; active protected `main` ruleset; pinned signed artifact provenance.
 
 **What this release does NOT do:** offer an independent production WebAuthn/OIDC operator UI, a hostile-worker OS sandbox on Windows/Linux (E18), full Cindy/Orca feature parity, guaranteed native Antigravity IDE integration for every release, or exactly-once arbitrary external side effects. `AUTONOMY: OFF` and `GATE_MODE: CHAT_APPROVAL` remain mandatory. This is a **limited supervised security release**, not enterprise certification.
 
@@ -12,7 +12,7 @@
 
 ---
 
-## Version 1.1.3 — published 27 October 2026
+## Version 1.1.3 : published 27 October 2026
 
 [GitHub Release v1.1.3](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.3) was published from merged SHA `a47473edf4ff9ef9e59d2dd5f5d682941d0e1826`; [release workflow 40452532343](https://github.com/rzqllh/SubagentBridge/actions/runs/40452532343) succeeded and published wheel, source archive and `SHA256SUMS.txt`. PR #28 passed Ubuntu and Windows with Python 3.11 and 3.13 (4/4 CI PASS); merged source tree matched tested PR tree.
 
@@ -20,13 +20,13 @@
 
 **Limitations:** The local approval broker is not independently authenticated human identity; worker processes remain within the invoking OS identity (E18). v1.1.3 is *supervised hardening*, not certified hostile-worker isolation or multi-tenant enterprise GA.
 
-## Version 1.1.2 — published 27 October 2026
+## Version 1.1.2 : published 27 October 2026
 
 [GitHub Release v1.1.2](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.2) removed unauthenticated MCP `approve_command` and default-denied legacy calls (PR #25), retaining human-gated semantics.
 
 ---
 
-## Version 1.1.1 — published 27 October 2026
+## Version 1.1.1 : published 27 October 2026
 
 [GitHub Release v1.1.1](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.1) was published from commit `861f040dc12c33da681331e454ef41299f2dc70b` after PR #19 passed Ubuntu/Windows Python 3.11/3.13 (4/4 PASS). Git tree of merged `main` equals the tested PR head tree. Release workflow [40444832484](https://github.com/rzqllh/SubagentBridge/actions/runs/40444832484) re-ran QA, built wheel and source distribution, and published the SHA256 checksum manifest.
 
@@ -37,7 +37,7 @@
 ---
 
 
-## Version 1.1.0 — published 27 October 2026
+## Version 1.1.0 : published 27 October 2026
 
 [Simpul v1.1.0](https://github.com/rzqllh/SubagentBridge/releases/tag/v1.1.0) was published as a public non-prerelease from merge commit `a29f0d98957651e482fbae989a906bb09873f329`. The merged source tree matched the PR #16 commit tested on Ubuntu/Windows (Python 3.11/3.13); release workflow 40440851542 rechecked the exact merged SHA, built the wheel/sdist, and uploaded `SHA256SUMS.txt`.
 
