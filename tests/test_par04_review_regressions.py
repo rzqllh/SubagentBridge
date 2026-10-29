@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from subagentbridge.domain.team_contracts import WorkerConfig, WorkerStatus
+from subagentbridge.domain.team_contracts import WorkerConfig, WorkerStatus, QueueItem, QueueTaskStatus
+from subagentbridge.recovery.crash_recovery import resume_task_from_checkpoint
 from subagentbridge.execution.worker_process import TimedStreamReader, WorkerProcessController
 from subagentbridge.runners.harness_adapters import get_harness_registry
 from subagentbridge.storage.team_store import TeamStore
@@ -118,11 +119,67 @@ def test_outstanding_async_result_prevents_harness_switch():
             )
             try:
                 controller.send_task_async("busy", "slow", {
-                    "instruction": "echo on a disposable worker",
+                    "instruction": "create_file:async.txt:async receipt",
                 })
                 with pytest.raises(RuntimeError, match="outstanding"):
                     controller.switch_worker_harness("busy", "pi")
+                result = controller.collect_async_result("busy", "slow", timeout=5.0)
+                assert result["status"] == "COMPLETED"
+                assert (Path(tmp_dir) / "async.txt").read_text() == "async receipt"
+                assert controller.is_worker_dispatchable("busy")
+                assert controller.switch_worker_harness("busy", "pi")
                 session = store.load_session("busy")
-                assert session is not None and session.config.harness == "native"
+                assert session is not None and session.config.harness == "pi"
             finally:
                 controller.terminate_worker("busy")
+
+
+def test_recovery_blocked_attached_worker_does_not_poison_retry_claim():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with TeamStore(Path(tmp_dir) / "teams.db") as store:
+            item = QueueItem(
+                dispatch_id="retry-dispatch", team_id="team",
+                from_session_id="lead", to_session_id="worker",
+                task_id="task", payload={"instruction": "inspect"},
+            )
+            store.save_queue_item(item)
+            controller = WorkerProcessController(store)
+            with (
+                patch.object(controller, "is_worker_alive", return_value=True),
+                patch.object(controller, "has_attached_worker_ipc", return_value=True),
+                patch.object(controller, "is_worker_dispatchable", return_value=False),
+                patch.object(controller, "resume_worker", return_value=False),
+            ):
+                blocked = resume_task_from_checkpoint(
+                    "retry-dispatch", store=store, controller=controller,
+                )
+            assert blocked["status"] == "RECOVERY_BLOCKED"
+            assert store.load_queue_item("retry-dispatch").status == QueueTaskStatus.DISPATCHED
+            retried = store.mark_task_resuming("retry-dispatch")
+            assert retried.status == QueueTaskStatus.RUNNING
+
+
+def test_invalid_capability_is_task_level_denial_not_worker_crash():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with TeamStore(Path(tmp_dir) / "teams.db") as store:
+            controller = WorkerProcessController(store)
+            controller.spawn_worker(
+                WorkerConfig(worker_id="capabilities", team_id="team", harness="native"),
+                worktree_path=tmp_dir,
+            )
+            try:
+                invalid = controller.dispatch_task_to_worker(
+                    "capabilities", "bad-caps",
+                    {"instruction": "echo should not run",
+                     "required_capabilities": ["NOT_A_CAPABILITY"]},
+                )
+                assert invalid["status"] == "DENIED"
+                assert controller.has_attached_worker_ipc("capabilities")
+                valid = controller.dispatch_task_to_worker(
+                    "capabilities", "after-bad-caps",
+                    {"instruction": "create_file:after-denial.txt:alive"},
+                )
+                assert valid["status"] == "COMPLETED"
+                assert (Path(tmp_dir) / "after-denial.txt").read_text() == "alive"
+            finally:
+                controller.terminate_worker("capabilities")
