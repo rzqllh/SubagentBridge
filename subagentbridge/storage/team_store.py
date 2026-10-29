@@ -745,6 +745,116 @@ class TeamStore:
                 ),
             )
 
+    def register_worker_batch_once(
+        self,
+        *,
+        team_id: str,
+        lead_session_id: str,
+        configs: list[WorkerConfig],
+        max_workers: int = 8,
+    ) -> list[AgentSession]:
+        """Register a bounded worker roster in one cross-process SQLite transaction.
+
+        This is a trusted in-process metadata API, NOT permission to execute
+        workers. Reject duplicates, foreign lead identities and over-capacity
+        batches before inserting any row; never UPSERT an existing worker ID.
+        """
+        if not isinstance(team_id, str) or not team_id.strip():
+            raise ValueError("nonempty team ID required")
+        if not isinstance(lead_session_id, str) or not lead_session_id.strip():
+            raise ValueError("nonempty lead session ID required")
+        if not isinstance(configs, list) or not configs or len(configs) > 16:
+            raise ValueError("worker batch must contain between 1 and 16 configs")
+        if type(max_workers) is not int or not 1 <= max_workers <= 64:
+            raise ValueError("max_workers must be between 1 and 64")
+        worker_ids: list[str] = []
+        for config in configs:
+            if not isinstance(config, WorkerConfig):
+                raise TypeError("WorkerConfig required for each worker")
+            if (
+                not isinstance(config.worker_id, str) or not config.worker_id.strip()
+                or config.team_id != team_id
+                or config.worker_id == lead_session_id
+                or config.role not in ("worker", "pm", "developer", "qa", "specialist")
+            ):
+                raise ValueError("worker role, identity or team binding is invalid")
+            if config.pid is not None or config.process_create_time is not None:
+                raise PermissionError("batch metadata registration cannot adopt an unverified live process")
+            worker_ids.append(config.worker_id)
+        if len(set(worker_ids)) != len(worker_ids):
+            raise ValueError("duplicate worker ID within batch")
+
+        created: list[AgentSession] = []
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                team = self._conn.execute(
+                    "SELECT lead_session_id FROM simpul_teams WHERE team_id = ?",
+                    (team_id,),
+                ).fetchone()
+                if team is None or team["lead_session_id"] != lead_session_id:
+                    raise PermissionError("team lead binding is not valid")
+                lead = self._conn.execute(
+                    "SELECT role, team_id FROM simpul_sessions WHERE session_id = ?",
+                    (lead_session_id,),
+                ).fetchone()
+                if lead is None or lead["role"] != AgentRole.LEAD.value or lead["team_id"] != team_id:
+                    raise PermissionError("registered lead session is required")
+                used = self._conn.execute(
+                    """SELECT COUNT(*) FROM simpul_sessions
+                       WHERE team_id = ? AND role = ? AND status != ?""",
+                    (team_id, AgentRole.WORKER.value, WorkerStatus.ARCHIVED.value),
+                ).fetchone()[0]
+                if used + len(configs) > max_workers:
+                    raise ValueError("worker roster capacity exceeded")
+                for wid in worker_ids:
+                    if self._conn.execute(
+                        "SELECT 1 FROM simpul_sessions WHERE session_id = ?", (wid,),
+                    ).fetchone() is not None:
+                        raise ValueError("worker identity already registered")
+                now = time.time()
+                for config in configs:
+                    cfg = {
+                        "worker_id": config.worker_id,
+                        "team_id": config.team_id,
+                        "role": config.role,
+                        "harness": config.harness,
+                        "model": config.model,
+                        "provider": config.provider,
+                        "system_prompt": config.system_prompt,
+                        "working_dir": config.working_dir,
+                        "effort": config.effort,
+                        "budget_tokens": config.budget_tokens,
+                        "pid": None,
+                        "process_create_time": None,
+                        "tokens_consumed": config.tokens_consumed,
+                        "fallback_to_native": config.fallback_to_native,
+                    }
+                    self._conn.execute(
+                        """INSERT INTO simpul_sessions
+                           (session_id, role, team_id, status, config_json, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            config.worker_id, AgentRole.WORKER.value, team_id,
+                            WorkerStatus.IDLE.value, json.dumps(cfg), now, now,
+                        ),
+                    )
+                    created.append(AgentSession(
+                        session_id=config.worker_id,
+                        role=AgentRole.WORKER,
+                        team_id=team_id,
+                        status=WorkerStatus.IDLE,
+                        config=config,
+                        created_at=now,
+                        updated_at=now,
+                    ))
+                self._conn.execute("COMMIT")
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+        return created
+
     def load_session(self, session_id: str) -> AgentSession | None:
         with self._lock:
             cur = self._conn.execute("SELECT * FROM simpul_sessions WHERE session_id = ?", (session_id,))
