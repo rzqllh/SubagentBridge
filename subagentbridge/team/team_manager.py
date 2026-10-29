@@ -43,20 +43,9 @@ class TeamManager:
         title: str = "",
     ) -> AgentTeam:
         tid = team_id or f"team-{uuid.uuid4().hex[:8]}"
-        team = AgentTeam(team_id=tid, lead_session_id=lead_session_id, title=title)
-        self.store.save_team(team)
-
-        # Automatically initialize Lead session
-        lead_cfg = WorkerConfig(worker_id=lead_session_id, team_id=tid, role="lead")
-        lead_session = AgentSession(
-            session_id=lead_session_id,
-            role=AgentRole.LEAD,
-            team_id=tid,
-            status=WorkerStatus.IDLE,
-            config=lead_cfg,
+        return self.store.create_team_with_lead_once(
+            team_id=tid, lead_session_id=lead_session_id, title=title,
         )
-        self.store.save_session(lead_session)
-        return team
 
     def register_worker(self, config: WorkerConfig) -> AgentSession:
         return self.create_worker(config.team_id, config)
@@ -71,29 +60,11 @@ class TeamManager:
         worktree_path: str | None = None,
         branch_name: str | None = None,
     ) -> AgentSession:
-        team = self.store.load_team(team_id)
-        if not team:
-            raise ValueError(f"team {team_id!r} not found")
-
-        session = AgentSession(
-            session_id=config.worker_id,
-            role=AgentRole.WORKER,
-            team_id=team_id,
-            status=WorkerStatus.IDLE,
-            config=config,
+        """Trusted metadata registration with immutable worker/lead identity."""
+        return self.store.register_single_worker_once(
+            team_id=team_id, config=config,
+            worktree_path=worktree_path, branch_name=branch_name,
         )
-        self.store.save_session(session)
-
-        if worktree_path:
-            assignment = WorktreeAssignment(
-                worker_id=config.worker_id,
-                team_id=team_id,
-                worktree_path=worktree_path,
-                branch_name=branch_name or f"worker/{config.worker_id}",
-            )
-            self.store.save_worktree(assignment)
-
-        return session
 
     def create_workers_batch(
         self,
