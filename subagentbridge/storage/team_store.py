@@ -1079,7 +1079,7 @@ class TeamStore:
                     QueueTaskStatus.PENDING, QueueTaskStatus.DISPATCHED,
                     QueueTaskStatus.RUNNING,
                 ):
-                    raise ValueError(f"cannot modify queue item in {item.status.value}")
+                    raise ValueError(f"Cannot steer task in terminal or nonactive status {item.status.value}")
                 if priority is not None and item.status != QueueTaskStatus.PENDING:
                     raise ValueError("only pending tasks may be reprioritized")
                 if guidance is not None:
