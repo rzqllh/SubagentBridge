@@ -77,6 +77,7 @@ class TimedStreamReader:
         with self._consume_lock:
             try:
                 while True:
+                    line: str | None
                     if self._pending:
                         line = self._pending.popleft()
                     else:
@@ -710,9 +711,10 @@ class WorkerProcessController:
         proc = self._processes.get(worker_id)
         reader = self._readers.get(worker_id)
         if proc and proc.poll() is None and proc.stdin:
+            reconfig_request_id = token_hex(16)
             reconfig_msg = {
                 "command": "RECONFIGURE",
-                "request_id": token_hex(16),
+                "request_id": reconfig_request_id,
                 "harness": new_harness,
                 "model": new_model or caps.default_model,
                 "provider": new_provider or caps.default_provider,
@@ -725,7 +727,7 @@ class WorkerProcessController:
                 if reader is None:
                     raise RuntimeError("Worker IPC reply stream is unavailable")
                 ack = reader.readline_matching(
-                    lambda raw: _is_reconfigure_ack(raw, reconfig_msg["request_id"]),
+                    lambda raw: _is_reconfigure_ack(raw, reconfig_request_id),
                     timeout=2.0,
                 )
                 if ack is None:
