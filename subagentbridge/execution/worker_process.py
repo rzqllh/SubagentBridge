@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+from collections import deque
 import subprocess
 import sys
 import threading
@@ -42,6 +43,8 @@ class TimedStreamReader:
     def __init__(self, stream: IO[str]) -> None:
         self.stream = stream
         self.queue: queue.Queue[str | None] = queue.Queue()
+        self._pending: deque[str] = deque()
+        self._consume_lock = threading.RLock()
         self._thread = threading.Thread(target=self._reader, daemon=True)
         self._thread.start()
 
@@ -55,10 +58,58 @@ class TimedStreamReader:
             self.queue.put(None)
 
     def readline(self, timeout: float = 5.0) -> str | None:
-        try:
-            return self.queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+        with self._consume_lock:
+            if self._pending:
+                return self._pending.popleft()
+            try:
+                return self.queue.get(timeout=timeout)
+            except queue.Empty:
+                return None
+
+    def readline_matching(self, predicate: Any, timeout: float = 5.0) -> str | None:
+        """Match a specific IPC control event without discarding task results.
+
+        Reconfiguration ACKs must not be confused with late task responses.
+        Keep unmatched events in their original order for ordinary readers.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        unmatched: deque[str] = deque()
+        with self._consume_lock:
+            try:
+                while True:
+                    if self._pending:
+                        line = self._pending.popleft()
+                    else:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            return None
+                        try:
+                            line = self.queue.get(timeout=remaining)
+                        except queue.Empty:
+                            return None
+                    if line is None:
+                        return None
+                    if predicate(line):
+                        return line
+                    unmatched.append(line)
+            finally:
+                self._pending.extendleft(reversed(unmatched))
+
+
+def _is_task_result(raw: str, task_id: str) -> bool:
+    try:
+        event = json.loads(raw.strip())
+    except (ValueError, TypeError):
+        return False
+    return isinstance(event, dict) and event.get("type") == "RESULT" and event.get("task_id") == task_id
+
+
+def _is_reconfigure_ack(raw: str, request_id: str) -> bool:
+    try:
+        event = json.loads(raw.strip())
+    except (ValueError, TypeError):
+        return False
+    return isinstance(event, dict) and event.get("type") == "RECONFIGURED" and event.get("request_id") == request_id
 
 
 def kill_process_tree(pid: int, timeout: float = 2.0) -> None:
@@ -140,6 +191,9 @@ class WorkerProcessController:
         self._readers: dict[str, TimedStreamReader] = {}
         self._records: dict[str, WorkerProcessRecord] = {}
         self._job_handles: dict[str, Any] = {}
+        # Async dispatch is considered outstanding until externally reconciled.
+        # Never allow a live harness switch to race an unconsumed task result.
+        self._busy_workers: set[str] = set()
 
     def spawn_worker(
         self,
@@ -323,23 +377,26 @@ class WorkerProcessController:
 
         return record
 
-    def is_worker_dispatchable(self, worker_id: str) -> bool:
-        """Require owned live process, IPC streams, and active (non-paused/failed) status."""
+    def has_attached_worker_ipc(self, worker_id: str) -> bool:
+        """Physical IPC attachment, independent of PAUSED/INTERRUPTED status."""
         proc = self._processes.get(worker_id)
         reader = self._readers.get(worker_id)
         record = self._records.get(worker_id)
-        if record and record.status in (
-            WorkerStatus.PAUSED,
-            WorkerStatus.INTERRUPTED,
-            WorkerStatus.FAILED,
-            WorkerStatus.ARCHIVED,
-        ):
-            return False
         return bool(
             proc is not None and proc.poll() is None and proc.stdin is not None
             and not proc.stdin.closed and reader is not None and record is not None
             and is_process_identically_alive(proc.pid, record.create_time)
         )
+
+    def is_worker_dispatchable(self, worker_id: str) -> bool:
+        """An attached worker must also be scheduled to accept new tasks."""
+        record = self._records.get(worker_id)
+        if record and record.status in (
+            WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED,
+            WorkerStatus.FAILED, WorkerStatus.ARCHIVED,
+        ):
+            return False
+        return self.has_attached_worker_ipc(worker_id)
 
     def is_worker_alive(self, worker_id: str) -> bool:
         proc = self._processes.get(worker_id)
@@ -417,12 +474,12 @@ class WorkerProcessController:
         if not proc or proc.poll() is not None or proc.stdin is None or not reader or not record:
             return {"status": "ERROR", "error": f"worker {worker_id!r} not alive"}
 
-        if record.status == WorkerStatus.PAUSED:
+        if record.status in (WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED) or worker_id in self._busy_workers:
             return {
                 "status": "DENIED",
                 "task_id": task_id,
-                "error": f"WorkerPaused: worker {worker_id!r} is paused and cannot accept tasks",
-                "reason": "Worker is currently paused",
+                "error": f"WorkerNotDispatchable: worker {worker_id!r} is paused, interrupted or busy",
+                "reason": "Worker is paused, interrupted, or has an outstanding task",
                 "timestamp": time.time(),
             }
 
@@ -452,13 +509,22 @@ class WorkerProcessController:
             payload["execution_ticket"] = ticket
             payload["workspace_path"] = ws
 
+        self._busy_workers.add(worker_id)
         try:
             proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
             proc.stdin.flush()
         except OSError as exc:
+            self._busy_workers.discard(worker_id)
             return {"status": "ERROR", "error": f"IPC pipe write failed: {exc}"}
 
-        line = reader.readline(timeout=timeout)
+        line = reader.readline_matching(
+            lambda raw: _is_task_result(raw, task_id),
+            timeout=timeout,
+        )
+        # On timeout execution may still be running; refuse later operations
+        # on this controller until the result is explicitly reconciled.
+        if line is not None:
+            self._busy_workers.discard(worker_id)
         if line is None:
             return {
                 "status": "TIMEOUT",
@@ -509,8 +575,8 @@ class WorkerProcessController:
         if not proc or proc.poll() is not None or proc.stdin is None or not record:
             raise RuntimeError(f"worker {worker_id!r} not running")
 
-        if record.status == WorkerStatus.PAUSED:
-            raise RuntimeError(f"worker {worker_id!r} is paused")
+        if record.status in (WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED) or worker_id in self._busy_workers:
+            raise RuntimeError(f"worker {worker_id!r} is paused, interrupted or busy")
 
         # If command is present, attach ticket
         if "command" in payload:
@@ -532,8 +598,13 @@ class WorkerProcessController:
             payload["execution_ticket"] = ticket
             payload["workspace_path"] = ws
 
-        proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
-        proc.stdin.flush()
+        self._busy_workers.add(worker_id)
+        try:
+            proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
+            proc.stdin.flush()
+        except OSError:
+            self._busy_workers.discard(worker_id)
+            raise
 
     def interrupt_worker(self, worker_id: str, task_id: str = "") -> bool:
         proc = self._processes.get(worker_id)
@@ -583,7 +654,9 @@ class WorkerProcessController:
         record = self._records.get(worker_id)
         if not record or not self.is_worker_alive(worker_id):
             return False
-        if record.status != WorkerStatus.PAUSED:
+        if record.status not in (WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED):
+            return False
+        if worker_id in self._busy_workers:
             return False
         record.status = WorkerStatus.IDLE
         session = self.store.load_session(worker_id)
@@ -608,6 +681,8 @@ class WorkerProcessController:
             return False
         if record.status not in (WorkerStatus.IDLE, WorkerStatus.PAUSED):
             raise RuntimeError(f"Cannot switch harness on worker in {record.status.value} state")
+        if worker_id in self._busy_workers:
+            raise RuntimeError("Cannot switch harness while task response is still outstanding")
 
         from subagentbridge.runners.harness_adapters import HarnessCapability, get_harness_registry
 
@@ -623,35 +698,53 @@ class WorkerProcessController:
         if new_effort and HarnessCapability.THINKING_BUDGET not in caps.supported_capabilities:
             raise ValueError(f"CapabilityMismatch: harness {new_harness!r} does not support THINKING_BUDGET for effort={new_effort!r}")
 
+        session = self.store.load_session(worker_id)
+        if session is None:
+            raise RuntimeError("Cannot reconfigure worker without durable session")
+        old_cfg = session.config
+        effective_fallback = (
+            fallback_to_native if fallback_to_native is not None else old_cfg.fallback_to_native
+        )
+
         # Notify running child process over IPC if live
         proc = self._processes.get(worker_id)
         reader = self._readers.get(worker_id)
         if proc and proc.poll() is None and proc.stdin:
             reconfig_msg = {
                 "command": "RECONFIGURE",
+                "request_id": token_hex(16),
                 "harness": new_harness,
                 "model": new_model or caps.default_model,
                 "provider": new_provider or caps.default_provider,
                 "effort": new_effort,
-                "fallback_to_native": fallback_to_native if fallback_to_native is not None else False,
+                "fallback_to_native": effective_fallback,
             }
             try:
                 proc.stdin.write(json.dumps(reconfig_msg) + "\n")
                 proc.stdin.flush()
-                if reader:
-                    ack = reader.readline(timeout=2.0)
-                    if ack:
-                        ack_obj = json.loads(ack.strip())
-                        if ack_obj.get("type") != "RECONFIGURED":
-                            raise RuntimeError(f"Unexpected worker response to RECONFIGURE: {ack}")
+                if reader is None:
+                    raise RuntimeError("Worker IPC reply stream is unavailable")
+                ack = reader.readline_matching(
+                    lambda raw: _is_reconfigure_ack(raw, reconfig_msg["request_id"]),
+                    timeout=2.0,
+                )
+                if ack is None:
+                    raise RuntimeError("No matching RECONFIGURED acknowledgement")
+                ack_obj = json.loads(ack.strip())
+                if (
+                    ack_obj.get("worker_id") != worker_id
+                    or ack_obj.get("harness") != new_harness
+                    or ack_obj.get("fallback_to_native") is not effective_fallback
+                ):
+                    raise RuntimeError("Worker reconfiguration ACK payload mismatch")
             except Exception as exc:
-                raise RuntimeError(f"Failed to deliver RECONFIGURE command to worker process: {exc}") from exc
+                # The child may apply a delayed reconfiguration after timeout.
+                # Kill it rather than persisting a configuration it did not ACK.
+                self.terminate_worker(worker_id)
+                raise RuntimeError(f"Failed to confirm worker RECONFIGURE: {exc}") from exc
 
         # Update persisted session config in store
-        session = self.store.load_session(worker_id)
         if session:
-            old_cfg = session.config
-            effective_fallback = fallback_to_native if fallback_to_native is not None else old_cfg.fallback_to_native
             updated_cfg = WorkerConfig(
                 worker_id=old_cfg.worker_id,
                 team_id=old_cfg.team_id,
