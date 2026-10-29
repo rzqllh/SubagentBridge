@@ -916,6 +916,8 @@ class WorkerProcessController:
                 reaped.append(worker_id)
                 self._processes.pop(worker_id, None)
                 self._readers.pop(worker_id, None)
+                self._busy_workers.discard(worker_id)
+                self._busy_task_ids.pop(worker_id, None)
         return reaped
 
     def register_persisted_session(
