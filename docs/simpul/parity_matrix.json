@@ -499,24 +499,24 @@
         "feature_id": "PAR-FEAT-19",
         "name": "Multi-Harness Capability Checking",
         "category": "host_integration_and_mcp",
-        "target_behavior": "Truthful capability declaration across harnesses: native, antigravity, codex, claude_code, pi.",
+        "target_behavior": "Truthful capability declaration across harnesses (native, antigravity, codex, claude_code, pi, 9router), per-worker model/provider/effort validation, safe fallback_to_native, and dynamic lifecycle reconfigure.",
         "upstream_reference": {
           "repo": "cindy",
           "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
           "file_path": "src/services/orca/orcaTeamService.ts",
-          "notes": "Harness selection in Cindy."
+          "notes": "Harness and model selection in Cindy."
         },
         "simpul_implementation": {
           "source_file": "subagentbridge/runners/harness_adapters.py",
-          "symbol_or_path": "HarnessRegistry, HarnessCapability, AntigravityHarnessAdapter",
-          "notes": "Registry with fine-grained capabilities: local execution, tool calling, thinking budget, structured output."
+          "symbol_or_path": "HarnessRegistry, BaseHarnessAdapter, NativeHarness, AntigravityHarness, CodexHarness, ClaudeCodeHarness, PiHarness, NineRouterHarness, WorkerProcessController.switch_worker_harness",
+          "notes": "Registry with fine-grained capabilities: local execution, tool calling, thinking budget, structured output, per-worker model/provider validation without silent migration, and controlled native fallback."
         },
         "test_evidence": {
-          "test_file": "tests/test_c03_multi_harness.py",
-          "test_function": "test_c03_harness_capability_declarations"
+          "test_file": "tests/test_harness_adapters_acceptance.py",
+          "test_function": "test_01_installed_vs_absent_host_matrix"
         },
         "status": "INTEGRATED",
-        "security_boundary": "Declaring capability does not authorize unverified execution; unsupported harness raises KeyError.",
+        "security_boundary": "Declaring capability does not authorize unverified execution; unsupported models/providers and capability mismatches fail closed.",
         "missing_wiring": null,
         "not_adopted_rationale": null
       },

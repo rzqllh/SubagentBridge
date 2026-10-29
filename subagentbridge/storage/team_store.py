@@ -722,6 +722,7 @@ class TeamStore:
             "pid": session.config.pid,
             "process_create_time": session.config.process_create_time,
             "tokens_consumed": session.config.tokens_consumed,
+            "fallback_to_native": session.config.fallback_to_native,
         }
         with self._lock, self._conn:
             self._conn.execute(
@@ -780,6 +781,7 @@ class TeamStore:
             pid=raw_cfg.get("pid"),
             process_create_time=raw_cfg.get("process_create_time"),
             tokens_consumed=raw_cfg.get("tokens_consumed", 0),
+            fallback_to_native=raw_cfg.get("fallback_to_native", False),
         )
         keys = row.keys()
         raw_role = row["role"] if "role" in keys else row["orca_role"]

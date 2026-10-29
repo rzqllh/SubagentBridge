@@ -168,6 +168,14 @@ class WorkerProcessController:
             cmd.extend(["--tokens-consumed", str(config.tokens_consumed)])
         if config.harness:
             cmd.extend(["--harness", config.harness])
+        if config.model:
+            cmd.extend(["--model", config.model])
+        if config.provider:
+            cmd.extend(["--provider", config.provider])
+        if config.effort:
+            cmd.extend(["--effort", config.effort])
+        if config.fallback_to_native:
+            cmd.append("--fallback-to-native")
         if worktree_path:
             cmd.extend(["--worktree-path", worktree_path])
 
@@ -300,6 +308,7 @@ class WorkerProcessController:
             pid=child_pid,
             process_create_time=create_time,
             tokens_consumed=config.tokens_consumed,
+            fallback_to_native=config.fallback_to_native,
         )
         session = AgentSession(
             session_id=config.worker_id,
@@ -315,10 +324,17 @@ class WorkerProcessController:
         return record
 
     def is_worker_dispatchable(self, worker_id: str) -> bool:
-        """Require owned live process and IPC streams, not only an OS PID record."""
+        """Require owned live process, IPC streams, and active (non-paused/failed) status."""
         proc = self._processes.get(worker_id)
         reader = self._readers.get(worker_id)
         record = self._records.get(worker_id)
+        if record and record.status in (
+            WorkerStatus.PAUSED,
+            WorkerStatus.INTERRUPTED,
+            WorkerStatus.FAILED,
+            WorkerStatus.ARCHIVED,
+        ):
+            return False
         return bool(
             proc is not None and proc.poll() is None and proc.stdin is not None
             and not proc.stdin.closed and reader is not None and record is not None
@@ -401,6 +417,15 @@ class WorkerProcessController:
         if not proc or proc.poll() is not None or proc.stdin is None or not reader or not record:
             return {"status": "ERROR", "error": f"worker {worker_id!r} not alive"}
 
+        if record.status == WorkerStatus.PAUSED:
+            return {
+                "status": "DENIED",
+                "task_id": task_id,
+                "error": f"WorkerPaused: worker {worker_id!r} is paused and cannot accept tasks",
+                "reason": "Worker is currently paused",
+                "timestamp": time.time(),
+            }
+
         # Handle authorization binding if command is present
         if "command" in payload:
             cmd_val = payload["command"]
@@ -471,6 +496,7 @@ class WorkerProcessController:
                     pid=session.config.pid,
                     process_create_time=session.config.process_create_time,
                     tokens_consumed=record.tokens_consumed,
+                    fallback_to_native=session.config.fallback_to_native,
                 )
                 session.updated_at = time.time()
                 self.store.save_session(session)
@@ -482,6 +508,9 @@ class WorkerProcessController:
         record = self._records.get(worker_id)
         if not proc or proc.poll() is not None or proc.stdin is None or not record:
             raise RuntimeError(f"worker {worker_id!r} not running")
+
+        if record.status == WorkerStatus.PAUSED:
+            raise RuntimeError(f"worker {worker_id!r} is paused")
 
         # If command is present, attach ticket
         if "command" in payload:
@@ -529,6 +558,117 @@ class WorkerProcessController:
         session = self.store.load_session(worker_id)
         if session:
             session.status = WorkerStatus.INTERRUPTED
+            session.updated_at = time.time()
+            self.store.save_session(session)
+
+        return True
+
+    def pause_worker(self, worker_id: str) -> bool:
+        """Transitions worker to PAUSED status, rejecting subsequent task dispatches."""
+        record = self._records.get(worker_id)
+        if not record or not self.is_worker_alive(worker_id):
+            return False
+        if record.status not in (WorkerStatus.IDLE, WorkerStatus.RUNNING):
+            return False
+        record.status = WorkerStatus.PAUSED
+        session = self.store.load_session(worker_id)
+        if session:
+            session.status = WorkerStatus.PAUSED
+            session.updated_at = time.time()
+            self.store.save_session(session)
+        return True
+
+    def resume_worker(self, worker_id: str) -> bool:
+        """Restores a PAUSED worker to IDLE status so task dispatches can resume."""
+        record = self._records.get(worker_id)
+        if not record or not self.is_worker_alive(worker_id):
+            return False
+        if record.status != WorkerStatus.PAUSED:
+            return False
+        record.status = WorkerStatus.IDLE
+        session = self.store.load_session(worker_id)
+        if session:
+            session.status = WorkerStatus.IDLE
+            session.updated_at = time.time()
+            self.store.save_session(session)
+        return True
+
+    def switch_worker_harness(
+        self,
+        worker_id: str,
+        new_harness: str,
+        new_model: str | None = None,
+        new_provider: str | None = None,
+        new_effort: str | None = None,
+        fallback_to_native: bool | None = None,
+    ) -> bool:
+        """Safely reconfigures harness, model, provider, and effort on an IDLE or PAUSED worker."""
+        record = self._records.get(worker_id)
+        if not record or not self.is_worker_alive(worker_id):
+            return False
+        if record.status not in (WorkerStatus.IDLE, WorkerStatus.PAUSED):
+            raise RuntimeError(f"Cannot switch harness on worker in {record.status.value} state")
+
+        from subagentbridge.runners.harness_adapters import HarnessCapability, get_harness_registry
+
+        registry = get_harness_registry()
+        adapter = registry.get(new_harness)
+        caps = adapter.get_capabilities()
+
+        # Validate target model/provider/effort
+        if new_model and not adapter.validate_model(new_model):
+            raise ValueError(f"ModelNotSupported: harness {new_harness!r} does not support {new_model!r}")
+        if new_provider and not adapter.validate_provider(new_provider):
+            raise ValueError(f"ProviderNotSupported: harness {new_harness!r} does not support {new_provider!r}")
+        if new_effort and HarnessCapability.THINKING_BUDGET not in caps.supported_capabilities:
+            raise ValueError(f"CapabilityMismatch: harness {new_harness!r} does not support THINKING_BUDGET for effort={new_effort!r}")
+
+        # Notify running child process over IPC if live
+        proc = self._processes.get(worker_id)
+        reader = self._readers.get(worker_id)
+        if proc and proc.poll() is None and proc.stdin:
+            reconfig_msg = {
+                "command": "RECONFIGURE",
+                "harness": new_harness,
+                "model": new_model or caps.default_model,
+                "provider": new_provider or caps.default_provider,
+                "effort": new_effort,
+                "fallback_to_native": fallback_to_native if fallback_to_native is not None else False,
+            }
+            try:
+                proc.stdin.write(json.dumps(reconfig_msg) + "\n")
+                proc.stdin.flush()
+                if reader:
+                    ack = reader.readline(timeout=2.0)
+                    if ack:
+                        ack_obj = json.loads(ack.strip())
+                        if ack_obj.get("type") != "RECONFIGURED":
+                            raise RuntimeError(f"Unexpected worker response to RECONFIGURE: {ack}")
+            except Exception as exc:
+                raise RuntimeError(f"Failed to deliver RECONFIGURE command to worker process: {exc}") from exc
+
+        # Update persisted session config in store
+        session = self.store.load_session(worker_id)
+        if session:
+            old_cfg = session.config
+            effective_fallback = fallback_to_native if fallback_to_native is not None else old_cfg.fallback_to_native
+            updated_cfg = WorkerConfig(
+                worker_id=old_cfg.worker_id,
+                team_id=old_cfg.team_id,
+                role=old_cfg.role,
+                harness=new_harness,
+                model=new_model or (caps.default_model if new_harness != "native" else "native"),
+                provider=new_provider or (caps.default_provider if new_harness != "native" else "local"),
+                system_prompt=old_cfg.system_prompt,
+                working_dir=old_cfg.working_dir,
+                effort=new_effort,
+                budget_tokens=old_cfg.budget_tokens,
+                pid=old_cfg.pid,
+                process_create_time=old_cfg.process_create_time,
+                tokens_consumed=old_cfg.tokens_consumed,
+                fallback_to_native=effective_fallback,
+            )
+            session.config = updated_cfg
             session.updated_at = time.time()
             self.store.save_session(session)
 
@@ -643,6 +783,7 @@ class WorkerProcessController:
             pid=pid,
             process_create_time=create_time,
             tokens_consumed=config.tokens_consumed,
+            fallback_to_native=config.fallback_to_native,
         )
         session = AgentSession(
             session_id=worker_id,

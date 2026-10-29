@@ -77,6 +77,121 @@ class BaseHarnessAdapter(ABC):
             return False, f"CapabilityMismatch: harness {self.name!r} does not support [{missing_names}]"
         return True, "OK"
 
+    def validate_execution_config(
+        self,
+        config: WorkerConfig,
+        required_capabilities: set[HarnessCapability] | None = None,
+    ) -> tuple[bool, str, str]:
+        """Validates capability, model, provider, reasoning effort, and budget constraints.
+
+        Returns: (is_valid, status, error_reason)
+        """
+        caps = self.get_capabilities()
+        if not caps.is_available:
+            return False, "UNSUPPORTED_HOST", f"{self.name}Unavailable: {caps.diagnostic}"
+
+        ok, reason = self.validate_required_capabilities(required_capabilities)
+        if not ok:
+            return False, "DENIED", reason
+
+        if config.effort:
+            if HarnessCapability.THINKING_BUDGET not in caps.supported_capabilities:
+                return (
+                    False,
+                    "DENIED",
+                    f"CapabilityMismatch: harness {self.name!r} does not support THINKING_BUDGET required by effort={config.effort!r}",
+                )
+
+        if config.model and not self.validate_model(config.model):
+            return (
+                False,
+                "DENIED",
+                f"ModelNotSupported: harness {self.name!r} does not support model {config.model!r}. Supported models: {caps.supported_models}",
+            )
+
+        if config.provider and not self.validate_provider(config.provider):
+            return (
+                False,
+                "DENIED",
+                f"ProviderNotSupported: harness {self.name!r} does not support provider {config.provider!r}. Supported providers: {caps.supported_providers}",
+            )
+
+        if config.budget_tokens is not None and config.tokens_consumed >= config.budget_tokens:
+            return (
+                False,
+                "DENIED",
+                f"BudgetExceeded: worker token budget {config.budget_tokens} exhausted ({config.tokens_consumed} consumed)",
+            )
+
+        return True, "OK", ""
+
+    def _handle_unavailable_or_fallback(
+        self,
+        task_id: str,
+        instruction: str,
+        config: WorkerConfig,
+        workspace_path: str,
+        required_capabilities: set[HarnessCapability] | None,
+        timeout: float,
+        caps: HarnessCapabilities,
+    ) -> dict[str, Any]:
+        """Handles unavailable harness execution, checking explicit fallback_to_native permission."""
+        if config.fallback_to_native and self.name != "native":
+            native_adapter = get_harness_registry().get("native")
+            native_caps = native_adapter.get_capabilities()
+            req = required_capabilities or set()
+            missing = req - native_caps.supported_capabilities
+            if missing:
+                missing_str = ", ".join(m.value for m in sorted(missing, key=lambda x: x.value))
+                return {
+                    "type": "RESULT",
+                    "task_id": task_id,
+                    "status": "DENIED",
+                    "error": f"FallbackDenied: cannot fallback to native harness; missing capabilities [{missing_str}]",
+                    "timestamp": time.time(),
+                }
+            if config.effort and HarnessCapability.THINKING_BUDGET not in native_caps.supported_capabilities:
+                return {
+                    "type": "RESULT",
+                    "task_id": task_id,
+                    "status": "DENIED",
+                    "error": f"FallbackDenied: cannot fallback to native harness; thinking budget / reasoning effort={config.effort!r} not supported by native",
+                    "timestamp": time.time(),
+                }
+            native_cfg = WorkerConfig(
+                worker_id=config.worker_id,
+                team_id=config.team_id,
+                role=config.role,
+                harness="native",
+                model="native",
+                provider="local",
+                system_prompt=config.system_prompt,
+                working_dir=config.working_dir,
+                budget_tokens=config.budget_tokens,
+                tokens_consumed=config.tokens_consumed,
+                fallback_to_native=True,
+            )
+            res = native_adapter.execute(
+                task_id=task_id,
+                instruction=instruction,
+                config=native_cfg,
+                workspace_path=workspace_path,
+                required_capabilities=required_capabilities,
+                timeout=timeout,
+            )
+            res["fallback_from"] = self.name
+            res["fallback_diagnostic"] = caps.diagnostic
+            return res
+
+        return {
+            "type": "RESULT",
+            "task_id": task_id,
+            "status": "UNSUPPORTED_HOST",
+            "error": f"{self.name}Unavailable: {caps.diagnostic}",
+            "diagnostic": caps.diagnostic,
+            "timestamp": time.time(),
+        }
+
     @abstractmethod
     def execute(
         self,
@@ -122,12 +237,12 @@ class NativeHarness(BaseHarnessAdapter):
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         start_time = time.time()
-        ok, reason = self.validate_required_capabilities(required_capabilities)
+        ok, status, reason = self.validate_execution_config(config, required_capabilities)
         if not ok:
             return {
                 "type": "RESULT",
                 "task_id": task_id,
-                "status": "DENIED",
+                "status": status,
                 "error": reason,
                 "timestamp": time.time(),
             }
@@ -213,21 +328,22 @@ class AntigravityHarness(BaseHarnessAdapter):
     ) -> dict[str, Any]:
         caps = self.get_capabilities()
         if not caps.is_available:
-            return {
-                "type": "RESULT",
-                "task_id": task_id,
-                "status": "UNSUPPORTED_HOST",
-                "error": "AntigravityHarnessUnavailable: host CLI or credentials missing",
-                "diagnostic": caps.diagnostic,
-                "timestamp": time.time(),
-            }
+            return self._handle_unavailable_or_fallback(
+                task_id=task_id,
+                instruction=instruction,
+                config=config,
+                workspace_path=workspace_path,
+                required_capabilities=required_capabilities,
+                timeout=timeout,
+                caps=caps,
+            )
 
-        ok, reason = self.validate_required_capabilities(required_capabilities)
+        ok, status, reason = self.validate_execution_config(config, required_capabilities)
         if not ok:
             return {
                 "type": "RESULT",
                 "task_id": task_id,
-                "status": "DENIED",
+                "status": status,
                 "error": reason,
                 "timestamp": time.time(),
             }
@@ -243,7 +359,11 @@ class AntigravityHarness(BaseHarnessAdapter):
             "summary": f"Antigravity harness executed: {instruction}",
             "metered_tokens": metered,
             "duration": duration,
-            "evidence": {"harness": self.name, "model": config.model or caps.default_model},
+            "evidence": {
+                "harness": self.name,
+                "model": config.model or caps.default_model,
+                "provider": config.provider or caps.default_provider,
+            },
             "timestamp": time.time(),
         }
 
@@ -295,21 +415,22 @@ class CodexHarness(BaseHarnessAdapter):
     ) -> dict[str, Any]:
         caps = self.get_capabilities()
         if not caps.is_available:
-            return {
-                "type": "RESULT",
-                "task_id": task_id,
-                "status": "UNSUPPORTED_HOST",
-                "error": "CodexHarnessUnavailable: host CLI or credentials missing",
-                "diagnostic": caps.diagnostic,
-                "timestamp": time.time(),
-            }
+            return self._handle_unavailable_or_fallback(
+                task_id=task_id,
+                instruction=instruction,
+                config=config,
+                workspace_path=workspace_path,
+                required_capabilities=required_capabilities,
+                timeout=timeout,
+                caps=caps,
+            )
 
-        ok, reason = self.validate_required_capabilities(required_capabilities)
+        ok, status, reason = self.validate_execution_config(config, required_capabilities)
         if not ok:
             return {
                 "type": "RESULT",
                 "task_id": task_id,
-                "status": "DENIED",
+                "status": status,
                 "error": reason,
                 "timestamp": time.time(),
             }
@@ -324,7 +445,11 @@ class CodexHarness(BaseHarnessAdapter):
             "summary": f"Codex harness executed: {instruction}",
             "metered_tokens": metered,
             "duration": duration,
-            "evidence": {"harness": self.name, "model": config.model or caps.default_model},
+            "evidence": {
+                "harness": self.name,
+                "model": config.model or caps.default_model,
+                "provider": config.provider or caps.default_provider,
+            },
             "timestamp": time.time(),
         }
 
@@ -374,21 +499,22 @@ class ClaudeCodeHarness(BaseHarnessAdapter):
     ) -> dict[str, Any]:
         caps = self.get_capabilities()
         if not caps.is_available:
-            return {
-                "type": "RESULT",
-                "task_id": task_id,
-                "status": "UNSUPPORTED_HOST",
-                "error": "ClaudeCodeHarnessUnavailable: host CLI or credentials missing",
-                "diagnostic": caps.diagnostic,
-                "timestamp": time.time(),
-            }
+            return self._handle_unavailable_or_fallback(
+                task_id=task_id,
+                instruction=instruction,
+                config=config,
+                workspace_path=workspace_path,
+                required_capabilities=required_capabilities,
+                timeout=timeout,
+                caps=caps,
+            )
 
-        ok, reason = self.validate_required_capabilities(required_capabilities)
+        ok, status, reason = self.validate_execution_config(config, required_capabilities)
         if not ok:
             return {
                 "type": "RESULT",
                 "task_id": task_id,
-                "status": "DENIED",
+                "status": status,
                 "error": reason,
                 "timestamp": time.time(),
             }
@@ -403,7 +529,11 @@ class ClaudeCodeHarness(BaseHarnessAdapter):
             "summary": f"Claude Code harness executed: {instruction}",
             "metered_tokens": metered,
             "duration": duration,
-            "evidence": {"harness": self.name, "model": config.model or caps.default_model},
+            "evidence": {
+                "harness": self.name,
+                "model": config.model or caps.default_model,
+                "provider": config.provider or caps.default_provider,
+            },
             "timestamp": time.time(),
         }
 
@@ -438,12 +568,13 @@ class PiHarness(BaseHarnessAdapter):
         required_capabilities: set[HarnessCapability] | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
-        ok, reason = self.validate_required_capabilities(required_capabilities)
+        caps = self.get_capabilities()
+        ok, status, reason = self.validate_execution_config(config, required_capabilities)
         if not ok:
             return {
                 "type": "RESULT",
                 "task_id": task_id,
-                "status": "DENIED",
+                "status": status,
                 "error": reason,
                 "timestamp": time.time(),
             }
@@ -458,7 +589,106 @@ class PiHarness(BaseHarnessAdapter):
             "summary": f"Pi harness executed: {instruction}",
             "metered_tokens": metered,
             "duration": duration,
-            "evidence": {"harness": self.name},
+            "evidence": {
+                "harness": self.name,
+                "model": config.model or caps.default_model,
+                "provider": config.provider or caps.default_provider,
+            },
+            "timestamp": time.time(),
+        }
+
+
+class NineRouterHarness(BaseHarnessAdapter):
+    """Local-only 9Router OpenAI-compatible API host adapter.
+
+    Enforces literal loopback endpoint validation, fail-closed offline safety,
+    and capability discovery. Never connects to remote endpoints.
+    """
+
+    name: str = "9router"
+
+    def get_capabilities(self) -> HarnessCapabilities:
+        base_url = os.environ.get("NINEROUTER_BASE_URL", "").strip()
+        api_key = os.environ.get("NINEROUTER_API_KEY", "").strip()
+        is_avail = False
+        diag = "Local 9Router not configured: NINEROUTER_BASE_URL (literal loopback) and NINEROUTER_API_KEY required"
+        if base_url and api_key:
+            try:
+                from subagentbridge.models.nine_router import LocalRouterConfig
+
+                LocalRouterConfig(base_url=base_url, api_key=api_key)
+                is_avail = True
+                diag = f"Local 9Router available at {base_url}"
+            except Exception as exc:
+                diag = f"Local 9Router configuration invalid: {exc}"
+
+        return HarnessCapabilities(
+            harness_name=self.name,
+            supported_capabilities={
+                HarnessCapability.STRUCTURED_OUTPUT,
+                HarnessCapability.THINKING_BUDGET,
+                HarnessCapability.TOOL_CALLING,
+                HarnessCapability.INTERRUPTIBLE,
+            },
+            supported_models=[
+                "openai/gpt-4o",
+                "openai/o3-mini",
+                "anthropic/claude-3-7-sonnet",
+                "google/gemini-2.5-pro",
+            ],
+            supported_providers=["9router", "openai", "anthropic", "google"],
+            default_model="openai/gpt-4o",
+            default_provider="9router",
+            is_available=is_avail,
+            diagnostic=diag,
+        )
+
+    def execute(
+        self,
+        task_id: str,
+        instruction: str,
+        config: WorkerConfig,
+        workspace_path: str = "",
+        required_capabilities: set[HarnessCapability] | None = None,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        caps = self.get_capabilities()
+        if not caps.is_available:
+            return self._handle_unavailable_or_fallback(
+                task_id=task_id,
+                instruction=instruction,
+                config=config,
+                workspace_path=workspace_path,
+                required_capabilities=required_capabilities,
+                timeout=timeout,
+                caps=caps,
+            )
+
+        ok, status, reason = self.validate_execution_config(config, required_capabilities)
+        if not ok:
+            return {
+                "type": "RESULT",
+                "task_id": task_id,
+                "status": status,
+                "error": reason,
+                "timestamp": time.time(),
+            }
+
+        start_time = time.time()
+        duration = time.time() - start_time
+        metered = max(1, len(instruction) // 4)
+        return {
+            "type": "RESULT",
+            "task_id": task_id,
+            "status": "COMPLETED",
+            "summary": f"9Router local harness executed: {instruction}",
+            "metered_tokens": metered,
+            "duration": duration,
+            "evidence": {
+                "harness": self.name,
+                "model": config.model or caps.default_model,
+                "provider": config.provider or caps.default_provider,
+            },
             "timestamp": time.time(),
         }
 
@@ -473,12 +703,15 @@ class HarnessRegistry:
         self.register(CodexHarness())
         self.register(ClaudeCodeHarness())
         self.register(PiHarness())
+        self.register(NineRouterHarness())
 
     def register(self, adapter: BaseHarnessAdapter) -> None:
         self._adapters[adapter.name.lower()] = adapter
 
     def get(self, name: str) -> BaseHarnessAdapter:
         slug = name.lower()
+        if slug in ("9router", "ninerouter"):
+            slug = "9router"
         if slug not in self._adapters:
             available = ", ".join(sorted(self._adapters.keys()))
             raise KeyError(f"Unsupported harness {name!r}. Available: [{available}]")

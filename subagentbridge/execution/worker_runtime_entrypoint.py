@@ -43,6 +43,10 @@ def main() -> int:
     parser.add_argument("--session-secret", default=None, help="Deprecated session secret argument")
     parser.add_argument("--worktree-path", default=None, help="Assigned worktree directory path")
     parser.add_argument("--harness", default="native", help="Configured worker harness adapter")
+    parser.add_argument("--model", default=None, help="Worker model name")
+    parser.add_argument("--provider", default=None, help="Worker provider name")
+    parser.add_argument("--effort", default=None, help="Reasoning effort level")
+    parser.add_argument("--fallback-to-native", action="store_true", default=False, help="Allow fallback to native")
     args = parser.parse_args()
 
     worker_id: str = args.worker_id
@@ -52,6 +56,10 @@ def main() -> int:
     session_secret: str = args.session_secret or os.environ.get("SIMPUL_WORKER_SECRET", "")
     worktree_path: str | None = args.worktree_path
     harness_name: str = args.harness
+    model_name: str | None = args.model
+    provider_name: str | None = args.provider
+    effort_level: str | None = args.effort
+    fallback_to_native: bool = bool(args.fallback_to_native)
 
     # Process identity metadata
     current_pid = os.getpid()
@@ -162,6 +170,27 @@ def main() -> int:
                 "type": "INTERRUPTED",
                 "worker_id": worker_id,
                 "task_id": task_id,
+                "timestamp": time.time(),
+            })
+
+        elif cmd == "RECONFIGURE":
+            if "harness" in msg and msg["harness"]:
+                harness_name = str(msg["harness"])
+            if "model" in msg:
+                model_name = msg.get("model")
+            if "provider" in msg:
+                provider_name = msg.get("provider")
+            if "effort" in msg:
+                effort_level = msg.get("effort")
+            if "fallback_to_native" in msg:
+                fallback_to_native = bool(msg.get("fallback_to_native"))
+            send_event({
+                "type": "RECONFIGURED",
+                "worker_id": worker_id,
+                "harness": harness_name,
+                "model": model_name,
+                "provider": provider_name,
+                "effort": effort_level,
                 "timestamp": time.time(),
             })
 
@@ -408,9 +437,35 @@ def main() -> int:
                 try:
                     registry = get_harness_registry()
                     adapter = registry.get(harness_name)
-                    cfg_obj = WorkerConfig(worker_id=worker_id, team_id=team_id, role=role, harness=harness_name)
+                    task_model = payload.get("model") or model_name
+                    task_provider = payload.get("provider") or provider_name
+                    task_effort = payload.get("effort") or effort_level
+                    task_fallback = payload.get("fallback_to_native", fallback_to_native)
+                    cfg_obj = WorkerConfig(
+                        worker_id=worker_id,
+                        team_id=team_id,
+                        role=role,
+                        harness=harness_name,
+                        model=task_model,
+                        provider=task_provider,
+                        effort=task_effort,
+                        budget_tokens=budget_tokens,
+                        tokens_consumed=total_tokens_consumed,
+                        fallback_to_native=task_fallback,
+                    )
                     eff_ws = payload.get("workspace_path") or worktree_path or ""
-                    res = adapter.execute(task_id, str(instruction), cfg_obj, workspace_path=eff_ws)
+                    req_caps = None
+                    if "required_capabilities" in payload and payload["required_capabilities"]:
+                        from subagentbridge.runners.harness_adapters import HarnessCapability
+
+                        req_caps = {HarnessCapability(c) for c in payload["required_capabilities"]}
+                    res = adapter.execute(
+                        task_id,
+                        str(instruction),
+                        cfg_obj,
+                        workspace_path=eff_ws,
+                        required_capabilities=req_caps,
+                    )
                     if "metered_tokens" in res:
                         total_tokens_consumed += int(res["metered_tokens"])
                         res["tokens_consumed"] = total_tokens_consumed
