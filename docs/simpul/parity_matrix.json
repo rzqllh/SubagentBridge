@@ -1,0 +1,702 @@
+{
+  "schema_version": "1.0.0",
+  "title": "SIMPUL Parity Matrix (Cindy Orca Team & Orca CLI)",
+  "generated_at": "2026-10-29T00:00:00Z",
+  "governance": {
+    "autonomy": "OFF",
+    "gate_mode": "CHAT_APPROVAL",
+    "host_target": "Google Antigravity IDE",
+    "ruleset_enforced": "SIMPUL - Protect main (Rule 26006115)"
+  },
+  "pinned_upstream": {
+    "cindy": {
+      "repository": "https://github.com/makecindy/cindy",
+      "pinned_sha": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+      "role": "Primary architectural reference for Lead/Worker sessions, queues, steering, handoffs, and worktrees",
+      "license": "Apache-2.0"
+    },
+    "orca_cli": {
+      "repository": "https://github.com/orca-cli/orca",
+      "pinned_sha": "5beeefcb57555962bb93facc54b5f82484731802",
+      "role": "Secondary inspiration for DAG, Pod, and CLI command structures; not a hard runtime dependency",
+      "license": "MIT"
+    },
+    "simpul_baseline": {
+      "repository": "https://github.com/rzqllh/SubagentBridge",
+      "baseline_commit": "ccac1d92efcc7cf3e40a3392978c30b8249a31bf",
+      "version": "v1.1.4"
+    }
+  },
+  "status_definitions": {
+    "CODE_PRESENT": "Contract or logic present in codebase, but lacks dedicated automated unit or integration verification.",
+    "UNIT_TESTED": "Verified by automated unit tests covering positive and negative logic branches.",
+    "INTEGRATED": "Wired into end-to-end multi-component execution flow (e.g., Coordinator + Process + Queue + Store).",
+    "HOST_E2E_PASS": "Proven through live, end-to-end execution on the actual host (Antigravity IDE / OS host).",
+    "BLOCKED": "Hard security or architectural blocker preventing production certification (e.g. E18 OS sandbox, #22 WebAuthn).",
+    "NOT_ADOPTED": "Intentionally excluded from scope with explicit rationale (e.g. desktop chat UI, mobile, remote SSH)."
+  },
+  "categories": {
+    "lead_worker_lifecycle_and_batch": [
+      {
+        "feature_id": "PAR-FEAT-01",
+        "name": "Lead and Worker Role Separation",
+        "category": "lead_worker_lifecycle_and_batch",
+        "target_behavior": "Distinct roles and identities for supervisor (Lead/PM) and executor (Worker/Dev) processes.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Defines role separation in sessions schema (sessions.role = 'lead' | 'worker')."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/domain/team_contracts.py",
+          "symbol_or_path": "AgentRole, OrcaRole",
+          "notes": "Typed enum AgentRole.LEAD ('lead') and AgentRole.WORKER ('worker') with migration alias OrcaRole."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c01_parity_foundation.py",
+          "test_function": "test_c01_role_and_session_contracts"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Subprocess identity separation; intra-process role confusion denied.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-02",
+        "name": "Worker Lifecycle State Machine",
+        "category": "lead_worker_lifecycle_and_batch",
+        "target_behavior": "Full worker lifecycle state machine: IDLE, RUNNING, PAUSED, INTERRUPTED, COMPLETED, FAILED, ARCHIVED.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Cindy defines 4 base states: 'idle', 'running', 'done', 'error'."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/domain/team_contracts.py",
+          "symbol_or_path": "WorkerStatus",
+          "notes": "Simpul extends Cindy's 4 states to 7 explicit lifecycle states with strict state transition validation."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c06_parity_acceptance.py",
+          "test_function": "test_c06_pinned_cindy_parity_contract_verification"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Interrupted or failed workers strictly rejected from submitting late completion handoffs.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-03",
+        "name": "Batch Worker Creation and Provisioning",
+        "category": "lead_worker_lifecycle_and_batch",
+        "target_behavior": "Atomic registration and provisioning of multiple workers across specialized roles (PM, Dev, QA) for a team.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Cindy provisions worker slots during team initiation."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/team/team_manager.py",
+          "symbol_or_path": "TeamManager.register_worker, WorkerProcessController.spawn_worker",
+          "notes": "Workers can be registered sequentially in Python; atomic batch creation API (PAR-05 / #48) is partially present in team manager."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c02_worker_sessions.py",
+          "test_function": "test_c02_multi_worker_registration_and_isolation"
+        },
+        "status": "UNIT_TESTED",
+        "security_boundary": "Per-worker working_dir validation and process isolation.",
+        "missing_wiring": "Batch creation MCP tool and atomic multi-worker batch API (Issue #48).",
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-04",
+        "name": "Per-Worker Model and Budget Configuration",
+        "category": "lead_worker_lifecycle_and_batch",
+        "target_behavior": "Configurable model identifier, provider, harness, system prompt, and token budget per worker.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "WorkerConfig in Cindy allows model and provider assignment per worker."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/domain/team_contracts.py",
+          "symbol_or_path": "WorkerConfig",
+          "notes": "WorkerConfig stores model, harness, provider, system_prompt, budget_tokens, tokens_consumed."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c01_parity_foundation.py",
+          "test_function": "test_c01_worker_config_and_budget_bounds"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Budget exhaustion causes fail-closed execution refusal; token counts persisted.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      }
+    ],
+    "queue_and_steering": [
+      {
+        "feature_id": "PAR-FEAT-05",
+        "name": "Durable Priority Queue",
+        "category": "queue_and_steering",
+        "target_behavior": "SQLite-persisted FIFO dispatch queue ordered by priority descending, creation ascending.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Durable tasks queue backed by database with priority sorting."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/storage/team_store.py",
+          "symbol_or_path": "TeamStore.dispatch_task, TeamStore.fetch_next_pending_task",
+          "notes": "SQLite simpul_queue table indexed by team_id, worker_session_id, priority, and created_at."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c04_interagent_control.py",
+          "test_function": "test_c04_priority_queue_ordering"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Cross-team dispatch denied; tasks bound to team_id.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-06",
+        "name": "Queue Deduplication and Idempotency",
+        "category": "queue_and_steering",
+        "target_behavior": "Idempotent task dispatch via dedup_key preventing duplicate task creation across retries.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Task idempotency and deduplication keys."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/storage/team_store.py",
+          "symbol_or_path": "TeamStore.dispatch_task",
+          "notes": "Checks existing dispatch with dedup_key within team; returns existing QueueItem without duplication."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c06_parity_acceptance.py",
+          "test_function": "test_c06_queue_controls_dedup_steering_and_interrupt_preemption"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Duplicate execution prevention; atomic SQLite query.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-07",
+        "name": "In-Flight Task Steering",
+        "category": "queue_and_steering",
+        "target_behavior": "Supervisor injects steering instructions to active in-flight worker tasks without killing process.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Steering channel allows lead to adjust worker course."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/team/team_manager.py",
+          "symbol_or_path": "TeamManager.steer_task",
+          "notes": "Appends typed steering instruction to queue item; authenticated against lead session identity."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c04_interagent_control.py",
+          "test_function": "test_c04_task_steering_and_guidance"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Only lead of the owning team can steer; rogue or cross-team steering rejected with PermissionError.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-08",
+        "name": "Authenticated Inter-Agent Messaging",
+        "category": "queue_and_steering",
+        "target_behavior": "Point-to-point and broadcast messaging between Lead and Workers with cryptographic sender verification.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Message bus for inter-agent communication within a team."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/storage/team_store.py",
+          "symbol_or_path": "TeamStore.post_message, TeamStore.get_messages",
+          "notes": "Persisted in simpul_messages table; verifies both sessions belong to the same team."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c04_interagent_control.py",
+          "test_function": "test_c04_authenticated_messaging"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Cross-team message injection denied; sender impersonation rejected.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-09",
+        "name": "Evidence-Bound Handoff and Verification Receipt",
+        "category": "queue_and_steering",
+        "target_behavior": "Workers hand off completed work with cryptographic artifact hashes, exit codes, and QA verdicts.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Handoff mechanism returning results to lead."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/domain/team_contracts.py",
+          "symbol_or_path": "HandoffEvidence, TeamManager.submit_worker_handoff",
+          "notes": "HandoffEvidence requires dispatch_id, from_worker_id, to_lead_id, status, artifacts, and metrics."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c06_parity_acceptance.py",
+          "test_function": "test_c06_e2e_multiworker_workflow"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Spoofed handoffs from other workers or to wrong leads rejected; late completion on interrupted workers denied.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-10",
+        "name": "Task DAG, Pods, and Retry Semantics",
+        "category": "queue_and_steering",
+        "target_behavior": "Directed acyclic graph dependency resolution between tasks, pod isolation, and bounded retry count.",
+        "upstream_reference": {
+          "repo": "orca_cli",
+          "commit": "5beeefcb57555962bb93facc54b5f82484731802",
+          "file_path": "internal/dag/dag.go",
+          "notes": "Orca CLI implements DAG dependency resolution and pod execution scheduling."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/domain/contracts.py",
+          "symbol_or_path": "Task.dependencies, Run.tasks",
+          "notes": "Basic task dependency list exists in Run/Task domain contracts; full Pod DAG engine (PAR-10 / #53) remains in design/planning."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_dag_identity_bounds_dev.py",
+          "test_function": "test_task_dependency_graph"
+        },
+        "status": "CODE_PRESENT",
+        "security_boundary": "Circular dependencies rejected fail-closed.",
+        "missing_wiring": "Full Pod orchestration and bounded auto-retry state machine (Issue #53).",
+        "not_adopted_rationale": null
+      }
+    ],
+    "workspace_and_worktree": [
+      {
+        "feature_id": "PAR-FEAT-11",
+        "name": "Isolated Git Worktree Lifecycle",
+        "category": "workspace_and_worktree",
+        "target_behavior": "Creation, tracking, and clean removal of dedicated Git worktrees per worker.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Git worktree isolation for parallel worker edits."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/workspaces/worktree_manager.py",
+          "symbol_or_path": "GitWorktreeManager.create_worktree, GitWorktreeManager.cleanup_worktree",
+          "notes": "Creates git worktree under .worktrees/<worker_id>, tracks in SQLite, and cleans up."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c05_durable_continuity.py",
+          "test_function": "test_c05_worktree_data_safety_and_containment"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Dirty worktrees with uncommitted changes fail closed on deletion unless force specified.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-12",
+        "name": "Workspace Path Containment and Traversal Defense",
+        "category": "workspace_and_worktree",
+        "target_behavior": "Strict filesystem path validation preventing path traversal (..), symlink/junction breakout outside workspace.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Workspace scoping checks."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/workspaces/scope.py",
+          "symbol_or_path": "ScopedWorkspace.require_path, ScopedWorkspace.resolve_relative",
+          "notes": "Canonicalizes paths with resolve(); raises PermissionError on breakout."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_workspace_scope.py",
+          "test_function": "test_workspace_traversal_rejection"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Paths outside canonical workspace root strictly denied.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-13",
+        "name": "Branch Merge and Conflict Resolution",
+        "category": "workspace_and_worktree",
+        "target_behavior": "Safe merging of worker branch into target branch with conflict detection and rollback on failure.",
+        "upstream_reference": {
+          "repo": "orca_cli",
+          "commit": "5beeefcb57555962bb93facc54b5f82484731802",
+          "file_path": "internal/worktree/worktree.go",
+          "notes": "Orca CLI worktree manager branch merge and cleanup."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/workspaces/worktree_manager.py",
+          "symbol_or_path": "GitWorktreeManager",
+          "notes": "Worktree allocation and teardown implemented; automated 3-way merge and conflict queue (PAR-08 / #51) partially present."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c05_durable_continuity.py",
+          "test_function": "test_c05_worktree_data_safety_and_containment"
+        },
+        "status": "UNIT_TESTED",
+        "security_boundary": "No auto-push or direct push to protected main; manual or review-gated merge.",
+        "missing_wiring": "Automated merge conflict adjudication and review queue integration (Issue #51).",
+        "not_adopted_rationale": null
+      }
+    ],
+    "resilience_and_recovery": [
+      {
+        "feature_id": "PAR-FEAT-14",
+        "name": "Step-Indexed Worker Checkpointing",
+        "category": "resilience_and_recovery",
+        "target_behavior": "Periodic persisting of worker context snapshot, step index, tokens consumed, and state summary.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Worker checkpoints for session continuity."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/domain/team_contracts.py",
+          "symbol_or_path": "WorkerCheckpoint, TeamStore.save_checkpoint, TeamStore.load_latest_checkpoint",
+          "notes": "Persisted in simpul_checkpoints table; retrieves latest checkpoint by worker_id and step_index descending."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c05_durable_continuity.py",
+          "test_function": "test_c05_checkpoint_save_and_resume"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Checkpoint tampering detected by schema validation; worker cannot overwrite other workers' checkpoints.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-15",
+        "name": "Subprocess Crash Detection and Recovery",
+        "category": "resilience_and_recovery",
+        "target_behavior": "Reconciles OS process table against durable database on supervisor startup or crash injection.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Crash recovery and zombie worker cleanup."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/recovery/crash_recovery.py",
+          "symbol_or_path": "reconcile_team_after_crash, resume_worker_from_checkpoint",
+          "notes": "Marks dead processes FAILED, in-flight queue items FAILED, and respawns from checkpoint."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c06_parity_acceptance.py",
+          "test_function": "test_c06_fault_injection_and_recovery"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Dead workers prevented from completing tasks; zombie process trees terminated.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-16",
+        "name": "Ambiguous Side-Effect Quarantine",
+        "category": "resilience_and_recovery",
+        "target_behavior": "Tasks interrupted between external side effect and checkpoint transition to AMBIGUOUS and require human resolution.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Error handling on unexpected disconnection."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/domain/team_contracts.py",
+          "symbol_or_path": "QueueTaskStatus.AMBIGUOUS",
+          "notes": "Simpul extension status AMBIGUOUS; forbids automatic unverified re-execution."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c06_parity_acceptance.py",
+          "test_function": "test_c06_pinned_cindy_parity_contract_verification"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "No automatic replay of non-idempotent side effects without explicit operator decision.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-17",
+        "name": "Zero-Data-Loss SQLite Schema Migration",
+        "category": "resilience_and_recovery",
+        "target_behavior": "Safe migration of legacy orca_* schemas to native simpul_* tables with pre-backup and rollback.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Database schema initialization."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/storage/team_store.py",
+          "symbol_or_path": "TeamStore._migrate_schema, TeamStore._backup_database",
+          "notes": "Online SQLite backup, full column row verification, read-only backward compatible orca_* SQL views."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_team_store_migration.py",
+          "test_function": "test_migration_preserves_all_data"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Rollback on migration error; legacy views are strictly read-only to prevent tampering.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      }
+    ],
+    "host_integration_and_mcp": [
+      {
+        "feature_id": "PAR-FEAT-18",
+        "name": "Antigravity IDE Stdio MCP Server",
+        "category": "host_integration_and_mcp",
+        "target_behavior": "Full MCP stdio protocol implementation with tool registration for Antigravity IDE agent panel.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "MCP server interface for Orca team integration."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/server.py",
+          "symbol_or_path": "submit_goal, get_run, list_tasks, get_task_evidence, cancel_run",
+          "notes": "MCP stdio server running via subagentbridge.server with absolute virtual environment python path."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_antigravity_mcp_e2e.py",
+          "test_function": "test_mcp_server_stdio_interaction"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Privileged tools require human approval; raw code fix and approval tools unexposed to models.",
+        "missing_wiring": "Live IDE UI test in real packaged Antigravity build (Issue #45).",
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-19",
+        "name": "Multi-Harness Capability Checking",
+        "category": "host_integration_and_mcp",
+        "target_behavior": "Truthful capability declaration across harnesses: native, antigravity, codex, claude_code, pi.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Harness selection in Cindy."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/runners/harness_adapters.py",
+          "symbol_or_path": "HarnessRegistry, HarnessCapability, AntigravityHarnessAdapter",
+          "notes": "Registry with fine-grained capabilities: local execution, tool calling, thinking budget, structured output."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c03_multi_harness.py",
+          "test_function": "test_c03_harness_capability_declarations"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Declaring capability does not authorize unverified execution; unsupported harness raises KeyError.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-20",
+        "name": "Safe Model-Callable Team Operations",
+        "category": "host_integration_and_mcp",
+        "target_behavior": "Safe MCP operations for team inspection, run readback, and evidence retrieval without policy escalation.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Orca MCP tool endpoints."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/server.py",
+          "symbol_or_path": "get_pending_approvals, reject_approval, get_model_usage",
+          "notes": "Exposes inspection tools. approve_action and apply_code_fix are strictly locked down from model invocation."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_p0_mcp_self_approval.py",
+          "test_function": "test_mcp_rejects_model_self_approval"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Approval and privileged mutations are not model-callable MCP tools.",
+        "missing_wiring": "Exposing native team/worker status inspection as safe MCP tools (Issue #54).",
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-21",
+        "name": "Worker Progress Timeline and Status Observability",
+        "category": "host_integration_and_mcp",
+        "target_behavior": "Real-time timeline of worker events, log streaming, token usage, and active status inspection.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Team UI progress dashboard."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/storage/team_store.py",
+          "symbol_or_path": "TeamStore.get_messages, TeamStore.load_session",
+          "notes": "Event and state storage present in database; comprehensive timeline aggregator (PAR-12 / #55) partially implemented."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_c02_worker_sessions.py",
+          "test_function": "test_c02_session_event_recording"
+        },
+        "status": "UNIT_TESTED",
+        "security_boundary": "Read-only observability; no execution side effects.",
+        "missing_wiring": "Aggregated operator timeline view and streaming MCP endpoint (Issue #55).",
+        "not_adopted_rationale": null
+      }
+    ],
+    "security_boundaries": [
+      {
+        "feature_id": "PAR-FEAT-22",
+        "name": "OS-Level Hostile Worker Isolation (E18)",
+        "category": "security_boundaries",
+        "target_behavior": "Hostile worker isolation via Windows AppContainer/Restricted Token or Linux dedicated UID/namespace.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Not present in upstream Cindy (Cindy runs workers under electron/host OS user)."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/execution/worker_isolation.py",
+          "symbol_or_path": "DedicatedWorkerIdentity, scrub_worker_environment",
+          "notes": "Linux dedicated UID exists as opt-in experimental control; Windows default remains same-user. E18 is strictly BLOCKED."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_worker_isolation_boundary.py",
+          "test_function": "test_same_user_boundary_is_not_sandbox"
+        },
+        "status": "BLOCKED",
+        "security_boundary": "Default remains same-user identity; AUTONOMY: OFF strictly enforced until true OS sandbox proven.",
+        "missing_wiring": "Windows AppContainer / restricted token or Linux namespace isolation verified on real hostile code (Issue #21).",
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-23",
+        "name": "Independently Authenticated Human Operator Approval",
+        "category": "security_boundaries",
+        "target_behavior": "Out-of-band authenticated operator approval (WebAuthn / OIDC) independent of the agent and worker trust boundary.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "UI prompt approval in electron app."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/approval/verified_operator_authority.py",
+          "symbol_or_path": "VerifiedOperatorAuthority, DecisionVerifier",
+          "notes": "Action-bound challenge-verifier exists in code/tests, but production WebAuthn/OIDC relying party (#22) is BLOCKED."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_verified_operator_authority.py",
+          "test_function": "test_verified_operator_challenge_response"
+        },
+        "status": "BLOCKED",
+        "security_boundary": "In-process approval fixtures are NOT enterprise human authenticators. Issue #22 remains BLOCKED.",
+        "missing_wiring": "Independent WebAuthn/OIDC authentication server outside model-accessible MCP boundary (Issue #22).",
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-24",
+        "name": "Cryptographic Execution Ticket Binding",
+        "category": "security_boundaries",
+        "target_behavior": "One-time execution tickets bound to worker_id, task_id, command, workspace, and expiry nonce.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/orca/orcaTeamService.ts",
+          "notes": "Simpul security hardening design."
+        },
+        "simpul_implementation": {
+          "source_file": "subagentbridge/approval/trusted_authority.py",
+          "symbol_or_path": "verify_ticket_binding, issue_execution_ticket",
+          "notes": "HMAC-SHA256 signature binding exact context; single-use replay protection with CAS invalidation."
+        },
+        "test_evidence": {
+          "test_file": "tests/test_authenticated_operator_approval.py",
+          "test_function": "test_ticket_replay_prevention"
+        },
+        "status": "INTEGRATED",
+        "security_boundary": "Replayed tickets, modified commands, wrong tasks or expired tickets fail closed.",
+        "missing_wiring": null,
+        "not_adopted_rationale": null
+      },
+      {
+        "feature_id": "PAR-FEAT-25",
+        "name": "Remote SSH and Device Link Workers",
+        "category": "security_boundaries",
+        "target_behavior": "Executing workers on remote hosts over SSH or mobile device linking.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/services/remote/deviceLink.ts",
+          "notes": "Cindy Device Link and remote worker features."
+        },
+        "simpul_implementation": {
+          "source_file": null,
+          "symbol_or_path": null,
+          "notes": "Not implemented in Simpul core. Requires explicit decision gate (PAR-17 / #60)."
+        },
+        "test_evidence": {
+          "test_file": null,
+          "test_function": null
+        },
+        "status": "NOT_ADOPTED",
+        "security_boundary": "Remote SSH execution introduces unbounded network attack surface.",
+        "missing_wiring": null,
+        "not_adopted_rationale": "High enterprise attack surface and unauthorized credential propagation. Excluded from default scope under Issue #60 decision gate."
+      },
+      {
+        "feature_id": "PAR-FEAT-26",
+        "name": "Cindy Desktop App, Mobile, Browser Automation & Marketplace",
+        "category": "security_boundaries",
+        "target_behavior": "Consumer chat UI, mobile apps, browser DOM automation, periodic cron scheduling, and public plugin store.",
+        "upstream_reference": {
+          "repo": "cindy",
+          "commit": "b7e46bcbbe41eeee2f16381fef00df61a31a3b8b",
+          "file_path": "src/main/index.ts",
+          "notes": "Cindy Electron desktop app, browser extension, and marketplace integrations."
+        },
+        "simpul_implementation": {
+          "source_file": null,
+          "symbol_or_path": null,
+          "notes": "Not implemented. Simpul is a headless MCP supervisor for Antigravity IDE, not an Electron desktop app."
+        },
+        "test_evidence": {
+          "test_file": null,
+          "test_function": null
+        },
+        "status": "NOT_ADOPTED",
+        "security_boundary": "Browser and device automation present high risk of unauthorized data exfiltration.",
+        "missing_wiring": null,
+        "not_adopted_rationale": "Simpul explicitly positions Google Antigravity IDE as the primary frontend. Building a standalone desktop/mobile app or plugin store is out of product scope under Issue #61 decision gate."
+      }
+    ]
+  }
+}
