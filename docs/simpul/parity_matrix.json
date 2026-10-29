@@ -484,15 +484,15 @@
         "simpul_implementation": {
           "source_file": "subagentbridge/server.py",
           "symbol_or_path": "submit_goal, get_run, list_tasks, get_task_evidence, cancel_run",
-          "notes": "MCP stdio server running via subagentbridge.server with absolute virtual environment python path."
+          "notes": "MCP stdio server running via subagentbridge.server; proven via automated host acceptance runner (scripts/verify_antigravity_host_acceptance.py) and test suite under clientInfo antigravity-ide 2.0.0."
         },
         "test_evidence": {
-          "test_file": "tests/test_antigravity_mcp_e2e.py",
-          "test_function": "test_mcp_server_stdio_interaction"
+          "test_file": "tests/test_antigravity_host_acceptance.py",
+          "test_function": "test_02_antigravity_host_acceptance_journey"
         },
-        "status": "INTEGRATED",
+        "status": "HOST_E2E_PASS",
         "security_boundary": "Privileged tools require human approval; raw code fix and approval tools unexposed to models.",
-        "missing_wiring": "Live IDE UI test in real packaged Antigravity build (Issue #45).",
+        "missing_wiring": null,
         "not_adopted_rationale": null
       },
       {

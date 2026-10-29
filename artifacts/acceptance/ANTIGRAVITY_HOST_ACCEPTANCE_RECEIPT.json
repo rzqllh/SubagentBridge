@@ -1,0 +1,39 @@
+{
+  "receipt_type": "ANTIGRAVITY_HOST_ACCEPTANCE",
+  "timestamp": "2026-10-29T00:47:20.785923+00:00",
+  "host_platform": "win32",
+  "python_version": "3.13.13",
+  "client_info": {
+    "name": "antigravity-ide",
+    "version": "2.0.0"
+  },
+  "server_verified": "subagentbridge.server",
+  "tools_discovered_count": 20,
+  "tools_list": [
+    "cancel_run",
+    "discover_models",
+    "execute_run",
+    "execute_task",
+    "get_agent_status",
+    "get_model_usage",
+    "get_pending_approvals",
+    "get_run",
+    "get_task_evidence",
+    "kill_agent",
+    "list_agents",
+    "list_pending_actions",
+    "list_skills",
+    "list_tasks",
+    "reject_action",
+    "reject_approval",
+    "send_message",
+    "spawn_agent",
+    "submit_goal",
+    "wait_for_idle"
+  ],
+  "executed_run_id": "run_a1c0b21a8d7c",
+  "task_count": 3,
+  "evidence_count": 3,
+  "verdict": "HOST_E2E_PASS",
+  "receipt_hash": "04480fdf139593a44d120da1519b312f1915b90a37a39f7f81c7ae75743f387c"
+}
