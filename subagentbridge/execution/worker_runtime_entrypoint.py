@@ -187,10 +187,12 @@ def main() -> int:
             send_event({
                 "type": "RECONFIGURED",
                 "worker_id": worker_id,
+                "request_id": msg.get("request_id"),
                 "harness": harness_name,
                 "model": model_name,
                 "provider": provider_name,
                 "effort": effort_level,
+                "fallback_to_native": fallback_to_native,
                 "timestamp": time.time(),
             })
 
