@@ -192,7 +192,7 @@ def resume_task_from_checkpoint(
     # A process visible in the OS is not necessarily attached to this controller.
     # Never launch a replacement or dispatch to an orphan whose pipes we do not own.
     pre_item = store.load_queue_item(dispatch_id)
-    if pre_item and controller.is_worker_alive(pre_item.to_session_id) and not controller.is_worker_dispatchable(pre_item.to_session_id):
+    if pre_item and controller.is_worker_alive(pre_item.to_session_id) and not controller.has_attached_worker_ipc(pre_item.to_session_id):
         return {
             "status": "RECOVERY_BLOCKED",
             "dispatch_id": dispatch_id,
@@ -204,7 +204,27 @@ def resume_task_from_checkpoint(
 
     worker_id = item.to_session_id
     if not controller.is_worker_dispatchable(worker_id):
-        session = resume_worker_from_checkpoint(worker_id, store=store, controller=controller)
+        if controller.has_attached_worker_ipc(worker_id):
+            # An interrupted/paused worker can retain owned live pipes.
+            # Restore its scheduling state; NEVER spawn a replacement merely
+            # because it is deliberately non-dispatchable. Outstanding IPC
+            # effects remain ambiguous and require operator reconciliation.
+            if not controller.resume_worker(worker_id):
+                # Release the durable CAS resume claim. Nothing was dispatched,
+                # so a later authenticated reconciliation can safely retry.
+                item.status = QueueTaskStatus.DISPATCHED
+                item.updated_at = time.time()
+                store.save_queue_item(item)
+                return {
+                    "status": "RECOVERY_BLOCKED",
+                    "dispatch_id": dispatch_id,
+                    "reason": "Attached worker is not safe to resume; outstanding result or operator reconciliation required",
+                }
+            session = store.load_session(worker_id)
+            if session is None:
+                raise KeyError(f"worker session {worker_id!r} not found")
+        else:
+            session = resume_worker_from_checkpoint(worker_id, store=store, controller=controller)
     else:
         loaded = store.load_session(worker_id)
         if not loaded:

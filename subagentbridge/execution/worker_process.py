@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+from collections import deque
 import subprocess
 import sys
 import threading
@@ -42,6 +43,8 @@ class TimedStreamReader:
     def __init__(self, stream: IO[str]) -> None:
         self.stream = stream
         self.queue: queue.Queue[str | None] = queue.Queue()
+        self._pending: deque[str] = deque()
+        self._consume_lock = threading.RLock()
         self._thread = threading.Thread(target=self._reader, daemon=True)
         self._thread.start()
 
@@ -55,10 +58,71 @@ class TimedStreamReader:
             self.queue.put(None)
 
     def readline(self, timeout: float = 5.0) -> str | None:
-        try:
-            return self.queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+        with self._consume_lock:
+            if self._pending:
+                return self._pending.popleft()
+            try:
+                return self.queue.get(timeout=timeout)
+            except queue.Empty:
+                return None
+
+    def readline_matching(self, predicate: Any, timeout: float = 5.0) -> str | None:
+        """Match a specific IPC control event without discarding task results.
+
+        Reconfiguration ACKs must not be confused with late task responses.
+        Keep unmatched events in their original order for ordinary readers.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        unmatched: deque[str] = deque()
+        with self._consume_lock:
+            try:
+                while True:
+                    line: str | None
+                    if self._pending:
+                        line = self._pending.popleft()
+                    else:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            return None
+                        try:
+                            line = self.queue.get(timeout=remaining)
+                        except queue.Empty:
+                            return None
+                    if line is None:
+                        return None
+                    if predicate(line):
+                        return line
+                    unmatched.append(line)
+            finally:
+                self._pending.extendleft(reversed(unmatched))
+
+
+def _is_task_result(raw: str, task_id: str) -> bool:
+    try:
+        event = json.loads(raw.strip())
+    except (ValueError, TypeError):
+        return False
+    return isinstance(event, dict) and event.get("type") == "RESULT" and event.get("task_id") == task_id
+
+
+def _is_reconfigure_ack(raw: str, request_id: str) -> bool:
+    try:
+        event = json.loads(raw.strip())
+    except (ValueError, TypeError):
+        return False
+    return isinstance(event, dict) and event.get("type") == "RECONFIGURED" and event.get("request_id") == request_id
+
+
+def _is_control_event(raw: str, event_type: str, worker_id: str) -> bool:
+    try:
+        event = json.loads(raw.strip())
+    except (ValueError, TypeError):
+        return False
+    return (
+        isinstance(event, dict)
+        and event.get("type") == event_type
+        and event.get("worker_id") == worker_id
+    )
 
 
 def kill_process_tree(pid: int, timeout: float = 2.0) -> None:
@@ -140,6 +204,12 @@ class WorkerProcessController:
         self._readers: dict[str, TimedStreamReader] = {}
         self._records: dict[str, WorkerProcessRecord] = {}
         self._job_handles: dict[str, Any] = {}
+        # Async dispatch is considered outstanding until externally reconciled.
+        # Never allow a live harness switch to race an unconsumed task result.
+        self._busy_workers: set[str] = set()
+        self._busy_task_ids: dict[str, str] = {}
+        # One admission/commit lock prevents reconfigure racing a task claim.
+        self._state_lock = threading.RLock()
 
     def spawn_worker(
         self,
@@ -148,6 +218,9 @@ class WorkerProcessController:
         branch_name: str | None = None,
     ) -> WorkerProcessRecord:
         """Spawns a real child OS process running worker_runtime_entrypoint."""
+        prior = self._processes.get(config.worker_id)
+        if prior is not None and prior.poll() is None:
+            raise RuntimeError("Worker ID already owns a live process")
         worktree_path = worktree_path or config.working_dir
         session_secret = token_hex(32)
         cmd = [
@@ -168,6 +241,14 @@ class WorkerProcessController:
             cmd.extend(["--tokens-consumed", str(config.tokens_consumed)])
         if config.harness:
             cmd.extend(["--harness", config.harness])
+        if config.model:
+            cmd.extend(["--model", config.model])
+        if config.provider:
+            cmd.extend(["--provider", config.provider])
+        if config.effort:
+            cmd.extend(["--effort", config.effort])
+        if config.fallback_to_native:
+            cmd.append("--fallback-to-native")
         if worktree_path:
             cmd.extend(["--worktree-path", worktree_path])
 
@@ -300,6 +381,7 @@ class WorkerProcessController:
             pid=child_pid,
             process_create_time=create_time,
             tokens_consumed=config.tokens_consumed,
+            fallback_to_native=config.fallback_to_native,
         )
         session = AgentSession(
             session_id=config.worker_id,
@@ -311,11 +393,13 @@ class WorkerProcessController:
             updated_at=now,
         )
         self.store.save_session(session)
-
+        # A new IPC process cannot inherit an exited predecessor's busy claim.
+        self._busy_workers.discard(config.worker_id)
+        self._busy_task_ids.pop(config.worker_id, None)
         return record
 
-    def is_worker_dispatchable(self, worker_id: str) -> bool:
-        """Require owned live process and IPC streams, not only an OS PID record."""
+    def has_attached_worker_ipc(self, worker_id: str) -> bool:
+        """Physical IPC attachment, independent of PAUSED/INTERRUPTED status."""
         proc = self._processes.get(worker_id)
         reader = self._readers.get(worker_id)
         record = self._records.get(worker_id)
@@ -324,6 +408,16 @@ class WorkerProcessController:
             and not proc.stdin.closed and reader is not None and record is not None
             and is_process_identically_alive(proc.pid, record.create_time)
         )
+
+    def is_worker_dispatchable(self, worker_id: str) -> bool:
+        """An attached worker must also be scheduled to accept new tasks."""
+        record = self._records.get(worker_id)
+        if record and record.status in (
+            WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED,
+            WorkerStatus.FAILED, WorkerStatus.ARCHIVED,
+        ):
+            return False
+        return self.has_attached_worker_ipc(worker_id) and worker_id not in self._busy_workers
 
     def is_worker_alive(self, worker_id: str) -> bool:
         proc = self._processes.get(worker_id)
@@ -370,7 +464,10 @@ class WorkerProcessController:
         except OSError:
             return None
 
-        line = reader.readline(timeout=timeout)
+        line = reader.readline_matching(
+            lambda raw: _is_control_event(raw, "PONG", worker_id),
+            timeout=timeout,
+        )
         if not line:
             return None
 
@@ -401,6 +498,15 @@ class WorkerProcessController:
         if not proc or proc.poll() is not None or proc.stdin is None or not reader or not record:
             return {"status": "ERROR", "error": f"worker {worker_id!r} not alive"}
 
+        if record.status in (WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED) or worker_id in self._busy_workers:
+            return {
+                "status": "DENIED",
+                "task_id": task_id,
+                "error": f"WorkerNotDispatchable: worker {worker_id!r} is paused, interrupted or busy",
+                "reason": "Worker is paused, interrupted, or has an outstanding task",
+                "timestamp": time.time(),
+            }
+
         # Handle authorization binding if command is present
         if "command" in payload:
             cmd_val = payload["command"]
@@ -427,13 +533,29 @@ class WorkerProcessController:
             payload["execution_ticket"] = ticket
             payload["workspace_path"] = ws
 
+        with self._state_lock:
+            if worker_id in self._busy_workers or record.status in (
+                WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED, WorkerStatus.FAILED,
+                WorkerStatus.ARCHIVED,
+            ):
+                return {"status": "DENIED", "task_id": task_id,
+                        "reason": "Worker became busy or unavailable before task admission"}
+            self._busy_workers.add(worker_id)
+            self._busy_task_ids[worker_id] = task_id
         try:
             proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
             proc.stdin.flush()
         except OSError as exc:
+            self._busy_workers.discard(worker_id)
+            self._busy_task_ids.pop(worker_id, None)
             return {"status": "ERROR", "error": f"IPC pipe write failed: {exc}"}
 
-        line = reader.readline(timeout=timeout)
+        line = reader.readline_matching(
+            lambda raw: _is_task_result(raw, task_id),
+            timeout=timeout,
+        )
+        # On timeout execution may still be running; refuse later operations
+        # until the exact outstanding task result is explicitly reconciled.
         if line is None:
             return {
                 "status": "TIMEOUT",
@@ -452,28 +574,34 @@ class WorkerProcessController:
 
         res: dict[str, Any] = res_raw
 
-        # Update metered token tracking
-        if "tokens_consumed" in res:
-            record.tokens_consumed = int(res["tokens_consumed"])
-            session = self.store.load_session(worker_id)
-            if session:
-                session.config = WorkerConfig(
-                    worker_id=session.config.worker_id,
-                    team_id=session.config.team_id,
-                    role=session.config.role,
-                    harness=session.config.harness,
-                    model=session.config.model,
-                    provider=session.config.provider,
-                    system_prompt=session.config.system_prompt,
-                    working_dir=session.config.working_dir,
-                    effort=session.config.effort,
-                    budget_tokens=session.config.budget_tokens,
-                    pid=session.config.pid,
-                    process_create_time=session.config.process_create_time,
-                    tokens_consumed=record.tokens_consumed,
-                )
-                session.updated_at = time.time()
-                self.store.save_session(session)
+        # Task admission remains held until token accounting is durably saved.
+        with self._state_lock:
+            # Update metered token tracking
+            if "tokens_consumed" in res:
+                record.tokens_consumed = int(res["tokens_consumed"])
+                session = self.store.load_session(worker_id)
+                if session:
+                    session.config = WorkerConfig(
+                        worker_id=session.config.worker_id,
+                        team_id=session.config.team_id,
+                        role=session.config.role,
+                        harness=session.config.harness,
+                        model=session.config.model,
+                        provider=session.config.provider,
+                        system_prompt=session.config.system_prompt,
+                        working_dir=session.config.working_dir,
+                        effort=session.config.effort,
+                        budget_tokens=session.config.budget_tokens,
+                        pid=session.config.pid,
+                        process_create_time=session.config.process_create_time,
+                        tokens_consumed=record.tokens_consumed,
+                        fallback_to_native=session.config.fallback_to_native,
+                    )
+                    session.updated_at = time.time()
+                    self.store.save_session(session)
+
+            self._busy_workers.discard(worker_id)
+            self._busy_task_ids.pop(worker_id, None)
 
         return res
 
@@ -482,6 +610,9 @@ class WorkerProcessController:
         record = self._records.get(worker_id)
         if not proc or proc.poll() is not None or proc.stdin is None or not record:
             raise RuntimeError(f"worker {worker_id!r} not running")
+
+        if record.status in (WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED) or worker_id in self._busy_workers:
+            raise RuntimeError(f"worker {worker_id!r} is paused, interrupted or busy")
 
         # If command is present, attach ticket
         if "command" in payload:
@@ -503,8 +634,64 @@ class WorkerProcessController:
             payload["execution_ticket"] = ticket
             payload["workspace_path"] = ws
 
-        proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
-        proc.stdin.flush()
+        with self._state_lock:
+            if worker_id in self._busy_workers or record.status in (
+                WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED,
+                WorkerStatus.FAILED, WorkerStatus.ARCHIVED,
+            ):
+                raise RuntimeError("Worker became busy or unavailable before async admission")
+            self._busy_workers.add(worker_id)
+            self._busy_task_ids[worker_id] = task_id
+        try:
+            proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
+            proc.stdin.flush()
+        except OSError:
+            self._busy_workers.discard(worker_id)
+            self._busy_task_ids.pop(worker_id, None)
+            raise
+
+    def collect_async_result(
+        self,
+        worker_id: str,
+        task_id: str,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        """Explicitly reconcile a pending async or timed-out task by exact ID.
+
+        A timeout retains its busy claim: unknown external effects must not be
+        replayed or followed by an unrelated task without reconciliation.
+        """
+        if self._busy_task_ids.get(worker_id) != task_id:
+            raise ValueError("No outstanding IPC task with this worker/task identity")
+        reader = self._readers.get(worker_id)
+        if reader is None or not self.has_attached_worker_ipc(worker_id):
+            return {"status": "RECOVERY_BLOCKED", "task_id": task_id,
+                    "reason": "Worker IPC detached; operator reconciliation required"}
+        line = reader.readline_matching(
+            lambda raw: _is_task_result(raw, task_id), timeout=timeout,
+        )
+        if line is None:
+            return {"status": "TIMEOUT", "task_id": task_id,
+                    "reason": "Worker task outcome is still ambiguous"}
+        result = json.loads(line.strip())
+        if not isinstance(result, dict):
+            raise RuntimeError("Invalid worker result envelope")
+        with self._state_lock:
+            if "tokens_consumed" in result:
+                record = self._records.get(worker_id)
+                if record:
+                    record.tokens_consumed = int(result["tokens_consumed"])
+                session = self.store.load_session(worker_id)
+                if session:
+                    from dataclasses import replace as dataclass_replace
+                    session.config = dataclass_replace(
+                        session.config, tokens_consumed=int(result["tokens_consumed"]),
+                    )
+                    session.updated_at = time.time()
+                    self.store.save_session(session)
+            self._busy_workers.discard(worker_id)
+            self._busy_task_ids.pop(worker_id, None)
+        return result
 
     def interrupt_worker(self, worker_id: str, task_id: str = "") -> bool:
         proc = self._processes.get(worker_id)
@@ -518,9 +705,13 @@ class WorkerProcessController:
         except OSError:
             return False
 
-        # Read the INTERRUPTED event confirmation if available within deadline
+        # Read only this worker's interrupt ACK; preserve unrelated task
+        # results in the IPC queue for explicit reconciliation.
         if reader:
-            reader.readline(timeout=1.0)
+            reader.readline_matching(
+                lambda raw: _is_control_event(raw, "INTERRUPTED", worker_id),
+                timeout=1.0,
+            )
 
         record = self._records.get(worker_id)
         if record:
@@ -533,6 +724,141 @@ class WorkerProcessController:
             self.store.save_session(session)
 
         return True
+
+    def pause_worker(self, worker_id: str) -> bool:
+        """Transitions worker to PAUSED status, rejecting subsequent task dispatches."""
+        record = self._records.get(worker_id)
+        if not record or not self.is_worker_alive(worker_id):
+            return False
+        if record.status not in (WorkerStatus.IDLE, WorkerStatus.RUNNING):
+            return False
+        record.status = WorkerStatus.PAUSED
+        session = self.store.load_session(worker_id)
+        if session:
+            session.status = WorkerStatus.PAUSED
+            session.updated_at = time.time()
+            self.store.save_session(session)
+        return True
+
+    def resume_worker(self, worker_id: str) -> bool:
+        """Restores a PAUSED worker to IDLE status so task dispatches can resume."""
+        record = self._records.get(worker_id)
+        if not record or not self.is_worker_alive(worker_id):
+            return False
+        if record.status not in (WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED):
+            return False
+        if worker_id in self._busy_workers:
+            return False
+        record.status = WorkerStatus.IDLE
+        session = self.store.load_session(worker_id)
+        if session:
+            session.status = WorkerStatus.IDLE
+            session.updated_at = time.time()
+            self.store.save_session(session)
+        return True
+
+    def switch_worker_harness(
+        self,
+        worker_id: str,
+        new_harness: str,
+        new_model: str | None = None,
+        new_provider: str | None = None,
+        new_effort: str | None = None,
+        fallback_to_native: bool | None = None,
+    ) -> bool:
+        """Safely reconfigures harness, model, provider, and effort on an IDLE or PAUSED worker."""
+        with self._state_lock:
+            record = self._records.get(worker_id)
+            if not record or not self.is_worker_alive(worker_id):
+                return False
+            if record.status not in (WorkerStatus.IDLE, WorkerStatus.PAUSED):
+                raise RuntimeError(f"Cannot switch harness on worker in {record.status.value} state")
+            if worker_id in self._busy_workers:
+                raise RuntimeError("Cannot switch harness while task response is still outstanding")
+
+            from subagentbridge.runners.harness_adapters import HarnessCapability, get_harness_registry
+
+            registry = get_harness_registry()
+            adapter = registry.get(new_harness)
+            caps = adapter.get_capabilities()
+
+            # Validate target model/provider/effort
+            if new_model and not adapter.validate_model(new_model):
+                raise ValueError(f"ModelNotSupported: harness {new_harness!r} does not support {new_model!r}")
+            if new_provider and not adapter.validate_provider(new_provider):
+                raise ValueError(f"ProviderNotSupported: harness {new_harness!r} does not support {new_provider!r}")
+            if new_effort and HarnessCapability.THINKING_BUDGET not in caps.supported_capabilities:
+                raise ValueError(f"CapabilityMismatch: harness {new_harness!r} does not support THINKING_BUDGET for effort={new_effort!r}")
+
+            session = self.store.load_session(worker_id)
+            if session is None:
+                raise RuntimeError("Cannot reconfigure worker without durable session")
+            old_cfg = session.config
+            effective_fallback = (
+                fallback_to_native if fallback_to_native is not None else old_cfg.fallback_to_native
+            )
+
+            # Notify running child process over IPC if live
+            proc = self._processes.get(worker_id)
+            reader = self._readers.get(worker_id)
+            if proc and proc.poll() is None and proc.stdin:
+                reconfig_request_id = token_hex(16)
+                reconfig_msg = {
+                    "command": "RECONFIGURE",
+                    "request_id": reconfig_request_id,
+                    "harness": new_harness,
+                    "model": new_model or caps.default_model,
+                    "provider": new_provider or caps.default_provider,
+                    "effort": new_effort,
+                    "fallback_to_native": effective_fallback,
+                }
+                try:
+                    proc.stdin.write(json.dumps(reconfig_msg) + "\n")
+                    proc.stdin.flush()
+                    if reader is None:
+                        raise RuntimeError("Worker IPC reply stream is unavailable")
+                    ack = reader.readline_matching(
+                        lambda raw: _is_reconfigure_ack(raw, reconfig_request_id),
+                        timeout=2.0,
+                    )
+                    if ack is None:
+                        raise RuntimeError("No matching RECONFIGURED acknowledgement")
+                    ack_obj = json.loads(ack.strip())
+                    if (
+                        ack_obj.get("worker_id") != worker_id
+                        or ack_obj.get("harness") != new_harness
+                        or ack_obj.get("fallback_to_native") is not effective_fallback
+                    ):
+                        raise RuntimeError("Worker reconfiguration ACK payload mismatch")
+                except Exception as exc:
+                    # The child may apply a delayed reconfiguration after timeout.
+                    # Kill it rather than persisting a configuration it did not ACK.
+                    self.terminate_worker(worker_id)
+                    raise RuntimeError(f"Failed to confirm worker RECONFIGURE: {exc}") from exc
+
+            # Update persisted session config in store
+            if session:
+                updated_cfg = WorkerConfig(
+                    worker_id=old_cfg.worker_id,
+                    team_id=old_cfg.team_id,
+                    role=old_cfg.role,
+                    harness=new_harness,
+                    model=new_model or (caps.default_model if new_harness != "native" else "native"),
+                    provider=new_provider or (caps.default_provider if new_harness != "native" else "local"),
+                    system_prompt=old_cfg.system_prompt,
+                    working_dir=old_cfg.working_dir,
+                    effort=new_effort,
+                    budget_tokens=old_cfg.budget_tokens,
+                    pid=old_cfg.pid,
+                    process_create_time=old_cfg.process_create_time,
+                    tokens_consumed=old_cfg.tokens_consumed,
+                    fallback_to_native=effective_fallback,
+                )
+                session.config = updated_cfg
+                session.updated_at = time.time()
+                self.store.save_session(session)
+
+            return True
 
     def terminate_worker(self, worker_id: str, timeout: float = 3.0) -> bool:
         proc = self._processes.get(worker_id)
@@ -575,6 +901,8 @@ class WorkerProcessController:
 
         self._processes.pop(worker_id, None)
         self._readers.pop(worker_id, None)
+        self._busy_workers.discard(worker_id)
+        self._busy_task_ids.pop(worker_id, None)
         job_handle = self._job_handles.pop(worker_id, None)
         if job_handle and sys.platform == "win32":
             try:
@@ -607,6 +935,8 @@ class WorkerProcessController:
                 reaped.append(worker_id)
                 self._processes.pop(worker_id, None)
                 self._readers.pop(worker_id, None)
+                self._busy_workers.discard(worker_id)
+                self._busy_task_ids.pop(worker_id, None)
         return reaped
 
     def register_persisted_session(
@@ -643,6 +973,7 @@ class WorkerProcessController:
             pid=pid,
             process_create_time=create_time,
             tokens_consumed=config.tokens_consumed,
+            fallback_to_native=config.fallback_to_native,
         )
         session = AgentSession(
             session_id=worker_id,
