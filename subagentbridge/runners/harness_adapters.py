@@ -617,8 +617,12 @@ class NineRouterHarness(BaseHarnessAdapter):
                 from subagentbridge.models.nine_router import LocalRouterConfig
 
                 LocalRouterConfig(base_url=base_url, api_key=api_key)
-                is_avail = True
-                diag = f"Local 9Router available at {base_url}"
+                # A valid loopback origin and a non-empty key do not establish
+                # that any router is reachable or that D-02 provider terms
+                # have been approved. Never advertise execution availability
+                # until a real, authenticated dispatch path exists.
+                is_avail = False
+                diag = "Local 9Router configured, but authenticated execution and provider-terms gate are not connected"
             except Exception as exc:
                 diag = f"Local 9Router configuration invalid: {exc}"
 
@@ -674,21 +678,14 @@ class NineRouterHarness(BaseHarnessAdapter):
                 "timestamp": time.time(),
             }
 
-        start_time = time.time()
-        duration = time.time() - start_time
-        metered = max(1, len(instruction) // 4)
+        # No real request was made: never fabricate task completion or usage.
+        # NineRouterClient.chat() also requires an independently reviewed D-02
+        # provider-terms decision, which this worker API does not carry.
         return {
             "type": "RESULT",
             "task_id": task_id,
-            "status": "COMPLETED",
-            "summary": f"9Router local harness executed: {instruction}",
-            "metered_tokens": metered,
-            "duration": duration,
-            "evidence": {
-                "harness": self.name,
-                "model": config.model or caps.default_model,
-                "provider": config.provider or caps.default_provider,
-            },
+            "status": "UNSUPPORTED_HOST",
+            "error": "9Router execution is not wired to an authenticated transport/approval boundary",
             "timestamp": time.time(),
         }
 
