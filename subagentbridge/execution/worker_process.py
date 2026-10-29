@@ -634,8 +634,14 @@ class WorkerProcessController:
             payload["execution_ticket"] = ticket
             payload["workspace_path"] = ws
 
-        self._busy_workers.add(worker_id)
-        self._busy_task_ids[worker_id] = task_id
+        with self._state_lock:
+            if worker_id in self._busy_workers or record.status in (
+                WorkerStatus.PAUSED, WorkerStatus.INTERRUPTED,
+                WorkerStatus.FAILED, WorkerStatus.ARCHIVED,
+            ):
+                raise RuntimeError("Worker became busy or unavailable before async admission")
+            self._busy_workers.add(worker_id)
+            self._busy_task_ids[worker_id] = task_id
         try:
             proc.stdin.write(json.dumps({"command": "TASK", "task_id": task_id, "payload": payload}) + "\n")
             proc.stdin.flush()
@@ -670,20 +676,21 @@ class WorkerProcessController:
         result = json.loads(line.strip())
         if not isinstance(result, dict):
             raise RuntimeError("Invalid worker result envelope")
-        self._busy_workers.discard(worker_id)
-        self._busy_task_ids.pop(worker_id, None)
-        if "tokens_consumed" in result:
-            record = self._records.get(worker_id)
-            if record:
-                record.tokens_consumed = int(result["tokens_consumed"])
-            session = self.store.load_session(worker_id)
-            if session:
-                from dataclasses import replace as dataclass_replace
-                session.config = dataclass_replace(
-                    session.config, tokens_consumed=int(result["tokens_consumed"]),
-                )
-                session.updated_at = time.time()
-                self.store.save_session(session)
+        with self._state_lock:
+            if "tokens_consumed" in result:
+                record = self._records.get(worker_id)
+                if record:
+                    record.tokens_consumed = int(result["tokens_consumed"])
+                session = self.store.load_session(worker_id)
+                if session:
+                    from dataclasses import replace as dataclass_replace
+                    session.config = dataclass_replace(
+                        session.config, tokens_consumed=int(result["tokens_consumed"]),
+                    )
+                    session.updated_at = time.time()
+                    self.store.save_session(session)
+            self._busy_workers.discard(worker_id)
+            self._busy_task_ids.pop(worker_id, None)
         return result
 
     def interrupt_worker(self, worker_id: str, task_id: str = "") -> bool:
