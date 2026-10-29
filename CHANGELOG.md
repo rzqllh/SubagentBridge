@@ -7,9 +7,39 @@ All notable changes to Simpul (formerly SubagentBridge) are documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.1.4 supervised security-hardening release
+## [Unreleased] — post-v1.1.4 supervised development (not published)
 
-This section is used as the release notes by the exact-main GitHub release workflow.
+**No new tag or release has been approved.** These commits are source changes on
+protected `main`, not a shipped enterprise release.
+
+### Correctness and safer supervised operations
+- **PR #65:** Fail closed on unimplemented 9Router harness execution instead of
+  reporting fabricated `COMPLETED` results; preserve worker IPC results, correlate
+  reconfiguration ACKs, block unsafe switches, reconcile async completion and
+  handle interrupted-worker recovery and invalid capabilities.
+- **PR #66:** Add atomic, bounded Lead-owned worker batch *registration* with
+  per-worker configuration and cross-supervisor quota/duplicate checks; **no
+  automatic OS process batch spawning**.
+- **PR #67:** Serialize queue steering and pending-only priority updates under
+  SQLite `BEGIN IMMEDIATE`, retaining lead/team ownership, terminal-state
+  non-resurrection and task command/approval payload integrity.
+- **PR #68:** Replace `TeamManager` lead/team and single-worker registration
+  upserts with atomic insert-only ownership checks; keep crash PID injection
+  restricted to trusted test fixtures.
+
+### Release gate
+- This is **not** evidence of production WebAuthn/OIDC human approval, Windows
+  hostile-worker isolation, signed dependency-accurate SBOM, verified long
+  soak/restore, or independent Antigravity host acceptance.
+- Issues **#21, #22 and #23 remain OPEN/BLOCKED**, and PAR-05/06 are partial.
+  Keep `AUTONOMY: OFF`, `GATE_MODE: CHAT_APPROVAL`; do not publish a new
+  version or describe enterprise readiness without their acceptance evidence.
+- See `docs/simpul/ENTERPRISE_RELEASE_DECISION_20261029.md` for the
+  release-qualification and human final-authorization checklist.
+
+## [1.1.4] - 2026-10-28
+
+This section records the published v1.1.4 supervised-security release notes.
 **Scope: public supervised security hardening; NOT an enterprise-certified hostile-worker sandbox or authenticated production approval service.**
 
 ### Security hardening
