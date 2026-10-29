@@ -59,10 +59,12 @@ class TestSupervisedLifecycleAcceptance(unittest.IsolatedAsyncioTestCase):
         subprocess.run(["git", "commit", "-m", "chore: initial commit with calc and test", "-q"], cwd=str(self.workspace), stdin=subprocess.DEVNULL, check=True)
 
         self.db_path = self.workspace / ".subagentbridge" / "supervised_lifecycle.db"
-        self.host_env = dict(os.environ)
-        self.host_env["SUBAGENTBRIDGE_STORAGE_PATH"] = str(self.db_path)
-        self.host_env["SUBAGENTBRIDGE_PRODUCTION_DB"] = str(self.workspace / ".subagentbridge" / "audit.db")
-        self.host_env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent)
+        self.host_env = {
+            **os.environ,
+            "PYTHONPATH": ".",
+            "SUBAGENTBRIDGE_DB_PATH": str(self.db_path),
+            "SUBAGENTBRIDGE_PRODUCTION_DB": str(self.workspace / ".subagentbridge" / "audit.db"),
+        }
 
     async def asyncTearDown(self):
         try:
